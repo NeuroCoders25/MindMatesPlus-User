@@ -36,3 +36,25 @@ export interface JournalEntry {
     score: number;
   };
 }
+
+export interface Dass21SubscaleResult {
+  raw: number;
+  final: number;
+  severity: string;
+  severityColor: string;
+}
+
+export interface Dass21Result {
+  answers: Record<number, number>;
+  depression: Dass21SubscaleResult;
+  anxiety: Dass21SubscaleResult;
+  stress: Dass21SubscaleResult;
+  group: 1 | 2 | 3 | 4 | 5;
+  groupLabel: string;
+  groupColor: string;
+  message: string;
+  ctaLabel: string;
+  ctaVariant: 'danger' | 'primary' | 'warning' | 'success';
+  reassessInDays: number;
+  riskLevel: 'low' | 'moderate' | 'severe';
+}
