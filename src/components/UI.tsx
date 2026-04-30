@@ -16,7 +16,7 @@ import { COLORS } from '../services/dataService';
 interface ButtonProps {
   children: React.ReactNode;
   onPress?: () => void;
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'outline';
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'outline' | 'warning' | 'success';
   style?: StyleProp<ViewStyle>;
   disabled?: boolean;
 }
@@ -30,6 +30,8 @@ const buttonVariants: Record<string, { container: ViewStyle; text: TextStyle }> 
     container: { backgroundColor: 'transparent', borderWidth: 2, borderColor: COLORS.accent },
     text: { color: COLORS.accent },
   },
+  warning: { container: { backgroundColor: '#FB8C00' }, text: { color: '#FFFFFF' } },
+  success: { container: { backgroundColor: '#43A047' }, text: { color: '#FFFFFF' } },
 };
 
 export const Button: React.FC<ButtonProps> = ({
