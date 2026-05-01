@@ -9,7 +9,7 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { Input, Button } from '../components/UI';
@@ -65,6 +65,13 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
     try {
       if (isLogin) {
         await login(email, password);
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          const profileSnap = await getDoc(doc(db, 'mentalHealthProfiles', uid));
+          navigation.replace(profileSnap.exists() ? 'Main' : 'Questionnaire');
+        } else {
+          navigation.replace('Main');
+        }
       } else {
         await register(email, password, name);
         const uid = auth.currentUser?.uid;
@@ -79,8 +86,8 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
             joinedGroups: [],
           });
         }
+        navigation.replace('Questionnaire');
       }
-      navigation.replace('Main');
     } catch (e: any) {
       console.error('Auth error:', e?.code, e?.message);
       setError(friendlyError(e?.code ?? ''));

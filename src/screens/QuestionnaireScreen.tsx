@@ -8,17 +8,52 @@ import {
   Animated,
   ScrollView,
 } from 'react-native';
+import { addDoc, collection, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { DASS_QUESTIONS, DASS_OPTIONS, computeDass21Result, COLORS } from '../services/dataService';
 import { useApp } from '../context/AppContext';
+import { db } from '../services/firebaseConfig';
+import { Dass21Result } from '../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Questionnaire'>;
 
 const TOTAL = DASS_QUESTIONS.length; // 21
 
+const saveToFirestore = async (
+  userId: string,
+  answers: Record<number, number>,
+  result: Dass21Result,
+) => {
+  const scores = {
+    depressionScore: result.depression.final,
+    anxietyScore:    result.anxiety.final,
+    stressScore:     result.stress.final,
+    totalScore:      result.depression.final + result.anxiety.final + result.stress.final,
+  };
+
+  // One document per attempt — auto-generated response_id
+  await addDoc(collection(db, 'questionnaireResponses'), {
+    userId,
+    date:       serverTimestamp(),
+    ...scores,
+    riskLevel:  result.riskLevel,   // user type
+    groupLabel: result.groupLabel,
+    answers,
+  });
+
+  // One document per user — overwritten on each reassessment
+  await setDoc(doc(db, 'mentalHealthProfiles', userId), {
+    userId,
+    ...scores,
+    classificationLevel: result.riskLevel,
+    groupLabel:          result.groupLabel,
+    updatedAt:           serverTimestamp(),
+  });
+};
+
 export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
-  const { setDass21Result } = useApp();
+  const { setDass21Result, user } = useApp();
   const [showInstructions, setShowInstructions] = useState(true);
   const [currentStep, setCurrentStep] = useState(0); // 0-indexed; 0 = Q1
   const [answers, setAnswers] = useState<Record<number, number>>({});
@@ -59,6 +94,9 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
       } else {
         const result = computeDass21Result(newAnswers);
         setDass21Result(result);
+        if (user?.id) {
+          saveToFirestore(user.id, newAnswers, result).catch(console.error);
+        }
         navigation.replace('Result');
       }
     });
