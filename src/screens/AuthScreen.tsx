@@ -39,13 +39,28 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [name, setName] = useState('');
   const [gender, setGender] = useState('');
+  const [age, setAge] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleAuth = async () => {
     setError('');
+
+    if (!isLogin) {
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.');
+        return;
+      }
+      const parsedAge = parseInt(age, 10);
+      if (!age || isNaN(parsedAge) || parsedAge < 10 || parsedAge > 100) {
+        setError('Please enter a valid age (10–100).');
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       if (isLogin) {
@@ -59,6 +74,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
             name: encryptedName,
             email,
             gender,
+            age: parseInt(age, 10),
             createdAt: serverTimestamp(),
             joinedGroups: [],
           });
@@ -125,6 +141,12 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                   value={gender}
                   onChangeText={setGender}
                 />
+                <Input
+                  placeholder="Age"
+                  type="number"
+                  value={age}
+                  onChangeText={setAge}
+                />
               </>
             )}
             <Input
@@ -139,6 +161,14 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
               value={password}
               onChangeText={setPassword}
             />
+            {!isLogin && (
+              <Input
+                placeholder="Confirm Password"
+                type="password"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+              />
+            )}
             {error !== '' && (
               <Text style={styles.errorText}>{error}</Text>
             )}
@@ -158,7 +188,12 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
 
           <TouchableOpacity
             style={styles.toggleBtn}
-            onPress={() => setIsLogin(!isLogin)}
+            onPress={() => {
+              setIsLogin(!isLogin);
+              setError('');
+              setConfirmPassword('');
+              setAge('');
+            }}
           >
             <Text style={styles.toggleText}>
               {isLogin

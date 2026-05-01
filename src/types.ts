@@ -2,6 +2,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  age?: number;
   riskLevel?: 'low' | 'moderate' | 'severe';
   joinedGroups: string[];
 }
