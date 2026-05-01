@@ -1,103 +1,199 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { Button } from '../components/UI';
 import { useApp } from '../context/AppContext';
 import { COLORS } from '../services/dataService';
+import { Dass21SubscaleResult } from '../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Result'>;
 
-const getRisk = (score: number) => {
-  if (score < 10)
-    return { level: 'low', color: '#22C55E', bg: '#F0FDF4', label: 'Mild / Normal' };
-  if (score < 20)
-    return { level: 'moderate', color: '#EAB308', bg: '#FEFCE8', label: 'Moderate' };
-  return { level: 'severe', color: '#EF4444', bg: '#FEF2F2', label: 'Severe' };
-};
+type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
+
+function groupIcon(group: number): IoniconsName {
+  if (group <= 2) return 'alert-circle';
+  if (group === 3) return 'information-circle';
+  return 'checkmark-circle';
+}
+
+const SubscaleCard: React.FC<{ label: string; result: Dass21SubscaleResult }> = ({ label, result }) => (
+  <View style={styles.scoreCard}>
+    <Text style={styles.scoreCardLabel}>{label}</Text>
+    <Text style={styles.scoreCardNumber}>{result.final}</Text>
+    <Text style={[styles.scoreCardSeverity, { color: result.severityColor }]}>
+      {result.severity}
+    </Text>
+  </View>
+);
 
 export const ResultScreen: React.FC<Props> = ({ navigation }) => {
-  const { assessmentScore, user, setUser } = useApp();
-  const risk = getRisk(assessmentScore);
+  const { dass21Result, user, setUser } = useApp();
+
+  if (!dass21Result) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center' }]}>
+        <Text style={{ color: COLORS.muted, textAlign: 'center' }}>No result available.</Text>
+      </View>
+    );
+  }
+
+  const { depression, anxiety, stress, group, groupLabel, groupColor, message, ctaLabel, ctaVariant, reassessInDays, riskLevel } = dass21Result;
 
   const handleContinue = () => {
     if (user) {
-      setUser({ ...user, riskLevel: risk.level as any });
+      setUser({ ...user, riskLevel: riskLevel as any });
     }
-    if (risk.level === 'severe') {
+    if (riskLevel === 'severe') {
       navigation.replace('Advisor');
     } else {
       navigation.replace('Main');
     }
   };
 
+  const iconColor = group <= 2 ? '#E53935' : group === 3 ? '#FB8C00' : '#43A047';
+  const iconBg   = group <= 2 ? '#FEF2F2' : group === 3 ? '#FFF3E0' : '#F1F8E9';
+
   return (
-    <View style={styles.container}>
-      <View style={[styles.iconWrapper, { backgroundColor: risk.bg }]}>
-        <Ionicons name="alert-circle" size={52} color={risk.color} />
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.container}
+      showsVerticalScrollIndicator={false}
+    >
+      {/* Icon */}
+      <View style={[styles.iconWrapper, { backgroundColor: iconBg }]}>
+        <Ionicons name={groupIcon(group)} size={52} color={iconColor} />
       </View>
 
       <Text style={styles.title}>Your Assessment Result</Text>
 
-      <View style={[styles.badge, { backgroundColor: risk.bg }]}>
-        <Text style={[styles.badgeText, { color: risk.color }]}>{risk.label}</Text>
+      {/* Three subscale score cards */}
+      <View style={styles.scoreRow}>
+        <SubscaleCard label="Depression" result={depression} />
+        <SubscaleCard label="Anxiety"    result={anxiety} />
+        <SubscaleCard label="Stress"     result={stress} />
       </View>
 
-      <Text style={styles.description}>
-        {risk.level === 'severe'
-          ? "We've detected significant distress. We recommend speaking with a professional advisor immediately."
-          : "You're doing okay! We've recommended some peer groups and resources to help you stay balanced."}
+      {/* Overall group badge */}
+      <View style={[styles.groupBadge, { backgroundColor: groupColor }]}>
+        <Text style={styles.groupBadgeText}>{groupLabel}</Text>
+      </View>
+
+      {/* Description */}
+      <Text style={styles.description}>{message}</Text>
+
+      {/* Reassessment note */}
+      <Text style={styles.reassessNote}>
+        We'll check in again in {reassessInDays} days
       </Text>
 
-      <Button
-        onPress={handleContinue}
-        variant={risk.level === 'severe' ? 'danger' : 'primary'}
-        style={styles.btn}
-      >
-        {risk.level === 'severe' ? 'Connect with Advisor' : 'Join Us'}
+      {/* CTA */}
+      <Button onPress={handleContinue} variant={ctaVariant} style={styles.btn}>
+        {ctaLabel}
       </Button>
-    </View>
+    </ScrollView>
   );
 };
 
 const styles = StyleSheet.create({
+  scroll: { flex: 1, backgroundColor: COLORS.background },
   container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-    padding: 32,
+    padding: 28,
     alignItems: 'center',
-    justifyContent: 'center',
+    paddingTop: 48,
+    paddingBottom: 48,
   },
+
   iconWrapper: {
     width: 100,
     height: 100,
     borderRadius: 50,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 32,
+    marginBottom: 24,
   },
+
   title: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    marginBottom: 28,
+    textAlign: 'center',
+  },
+
+  // Score cards row
+  scoreRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+    marginBottom: 24,
+  },
+  scoreCard: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  scoreCardLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: COLORS.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  scoreCardNumber: {
     fontSize: 28,
     fontWeight: 'bold',
     color: COLORS.text,
-    marginBottom: 16,
+    marginBottom: 4,
+  },
+  scoreCardSeverity: {
+    fontSize: 10,
+    fontWeight: '700',
     textAlign: 'center',
   },
-  badge: {
-    paddingHorizontal: 24,
+
+  // Group badge
+  groupBadge: {
+    paddingHorizontal: 20,
     paddingVertical: 8,
-    borderRadius: 24,
-    marginBottom: 24,
+    borderRadius: 20,
+    marginBottom: 20,
   },
-  badgeText: { fontWeight: 'bold', fontSize: 17 },
+  groupBadgeText: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+    fontSize: 13,
+    letterSpacing: 0.8,
+  },
+
   description: {
     fontSize: 14,
     color: COLORS.muted,
     textAlign: 'center',
     lineHeight: 22,
-    maxWidth: 280,
-    marginBottom: 48,
+    maxWidth: 300,
+    marginBottom: 16,
   },
+
+  reassessNote: {
+    fontSize: 12,
+    color: COLORS.muted,
+    fontStyle: 'italic',
+    marginBottom: 36,
+  },
+
   btn: { width: '100%' },
 });

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState } from 'react';
-import { User, Group, Message, JournalEntry } from '../types';
+import { User, Group, Message, JournalEntry, Dass21Result } from '../types';
 
 interface AppContextType {
   user: User | null;
@@ -8,6 +8,8 @@ interface AppContextType {
   setSelectedGroup: (group: Group | null) => void;
   assessmentScore: number;
   setAssessmentScore: (score: number) => void;
+  dass21Result: Dass21Result | null;
+  setDass21Result: (result: Dass21Result) => void;
   journalEntries: JournalEntry[];
   addJournalEntry: (title: string, content: string, mood: string) => void;
   groupMessages: Record<string, Message[]>;
@@ -24,6 +26,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [user, setUser] = useState<User | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
   const [assessmentScore, setAssessmentScore] = useState(0);
+  const [dass21Result, setDass21Result] = useState<Dass21Result | null>(null);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [groupMessages, setGroupMessages] = useState<Record<string, Message[]>>({});
   const [aiMessages, setAiMessages] = useState<Message[]>([
@@ -104,6 +107,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         user, setUser,
         selectedGroup, setSelectedGroup,
         assessmentScore, setAssessmentScore,
+        dass21Result, setDass21Result,
         journalEntries, addJournalEntry,
         groupMessages, sendGroupMessage,
         aiMessages, sendAiMessage,

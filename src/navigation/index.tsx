@@ -19,12 +19,16 @@ import { ChatScreen } from '../screens/ChatScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { FeedbackScreen } from '../screens/FeedbackScreen';
+import { ForgotPasswordScreen } from '../screens/ForgotPasswordScreen';
+import { RecoverPasswordScreen } from '../screens/RecoverPasswordScreen';
 
 // ─── Route Types ─────────────────────────────────────────────────────────────
 
 export type RootStackParamList = {
   Splash: undefined;
   Auth: undefined;
+  ForgotPassword: undefined;
+  RecoverPassword: undefined;
   Questionnaire: undefined;
   Result: undefined;
   Advisor: undefined;
@@ -144,6 +148,8 @@ export const Navigation = () => (
     <RootStack.Navigator screenOptions={{ headerShown: false }}>
       <RootStack.Screen name="Splash" component={SplashScreen} />
       <RootStack.Screen name="Auth" component={AuthScreen} />
+      <RootStack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+      <RootStack.Screen name="RecoverPassword" component={RecoverPasswordScreen} />
       <RootStack.Screen name="Questionnaire" component={QuestionnaireScreen} />
       <RootStack.Screen name="Result" component={ResultScreen} />
       <RootStack.Screen name="Advisor" component={AdvisorScreen} />
