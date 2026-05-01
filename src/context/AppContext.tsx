@@ -10,6 +10,7 @@ import {
 } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
 import { User, Group, Message, JournalEntry, Dass21Result } from '../types';
+import { encryptName, decryptName } from '../utils/encryption';
 
 interface AppContextType {
   user: User | null;
@@ -38,7 +39,7 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const mapFirebaseUser = (fbUser: FirebaseUser): User => ({
   id: fbUser.uid,
-  name: fbUser.displayName || fbUser.email?.split('@')[0] || 'User',
+  name: decryptName(fbUser.displayName || '') || fbUser.email?.split('@')[0] || 'User',
   email: fbUser.email || '',
   joinedGroups: [],
 });
@@ -75,8 +76,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const register = async (email: string, password: string, name: string) => {
     const { user: fbUser } = await createUserWithEmailAndPassword(auth, email, password);
-    await updateProfile(fbUser, { displayName: name });
-    setUser(mapFirebaseUser({ ...fbUser, displayName: name }));
+    const encryptedName = encryptName(name);
+    await updateProfile(fbUser, { displayName: encryptedName });
+    setUser(mapFirebaseUser({ ...fbUser, displayName: encryptedName }));
   };
 
   const logout = async () => {

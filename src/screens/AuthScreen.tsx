@@ -16,6 +16,7 @@ import { Input, Button } from '../components/UI';
 import { useApp } from '../context/AppContext';
 import { auth, db } from '../services/firebaseConfig';
 import { COLORS } from '../services/dataService';
+import { encryptName } from '../utils/encryption';
 
 const friendlyError = (code: string): string => {
   switch (code) {
@@ -53,8 +54,9 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
         await register(email, password, name);
         const uid = auth.currentUser?.uid;
         if (uid) {
+          const encryptedName = encryptName(name);
           await setDoc(doc(db, 'users', uid), {
-            name,
+            name: encryptedName,
             email,
             gender,
             createdAt: serverTimestamp(),
