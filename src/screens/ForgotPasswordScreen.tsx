@@ -10,8 +10,10 @@ import {
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import { sendPasswordResetEmail } from 'firebase/auth';
 import { RootStackParamList } from '../navigation';
 import { Input, Button } from '../components/UI';
+import { auth } from '../services/firebaseConfig';
 import { COLORS } from '../services/dataService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ForgotPassword'>;
@@ -20,14 +22,35 @@ export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!email.trim()) return;
+    setError('');
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
       setSent(true);
-    }, 1200);
+    } catch (e: any) {
+      switch (e?.code) {
+        case 'auth/user-not-found':
+          setError('No account found with this email address.');
+          break;
+        case 'auth/invalid-email':
+          setError('Please enter a valid email address.');
+          break;
+        case 'auth/too-many-requests':
+          setError('Too many attempts. Please try again later.');
+          break;
+        case 'auth/network-request-failed':
+          setError('Network error. Please check your connection.');
+          break;
+        default:
+          setError('Something went wrong. Please try again.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -65,6 +88,9 @@ export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
               value={email}
               onChangeText={setEmail}
             />
+            {error !== '' && (
+              <Text style={styles.errorText}>{error}</Text>
+            )}
             <Button
               onPress={handleSend}
               disabled={loading || !email.trim()}
@@ -95,6 +121,7 @@ export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
               onPress={() => {
                 setSent(false);
                 setEmail('');
+                setError('');
               }}
             >
               <Text style={styles.resendText}>Use a different email</Text>
@@ -130,6 +157,7 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 14, color: COLORS.muted, lineHeight: 22 },
   form: { gap: 16 },
   submitBtn: { marginTop: 4 },
+  errorText: { color: '#EF4444', fontSize: 13, textAlign: 'center' },
   successCard: {
     backgroundColor: COLORS.white,
     borderRadius: 24,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -12,26 +12,56 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { PEER_GROUPS, COLORS } from '../services/dataService';
+import { COLORS } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Group } from '../types';
 
-const CATEGORIES = ['All', 'Anxiety', 'Depression', 'Stress', 'General'];
-
 export const GroupsScreen = () => {
-  const { setSelectedGroup } = useApp();
+  const { peerGroups, joinedGroupIds, setSelectedGroup } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const [activeCategory, setActiveCategory] = useState('All');
 
-  const filtered =
-    activeCategory === 'All'
-      ? PEER_GROUPS
-      : PEER_GROUPS.filter(g => g.category === activeCategory);
+  const myGroups = peerGroups.filter(g => joinedGroupIds.includes(g.id));
 
-  const handleGroupPress = (group: Group) => {
+  const handleOpen = (group: Group) => {
     setSelectedGroup(group);
     navigation.navigate('GroupChat', { groupId: group.id, groupName: group.name });
   };
+
+  const renderGroupCard = (group: Group) => (
+    <Card
+      key={group.id}
+      style={styles.groupCard}
+      onPress={() => handleOpen(group)}
+    >
+      <Image source={group.image} style={styles.groupImage} resizeMode="cover" />
+      <View style={styles.groupInfo}>
+        <View style={styles.groupTop}>
+          <Text style={styles.groupName} numberOfLines={1}>
+            {group.name}
+          </Text>
+          <View style={styles.categoryBadge}>
+            <Text style={styles.categoryBadgeText}>{group.category}</Text>
+          </View>
+        </View>
+        <Text style={styles.groupDesc} numberOfLines={1}>
+          {group.description}
+        </Text>
+        <View style={styles.groupBottom}>
+          <View style={styles.membersRow}>
+            <Ionicons name="people-outline" size={12} color={COLORS.muted} />
+            <Text style={styles.membersText}>{group.members} members active</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.openBtn}
+            onPress={() => handleOpen(group)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.openBtnText}>Open</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Card>
+  );
 
   return (
     <ScrollView
@@ -39,68 +69,26 @@ export const GroupsScreen = () => {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.title}>Peer Groups</Text>
-
-      {/* Category Filter */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.categories}
-      >
-        {CATEGORIES.map(cat => (
-          <TouchableOpacity
-            key={cat}
-            onPress={() => setActiveCategory(cat)}
-            style={[
-              styles.categoryBtn,
-              activeCategory === cat && styles.activeCategoryBtn,
-            ]}
-          >
-            <Text
-              style={[
-                styles.categoryText,
-                activeCategory === cat && styles.activeCategoryText,
-              ]}
-            >
-              {cat}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
-
-      {/* Groups List */}
-      <View style={styles.groupsList}>
-        {filtered.map(group => (
-          <Card
-            key={group.id}
-            style={styles.groupCard}
-            onPress={() => handleGroupPress(group)}
-          >
-            <Image
-              source={group.image}
-              style={styles.groupImage}
-              resizeMode="cover"
-            />
-            <View style={styles.groupInfo}>
-              <View style={styles.groupTop}>
-                <Text style={styles.groupName} numberOfLines={1}>
-                  {group.name}
-                </Text>
-                <View style={styles.categoryBadge}>
-                  <Text style={styles.categoryBadgeText}>{group.category}</Text>
-                </View>
-              </View>
-              <Text style={styles.groupDesc} numberOfLines={1}>
-                {group.description}
-              </Text>
-              <View style={styles.membersRow}>
-                <Ionicons name="people-outline" size={12} color={COLORS.muted} />
-                <Text style={styles.membersText}>{group.members} members active</Text>
-              </View>
-            </View>
-          </Card>
-        ))}
+      <View style={styles.header}>
+        <Text style={styles.title}>My Groups</Text>
+        <View style={styles.countBadge}>
+          <Text style={styles.countText}>{myGroups.length}</Text>
+        </View>
       </View>
+
+      {myGroups.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Ionicons name="people-outline" size={48} color={COLORS.muted} />
+          <Text style={styles.emptyTitle}>No groups joined yet</Text>
+          <Text style={styles.emptySubtext}>
+            Groups recommended for you will appear on your home screen.
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.groupsList}>
+          {myGroups.map(renderGroupCard)}
+        </View>
+      )}
     </ScrollView>
   );
 };
@@ -108,19 +96,19 @@ export const GroupsScreen = () => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   content: { padding: 24, paddingBottom: 100, gap: 20 },
+
+  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title: { fontSize: 22, fontWeight: 'bold', color: COLORS.text },
-  categories: { gap: 8, paddingRight: 4 },
-  categoryBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 24,
-    backgroundColor: COLORS.white,
-    borderWidth: 1,
-    borderColor: '#EEF2FF',
+  countBadge: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    minWidth: 24,
+    alignItems: 'center',
   },
-  activeCategoryBtn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
-  categoryText: { fontSize: 13, fontWeight: '600', color: COLORS.muted },
-  activeCategoryText: { color: 'white' },
+  countText: { fontSize: 12, color: 'white', fontWeight: '700' },
+
   groupsList: { gap: 12 },
   groupCard: { flexDirection: 'row', alignItems: 'center', padding: 16 },
   groupImage: { width: 64, height: 64, borderRadius: 16, marginRight: 14 },
@@ -151,7 +139,25 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  groupDesc: { fontSize: 11, color: COLORS.muted, lineHeight: 16, marginBottom: 6 },
+  groupDesc: { fontSize: 11, color: COLORS.muted, lineHeight: 16, marginBottom: 8 },
+  groupBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   membersRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   membersText: { fontSize: 10, color: COLORS.muted, fontWeight: '500' },
+  openBtn: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    minWidth: 52,
+    alignItems: 'center',
+  },
+  openBtnText: { fontSize: 12, fontWeight: '700', color: 'white' },
+
+  emptyState: { alignItems: 'center', paddingVertical: 64, gap: 12 },
+  emptyTitle: { fontSize: 16, fontWeight: 'bold', color: COLORS.text },
+  emptySubtext: { fontSize: 13, color: COLORS.muted, textAlign: 'center', lineHeight: 20 },
 });

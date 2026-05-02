@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -15,27 +16,41 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
 import { COLORS } from '../services/dataService';
+import { saveChatMessage, subscribeGroupMessages } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Message } from '../types';
 
 export const ChatScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const {
-    groupMessages,
-    sendGroupMessage,
-    aiMessages,
-    sendAiMessage,
-  } = useApp();
+  const { user, aiMessages, sendAiMessage } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
   const title = isAI ? 'Mindy AI' : params.groupName ?? '';
   const groupId = params.groupId ?? '';
 
-  const messages: Message[] = isAI ? aiMessages : (groupMessages[groupId] || []);
+  const [groupMessages, setGroupMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
+  const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList>(null);
+
+  const messages: Message[] = isAI ? aiMessages : groupMessages;
+
+  // Subscribe to real-time Firestore messages for group chats
+  useEffect(() => {
+    if (isAI || !groupId) return;
+    const unsubscribe = subscribeGroupMessages(groupId, incoming => {
+      // Mark messages from current user as 'user', all others as 'peer'
+      const mapped: Message[] = incoming.map(msg => ({
+        ...msg,
+        sender: msg.senderId === user?.id ? 'user' : 'peer',
+        senderName: msg.senderId === user?.id ? undefined : msg.senderName,
+      }));
+      setGroupMessages(mapped);
+    });
+    return unsubscribe;
+  }, [groupId, isAI, user?.id]);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -43,15 +58,21 @@ export const ChatScreen = () => {
     }
   }, [messages.length]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = inputText.trim();
-    if (!text) return;
+    if (!text || sending) return;
+    setInputText('');
     if (isAI) {
       sendAiMessage(text);
-    } else {
-      sendGroupMessage(text, groupId);
+      return;
     }
-    setInputText('');
+    if (!user) return;
+    setSending(true);
+    try {
+      await saveChatMessage(groupId, user.id, user.name, text);
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -75,7 +96,7 @@ export const ChatScreen = () => {
         </View>
         <View>
           <Text style={styles.headerTitle}>{title}</Text>
-          <Text style={styles.onlineText}>Online</Text>
+          <Text style={styles.onlineText}>Live</Text>
         </View>
       </View>
 
@@ -103,6 +124,12 @@ export const ChatScreen = () => {
                 msg.sender === 'user' ? styles.userBubble : styles.otherBubble,
               ]}
             >
+              {msg.flagged && (
+                <View style={styles.flaggedBadge}>
+                  <Ionicons name="warning-outline" size={10} color="#F87171" />
+                  <Text style={styles.flaggedText}>Flagged</Text>
+                </View>
+              )}
               <Text
                 style={[
                   styles.bubbleText,
@@ -137,10 +164,14 @@ export const ChatScreen = () => {
           />
           <TouchableOpacity
             onPress={handleSend}
-            style={styles.sendBtn}
+            style={[styles.sendBtn, sending && styles.sendBtnDisabled]}
             activeOpacity={0.8}
+            disabled={sending}
           >
-            <Ionicons name="send" size={18} color="white" />
+            {sending
+              ? <ActivityIndicator size="small" color="white" />
+              : <Ionicons name="send" size={18} color="white" />
+            }
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -204,6 +235,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#EFF6FF',
   },
+  flaggedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  flaggedText: { fontSize: 9, color: '#F87171', fontWeight: '700' },
   bubbleText: { fontSize: 14, lineHeight: 20 },
   userBubbleText: { color: 'white' },
   otherBubbleText: { color: COLORS.text },
@@ -231,4 +269,5 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
+  sendBtnDisabled: { opacity: 0.6 },
 });

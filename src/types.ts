@@ -2,16 +2,25 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  age?: number;
   riskLevel?: 'low' | 'moderate' | 'severe';
-  joinedGroups: string[];
 }
+
+export type GroupCategory =
+  | 'Severe Support'
+  | 'Moderate Support'
+  | 'Mild Support'
+  | 'Wellness - Thriving'
+  | 'Wellness - Stress Aware'
+  | 'Wellness - Emotionally Aware'
+  | 'Recovery & Improvement';
 
 export interface Group {
   id: string;
   name: string;
   description: string;
   members: number;
-  category: 'Anxiety' | 'Depression' | 'Stress' | 'General';
+  category: GroupCategory;
   image: any;
 }
 
@@ -19,8 +28,10 @@ export interface Message {
   id: string;
   text: string;
   sender: 'user' | 'ai' | 'peer';
+  senderId?: string;
   senderName?: string;
   timestamp: Date;
+  flagged?: boolean;
 }
 
 export interface JournalEntry {
@@ -50,11 +61,19 @@ export interface Dass21Result {
   anxiety: Dass21SubscaleResult;
   stress: Dass21SubscaleResult;
   group: 1 | 2 | 3 | 4 | 5;
-  groupLabel: string;
+  groupCategory: GroupCategory;
   groupColor: string;
   message: string;
   ctaLabel: string;
   ctaVariant: 'danger' | 'primary' | 'warning' | 'success';
   reassessInDays: number;
   riskLevel: 'low' | 'moderate' | 'severe';
+}
+
+export interface Feedback {
+  id: string;
+  rating: number;
+  peerComment: string;
+  appComment: string;
+  date: Date;
 }

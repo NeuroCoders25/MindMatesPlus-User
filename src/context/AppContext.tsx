@@ -1,9 +1,29 @@
-import React, { createContext, useContext, useState } from 'react';
-import { User, Group, Message, JournalEntry, Dass21Result } from '../types';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { View, ActivityIndicator } from 'react-native';
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  updateProfile,
+  User as FirebaseUser,
+} from 'firebase/auth';
+import { auth } from '../services/firebaseConfig';
+import {
+  saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
+  fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup,
+  fetchMentalHealthProfile, MentalHealthProfile,
+} from '../services/dataService';
+import { User, Group, Message, JournalEntry, Dass21Result, Feedback } from '../types';
+import { encryptName, decryptName } from '../utils/encryption';
 
 interface AppContextType {
   user: User | null;
   setUser: (user: User | null) => void;
+  authLoading: boolean;
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, name: string) => Promise<void>;
+  logout: () => Promise<void>;
   selectedGroup: Group | null;
   setSelectedGroup: (group: Group | null) => void;
   assessmentScore: number;
@@ -11,9 +31,15 @@ interface AppContextType {
   dass21Result: Dass21Result | null;
   setDass21Result: (result: Dass21Result) => void;
   journalEntries: JournalEntry[];
-  addJournalEntry: (title: string, content: string, mood: string) => void;
-  groupMessages: Record<string, Message[]>;
-  sendGroupMessage: (text: string, groupId: string) => void;
+  addJournalEntry: (title: string, content: string, mood: string) => Promise<void>;
+  removeJournalEntry: (entryId: string) => Promise<void>;
+  submitFeedback: (rating: number, peerComment: string, appComment: string) => Promise<void>;
+  peerGroups: Group[];
+  groupsLoading: boolean;
+  mentalHealthProfile: MentalHealthProfile | null;
+  setMentalHealthProfile: (profile: MentalHealthProfile | null) => void;
+  joinedGroupIds: string[];
+  joinGroup: (groupId: string) => Promise<void>;
   aiMessages: Message[];
   sendAiMessage: (text: string) => void;
   showCrisisAlert: boolean;
@@ -22,13 +48,23 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+const mapFirebaseUser = (fbUser: FirebaseUser): User => ({
+  id: fbUser.uid,
+  name: decryptName(fbUser.displayName || '') || fbUser.email?.split('@')[0] || 'User',
+  email: fbUser.email || '',
+});
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
   const [assessmentScore, setAssessmentScore] = useState(0);
   const [dass21Result, setDass21Result] = useState<Dass21Result | null>(null);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
-  const [groupMessages, setGroupMessages] = useState<Record<string, Message[]>>({});
+  const [peerGroups, setPeerGroups] = useState<Group[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(true);
+  const [mentalHealthProfile, setMentalHealthProfile] = useState<MentalHealthProfile | null>(null);
+  const [joinedGroupIds, setJoinedGroupIds] = useState<string[]>([]);
   const [aiMessages, setAiMessages] = useState<Message[]>([
     {
       id: '1',
@@ -39,15 +75,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ]);
   const [showCrisisAlert, setShowCrisisAlert] = useState(false);
 
-  const addJournalEntry = (title: string, content: string, mood: string) => {
-    const newEntry: JournalEntry = {
-      id: Date.now().toString(),
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        setUser(mapFirebaseUser(fbUser));
+        setGroupsLoading(true);
+        const [entries, groups, joinedIds, profile] = await Promise.all([
+          fetchJournalEntries(fbUser.uid),
+          fetchPeerGroups(),
+          fetchUserJoinedGroupIds(fbUser.uid),
+          fetchMentalHealthProfile(fbUser.uid),
+        ]);
+        setJournalEntries(entries);
+        setPeerGroups(groups);
+        setJoinedGroupIds(joinedIds);
+        setMentalHealthProfile(profile);
+        setGroupsLoading(false);
+      } else {
+        setUser(null);
+        setJournalEntries([]);
+        setPeerGroups([]);
+        setMentalHealthProfile(null);
+        setJoinedGroupIds([]);
+        setGroupsLoading(false);
+      }
+      setAuthLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  const login = async (email: string, password: string) => {
+    await signInWithEmailAndPassword(auth, email, password);
+  };
+
+  const register = async (email: string, password: string, name: string) => {
+    const { user: fbUser } = await createUserWithEmailAndPassword(auth, email, password);
+    const encryptedName = encryptName(name);
+    await updateProfile(fbUser, { displayName: encryptedName });
+    setUser(mapFirebaseUser({ ...fbUser, displayName: encryptedName }));
+  };
+
+  const logout = async () => {
+    await signOut(auth);
+    setUser(null);
+  };
+
+  const addJournalEntry = async (title: string, content: string, mood: string) => {
+    if (!user) return;
+    const entryData: Omit<JournalEntry, 'id'> = {
       title,
       content,
       mood,
       timestamp: new Date(),
     };
-    setJournalEntries(prev => [newEntry, ...prev]);
+    const id = await saveJournalEntry(user.id, entryData);
+    setJournalEntries(prev => [{ ...entryData, id }, ...prev]);
     if (
       content.toLowerCase().includes('help') ||
       content.toLowerCase().includes('end it')
@@ -56,30 +138,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const sendGroupMessage = (text: string, groupId: string) => {
-    const newMsg: Message = {
-      id: Date.now().toString(),
-      text,
-      sender: 'user',
-      timestamp: new Date(),
-    };
-    setGroupMessages(prev => ({
-      ...prev,
-      [groupId]: [...(prev[groupId] || []), newMsg],
-    }));
-    setTimeout(() => {
-      const peerResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        text: "I've felt that way too. You're not alone in this.",
-        sender: 'peer',
-        senderName: 'Sarah',
-        timestamp: new Date(),
-      };
-      setGroupMessages(prev => ({
-        ...prev,
-        [groupId]: [...(prev[groupId] || []), peerResponse],
-      }));
-    }, 2000);
+  const removeJournalEntry = async (entryId: string) => {
+    if (!user) return;
+    await deleteJournalEntry(user.id, entryId);
+    setJournalEntries(prev => prev.filter(e => e.id !== entryId));
+  };
+
+  const joinGroup = async (groupId: string) => {
+    if (!user) return;
+    await joinPeerGroup(user.id, groupId);
+    setJoinedGroupIds(prev => (prev.includes(groupId) ? prev : [...prev, groupId]));
+    setPeerGroups(prev =>
+      prev.map(g => g.id === groupId ? { ...g, members: g.members + 1 } : g)
+    );
+  };
+
+  const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
+    if (!user) return;
+    await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
   };
 
   const sendAiMessage = (text: string) => {
@@ -101,15 +177,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 1000);
   };
 
+  if (authLoading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#6C63FF" />
+      </View>
+    );
+  }
+
   return (
     <AppContext.Provider
       value={{
         user, setUser,
+        authLoading,
+        login, register, logout,
         selectedGroup, setSelectedGroup,
         assessmentScore, setAssessmentScore,
         dass21Result, setDass21Result,
-        journalEntries, addJournalEntry,
-        groupMessages, sendGroupMessage,
+        peerGroups, groupsLoading, mentalHealthProfile, setMentalHealthProfile,
+        joinedGroupIds, joinGroup,
+        journalEntries, addJournalEntry, removeJournalEntry,
+        submitFeedback,
         aiMessages, sendAiMessage,
         showCrisisAlert, setShowCrisisAlert,
       }}

@@ -1,4 +1,225 @@
-import { Group, Dass21Result, Dass21SubscaleResult } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message } from '../types';
+import { db } from './firebaseConfig';
+import {
+  collection, addDoc, getDocs, deleteDoc,
+  doc, query, orderBy, Timestamp, where,
+  setDoc, updateDoc, increment, getDoc, onSnapshot,
+} from 'firebase/firestore';
+
+// ─── Journal Firestore Functions ──────────────────────────────────────────────
+
+export const saveJournalEntry = async (
+  userId: string,
+  entry: Omit<JournalEntry, 'id'>
+): Promise<string> => {
+  const ref = collection(db, 'users', userId, 'journal_entries');
+  const docRef = await addDoc(ref, {
+    title: entry.title,
+    content: entry.content,
+    mood_tag: entry.mood,
+    date: Timestamp.fromDate(entry.timestamp),
+    analysis: entry.analysis ?? null,
+  });
+  return docRef.id;
+};
+
+export const fetchJournalEntries = async (userId: string): Promise<JournalEntry[]> => {
+  const ref = collection(db, 'users', userId, 'journal_entries');
+  const q = query(ref, orderBy('date', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map(d => ({
+    id: d.id,
+    title: d.data().title,
+    content: d.data().content,
+    mood: d.data().mood_tag,
+    timestamp: (d.data().date as Timestamp).toDate(),
+    analysis: d.data().analysis ?? undefined,
+  }));
+};
+
+export const deleteJournalEntry = async (userId: string, entryId: string): Promise<void> => {
+  await deleteDoc(doc(db, 'users', userId, 'journal_entries', entryId));
+};
+
+// ─── Feedback Firestore Functions ─────────────────────────────────────────────
+
+export const saveFeedback = async (
+  userId: string,
+  feedback: Omit<Feedback, 'id'>
+): Promise<string> => {
+  const ref = collection(db, 'users', userId, 'feedback');
+  const docRef = await addDoc(ref, {
+    rating: feedback.rating,
+    peer_comment: feedback.peerComment,
+    app_comment: feedback.appComment,
+    date: Timestamp.fromDate(feedback.date),
+  });
+  return docRef.id;
+};
+
+// ─── Peer Group Firestore Functions ──────────────────────────────────────────
+
+export const GROUP_CATEGORIES: GroupCategory[] = [
+  'Severe Support',
+  'Moderate Support',
+  'Mild Support',
+  'Wellness - Thriving',
+  'Wellness - Stress Aware',
+  'Wellness - Emotionally Aware',
+  'Recovery & Improvement',
+];
+
+export const GROUP_IMAGE_MAP: Record<string, any> = {
+  'Severe Support':               require('../assets/group_image4.jpeg'),
+  'Moderate Support':             require('../assets/group_image1.jpg'),
+  'Mild Support':                 require('../assets/group_image5.png'),
+  'Wellness - Thriving':          require('../assets/group_image3.png'),
+  'Wellness - Stress Aware':      require('../assets/group_image5.png'),
+  'Wellness - Emotionally Aware': require('../assets/group_image1.jpg'),
+  'Recovery & Improvement':       require('../assets/group_image3.png'),
+};
+
+export const fetchPeerGroups = async (): Promise<Group[]> => {
+  const snap = await getDocs(collection(db, 'peer_groups'));
+  return snap.docs.map(d => {
+    const data = d.data();
+    const category = (data.group_category ?? data.category ?? 'Wellness - Thriving') as GroupCategory;
+    const imageUrl: string | undefined = data.group_image_url ?? data.imageUrl;
+    return {
+      id: d.id,
+      name: data.group_name ?? data.name ?? '',
+      description: data.group_description ?? data.description ?? data.topic ?? '',
+      members: data.memberCount ?? data.member_count ?? 0,
+      category,
+      image: imageUrl ? { uri: imageUrl } : (GROUP_IMAGE_MAP[category] ?? GROUP_IMAGE_MAP['Wellness - Thriving']),
+    };
+  });
+};
+
+export const fetchUserJoinedGroupIds = async (userId: string): Promise<string[]> => {
+  const q = query(collection(db, 'groupMembers'), where('userId', '==', userId));
+  const snap = await getDocs(q);
+  return snap.docs.map(d => d.data().groupId as string);
+};
+
+export const joinPeerGroup = async (userId: string, groupId: string): Promise<void> => {
+  const memberRef = doc(db, 'groupMembers', `${groupId}_${userId}`);
+  const existing = await getDoc(memberRef);
+  if (existing.exists()) return;
+  const joinedAt = Timestamp.now();
+  await setDoc(memberRef, { groupId, userId, joinedAt });
+  await updateDoc(doc(db, 'peer_groups', groupId), { memberCount: increment(1) });
+  await setDoc(doc(db, 'users', userId, 'group_memberships', groupId), {
+    group_id: groupId,
+    joined_at: joinedAt,
+    status: 'active',
+  });
+};
+
+// ─── Mental Health Profile ────────────────────────────────────────────────────
+
+export const saveMentalHealthProfile = async (
+  userId: string,
+  profile: {
+    depression_score: number;
+    anxiety_score: number;
+    stress_score: number;
+    classification_level: string;
+    source: string;
+  }
+): Promise<void> => {
+  const ref = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  await setDoc(ref, { ...profile, last_updated: Timestamp.now() }, { merge: true });
+};
+
+// ─── Questionnaire Responses ──────────────────────────────────────────────────
+
+export const saveQuestionnaireResponse = async (
+  userId: string,
+  result: Dass21Result
+): Promise<string> => {
+  const ref = collection(db, 'users', userId, 'questionnaireResponses');
+  const docRef = await addDoc(ref, {
+    score: result.depression.final + result.anxiety.final + result.stress.final,
+    depression_score: result.depression.final,
+    anxiety_score: result.anxiety.final,
+    stress_score: result.stress.final,
+    classification_level: result.riskLevel,
+    date: Timestamp.now(),
+  });
+  return docRef.id;
+};
+
+// ─── ML Analysis ──────────────────────────────────────────────────────────────
+
+export const addMlAnalysis = async (
+  userId: string,
+  analysis: {
+    source_type: 'journal' | 'chat' | 'feedback';
+    source_id: string;
+    emotion_detected: string;
+    emotion_score: number;
+    predicted_condition: string;
+    confidence_score: number;
+  }
+): Promise<string> => {
+  const ref = collection(db, 'users', userId, 'ml_analysis');
+  const docRef = await addDoc(ref, {
+    ...analysis,
+    status: 'pending',
+    created_at: Timestamp.now(),
+  });
+  return docRef.id;
+};
+
+// ─── Mental Health Profile Fetch ──────────────────────────────────────────────
+
+export interface MentalHealthProfile {
+  depressionScore: number;
+  anxietyScore: number;
+  stressScore: number;
+  classificationLevel: 'low' | 'moderate' | 'severe';
+  groupCategory: GroupCategory;
+}
+
+export const fetchMentalHealthProfile = async (
+  userId: string
+): Promise<MentalHealthProfile | null> => {
+  const ref = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  return snap.data() as MentalHealthProfile;
+};
+
+// ─── Group Recommendation Logic ───────────────────────────────────────────────
+
+// Secondary categories shown when primary matches are insufficient
+const RELATED_CATEGORIES: Record<GroupCategory, GroupCategory[]> = {
+  'Severe Support':               ['Moderate Support'],
+  'Moderate Support':             ['Recovery & Improvement'],
+  'Mild Support':                 ['Recovery & Improvement', 'Wellness - Thriving'],
+  'Wellness - Stress Aware':      ['Wellness - Thriving', 'Recovery & Improvement'],
+  'Wellness - Emotionally Aware': ['Wellness - Thriving', 'Recovery & Improvement'],
+  'Wellness - Thriving':          ['Recovery & Improvement'],
+  'Recovery & Improvement':       ['Mild Support', 'Wellness - Thriving'],
+};
+
+export const getRecommendedGroups = (
+  groups: Group[],
+  profile: MentalHealthProfile | null
+): Group[] => {
+  if (!profile || groups.length === 0) return groups;
+
+  const { groupCategory } = profile;
+  const primary = groups.filter(g => g.category === groupCategory);
+
+  // Only show related categories when no exact-match groups exist yet
+  if (primary.length > 0) return primary;
+
+  const related = RELATED_CATEGORIES[groupCategory] ?? [];
+  const secondary = related.flatMap(cat => groups.filter(g => g.category === cat));
+  return secondary.length > 0 ? secondary : groups;
+};
 
 export const COLORS = {
   primary: '#0B1F5B',
@@ -18,35 +239,59 @@ export const COLORS = {
 export const PEER_GROUPS: Group[] = [
   {
     id: '1',
-    name: 'Anxiety Support Circle',
-    description: 'A safe space to discuss anxiety and coping mechanisms.',
-    members: 124,
-    category: 'Anxiety',
-    image: require('../assets/group_image1.jpg'),
+    name: 'Crisis Support Circle',
+    description: 'A safe space for those experiencing severe distress to find peer support.',
+    members: 58,
+    category: 'Severe Support',
+    image: GROUP_IMAGE_MAP['Severe Support'],
   },
   {
     id: '2',
-    name: 'Hope Harbor',
-    description: 'Supporting each other through depression and low moods.',
-    members: 89,
-    category: 'Depression',
-    image: require('../assets/group_image4.jpeg'),
+    name: 'Steady Steps',
+    description: 'For those navigating moderate challenges together with shared strategies.',
+    members: 124,
+    category: 'Moderate Support',
+    image: GROUP_IMAGE_MAP['Moderate Support'],
   },
   {
     id: '3',
-    name: 'Stress Busters',
-    description: 'Tips and support for managing daily stress and burnout.',
-    members: 210,
-    category: 'Stress',
-    image: require('../assets/group_image5.png'),
+    name: 'Gentle Progress',
+    description: 'A supportive community for mild symptoms and everyday coping.',
+    members: 89,
+    category: 'Mild Support',
+    image: GROUP_IMAGE_MAP['Mild Support'],
   },
   {
     id: '4',
-    name: 'Mindful Moments',
-    description: 'Practicing mindfulness and meditation together.',
+    name: 'Thriving Together',
+    description: 'Celebrate good mental health and build positive habits together.',
+    members: 210,
+    category: 'Wellness - Thriving',
+    image: GROUP_IMAGE_MAP['Wellness - Thriving'],
+  },
+  {
+    id: '5',
+    name: 'Stress Busters',
+    description: 'Tips and peer support for managing daily stress and burnout.',
     members: 156,
-    category: 'General',
-    image: require('../assets/group_image3.png'),
+    category: 'Wellness - Stress Aware',
+    image: GROUP_IMAGE_MAP['Wellness - Stress Aware'],
+  },
+  {
+    id: '6',
+    name: 'Emotionally Aware',
+    description: 'Building emotional intelligence and self-awareness together.',
+    members: 97,
+    category: 'Wellness - Emotionally Aware',
+    image: GROUP_IMAGE_MAP['Wellness - Emotionally Aware'],
+  },
+  {
+    id: '7',
+    name: 'Recovery & Growth',
+    description: 'For those on a recovery journey — celebrating every step forward.',
+    members: 73,
+    category: 'Recovery & Improvement',
+    image: GROUP_IMAGE_MAP['Recovery & Improvement'],
   },
 ];
 
@@ -144,7 +389,7 @@ export function computeDass21Result(answers: Record<number, number>): Dass21Resu
   const severeCount = ranks.filter(r => r >= 3).length;
 
   let group: Dass21Result['group'];
-  let groupLabel: string;
+  let groupCategory: GroupCategory;
   let groupColor: string;
   let message: string;
   let ctaLabel: string;
@@ -153,26 +398,79 @@ export function computeDass21Result(answers: Record<number, number>): Dass21Resu
   let riskLevel: Dass21Result['riskLevel'];
 
   if (hasExtSev) {
-    group = 1; groupLabel = 'EXTREMELY SEVERE'; groupColor = '#B71C1C';
+    group = 1; groupCategory = 'Severe Support'; groupColor = '#B71C1C';
     message = "We've detected significant distress. We strongly recommend speaking with a professional advisor immediately.";
     ctaLabel = 'Connect with Advisor'; ctaVariant = 'danger'; reassessInDays = 14; riskLevel = 'severe';
   } else if (severeCount >= 1) {
-    group = 2; groupLabel = 'SEVERE'; groupColor = '#E53935';
+    group = 2; groupCategory = 'Severe Support'; groupColor = '#E53935';
     message = "We've detected significant distress. We recommend speaking with a professional advisor immediately.";
     ctaLabel = 'Connect with Advisor'; ctaVariant = 'danger'; reassessInDays = 14; riskLevel = 'severe';
   } else if (maxRank >= 2) {
-    group = 3; groupLabel = 'MODERATE'; groupColor = '#FB8C00';
+    group = 3; groupCategory = 'Moderate Support'; groupColor = '#FB8C00';
     message = "You're experiencing moderate levels of stress, anxiety, or depression. Let's build a plan to support you.";
     ctaLabel = 'View Your Plan'; ctaVariant = 'warning'; reassessInDays = 30; riskLevel = 'moderate';
   } else if (maxRank >= 1) {
-    group = 4; groupLabel = 'MILD'; groupColor = '#F9A825';
+    group = 4; groupCategory = 'Mild Support'; groupColor = '#F9A825';
     message = "You have mild symptoms. Some self-care and mindfulness practices can make a big difference.";
     ctaLabel = 'View Your Plan'; ctaVariant = 'success'; reassessInDays = 60; riskLevel = 'low';
   } else {
-    group = 5; groupLabel = 'MINIMAL / NORMAL'; groupColor = '#43A047';
+    // All Normal — sub-categorise by which subscale score is highest
+    group = 5; groupColor = '#43A047';
+    if (strFinal >= anxFinal && strFinal >= depFinal && strFinal > 0) {
+      groupCategory = 'Wellness - Stress Aware';
+    } else if (anxFinal > 0 || depFinal > 0) {
+      groupCategory = 'Wellness - Emotionally Aware';
+    } else {
+      groupCategory = 'Wellness - Thriving';
+    }
     message = "Great news! Your mental wellness looks good. Keep up your healthy habits.";
     ctaLabel = 'View Your Plan'; ctaVariant = 'success'; reassessInDays = 90; riskLevel = 'low';
   }
 
-  return { answers, depression, anxiety, stress, group, groupLabel, groupColor, message, ctaLabel, ctaVariant, reassessInDays, riskLevel };
+  return { answers, depression, anxiety, stress, group, groupCategory, groupColor, message, ctaLabel, ctaVariant, reassessInDays, riskLevel };
 }
+
+// ─── Group Chat Firestore Functions ───────────────────────────────────────────
+
+const CRISIS_KEYWORDS = ['hurt myself', 'end it', 'suicide', 'kill myself', 'self harm', 'want to die', 'no reason to live'];
+
+export const saveChatMessage = async (
+  groupId: string,
+  senderId: string,
+  senderName: string,
+  text: string
+): Promise<string> => {
+  const lower = text.toLowerCase();
+  const flagged = CRISIS_KEYWORDS.some(kw => lower.includes(kw));
+  const ref = collection(db, 'peer_groups', groupId, 'chatMessages');
+  const docRef = await addDoc(ref, {
+    senderId,
+    senderName,
+    text,
+    timestamp: Timestamp.now(),
+    flagged,
+  });
+  return docRef.id;
+};
+
+export const subscribeGroupMessages = (
+  groupId: string,
+  callback: (messages: Message[]) => void
+): (() => void) => {
+  const q = query(
+    collection(db, 'peer_groups', groupId, 'chatMessages'),
+    orderBy('timestamp', 'asc')
+  );
+  return onSnapshot(q, snapshot => {
+    const messages: Message[] = snapshot.docs.map(d => ({
+      id: d.id,
+      text: d.data().text,
+      sender: 'peer',
+      senderId: d.data().senderId as string,
+      senderName: d.data().senderName as string,
+      timestamp: (d.data().timestamp as Timestamp).toDate(),
+      flagged: d.data().flagged ?? false,
+    }));
+    callback(messages);
+  });
+};

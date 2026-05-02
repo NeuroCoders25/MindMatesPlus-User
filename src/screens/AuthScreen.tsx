@@ -9,29 +9,90 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { Input, Button } from '../components/UI';
 import { useApp } from '../context/AppContext';
+import { auth, db } from '../services/firebaseConfig';
 import { COLORS } from '../services/dataService';
+import { encryptName } from '../utils/encryption';
+
+const friendlyError = (code: string): string => {
+  switch (code) {
+    case 'auth/email-already-in-use':  return 'An account with this email already exists.';
+    case 'auth/invalid-email':         return 'Please enter a valid email address.';
+    case 'auth/weak-password':         return 'Password must be at least 6 characters.';
+    case 'auth/user-not-found':        return 'No account found with this email.';
+    case 'auth/wrong-password':        return 'Incorrect password. Please try again.';
+    case 'auth/invalid-credential':    return 'Incorrect email or password.';
+    case 'auth/too-many-requests':     return 'Too many attempts. Please try again later.';
+    case 'auth/network-request-failed': return 'Network error. Please check your connection.';
+    default:                           return 'Something went wrong. Please try again.';
+  }
+};
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Auth'>;
 
 export const AuthScreen: React.FC<Props> = ({ navigation }) => {
-  const { setUser } = useApp();
+  const { login, register } = useApp();
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [name, setName] = useState('');
+  const [gender, setGender] = useState('');
+  const [age, setAge] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleAuth = () => {
-    setUser({
-      id: '1',
-      name: name || 'James',
-      email: email || 'james@example.com',
-      joinedGroups: [],
-    });
-    navigation.replace('Questionnaire');
+  const handleAuth = async () => {
+    setError('');
+
+    if (!isLogin) {
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.');
+        return;
+      }
+      const parsedAge = parseInt(age, 10);
+      if (!age || isNaN(parsedAge) || parsedAge < 10 || parsedAge > 100) {
+        setError('Please enter a valid age (10–100).');
+        return;
+      }
+    }
+
+    setLoading(true);
+    try {
+      if (isLogin) {
+        await login(email, password);
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          const profileSnap = await getDoc(doc(db, 'users', uid, 'mentalHealthProfile', 'currentProfile'));
+          navigation.replace(profileSnap.exists() ? 'Main' : 'Questionnaire');
+        } else {
+          navigation.replace('Main');
+        }
+      } else {
+        await register(email, password, name);
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          const encryptedName = encryptName(name);
+          await setDoc(doc(db, 'users', uid), {
+            name: encryptedName,
+            email,
+            gender,
+            age: parseInt(age, 10),
+            createdAt: serverTimestamp(),
+          });
+        }
+        navigation.replace('Questionnaire');
+      }
+    } catch (e: any) {
+      console.error('Auth error:', e?.code, e?.message);
+      setError(friendlyError(e?.code ?? ''));
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -75,11 +136,24 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
 
           <View style={styles.form}>
             {!isLogin && (
-              <Input
-                placeholder="Full Name"
-                value={name}
-                onChangeText={setName}
-              />
+              <>
+                <Input
+                  placeholder="Full Name"
+                  value={name}
+                  onChangeText={setName}
+                />
+                <Input
+                  placeholder="Gender (e.g. Male, Female, Non-binary)"
+                  value={gender}
+                  onChangeText={setGender}
+                />
+                <Input
+                  placeholder="Age"
+                  type="number"
+                  value={age}
+                  onChangeText={setAge}
+                />
+              </>
             )}
             <Input
               placeholder="Email Address"
@@ -93,8 +167,19 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
               value={password}
               onChangeText={setPassword}
             />
-            <Button onPress={handleAuth} style={styles.authBtn}>
-              {isLogin ? 'Sign In' : 'Create Account'}
+            {!isLogin && (
+              <Input
+                placeholder="Confirm Password"
+                type="password"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+              />
+            )}
+            {error !== '' && (
+              <Text style={styles.errorText}>{error}</Text>
+            )}
+            <Button onPress={handleAuth} disabled={loading} style={styles.authBtn}>
+              {loading ? 'Please wait…' : isLogin ? 'Sign In' : 'Create Account'}
             </Button>
 
             {isLogin && (
@@ -109,7 +194,12 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
 
           <TouchableOpacity
             style={styles.toggleBtn}
-            onPress={() => setIsLogin(!isLogin)}
+            onPress={() => {
+              setIsLogin(!isLogin);
+              setError('');
+              setConfirmPassword('');
+              setAge('');
+            }}
           >
             <Text style={styles.toggleText}>
               {isLogin
@@ -152,6 +242,7 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 14, color: COLORS.muted, lineHeight: 20 },
   form: { gap: 16 },
   authBtn: { marginTop: 8 },
+  errorText: { color: '#EF4444', fontSize: 13, textAlign: 'center', marginTop: -4 },
   forgotBtn: { alignItems: 'center', paddingVertical: 4 },
   forgotText: { color: COLORS.muted, fontWeight: '500', fontSize: 13 },
   toggleBtn: { marginTop: 40, alignItems: 'center' },

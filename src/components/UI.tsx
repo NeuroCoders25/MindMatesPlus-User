@@ -83,7 +83,7 @@ interface InputProps {
   placeholder: string;
   value: string;
   onChangeText: (text: string) => void;
-  type?: 'text' | 'password' | 'email' | 'textarea';
+  type?: 'text' | 'password' | 'email' | 'textarea' | 'number';
   style?: StyleProp<TextStyle>;
 }
 
@@ -100,7 +100,7 @@ export const Input: React.FC<InputProps> = ({
     value={value}
     onChangeText={onChangeText}
     secureTextEntry={type === 'password'}
-    keyboardType={type === 'email' ? 'email-address' : 'default'}
+    keyboardType={type === 'email' ? 'email-address' : type === 'number' ? 'numeric' : 'default'}
     autoCapitalize={type === 'email' ? 'none' : 'sentences'}
     multiline={type === 'textarea'}
     numberOfLines={type === 'textarea' ? 5 : 1}
