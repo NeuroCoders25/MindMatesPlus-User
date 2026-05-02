@@ -6,16 +6,32 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Input, Button } from '../components/UI';
 import { COLORS } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
+import { useApp } from '../context/AppContext';
 
 export const FeedbackScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { submitFeedback } = useApp();
   const [peerFeedback, setPeerFeedback] = useState('');
   const [appFeedback, setAppFeedback] = useState('');
+  const [rating, setRating] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = () => {
-    Alert.alert('Thank you!', 'Your feedback has been submitted.', [
-      { text: 'OK', onPress: () => navigation.goBack() },
-    ]);
+  const handleSubmit = async () => {
+    if (rating === 0) {
+      Alert.alert('Rating required', 'Please select a star rating before submitting.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await submitFeedback(rating, peerFeedback, appFeedback);
+      Alert.alert('Thank you!', 'Your feedback has been submitted.', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch {
+      Alert.alert('Error', 'Failed to submit feedback. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -38,6 +54,22 @@ export const FeedbackScreen = () => {
       <Text style={styles.subtitle}>Share your experience on MindMates+</Text>
 
       <View style={styles.formCard}>
+        {/* Star Rating */}
+        <View style={styles.field}>
+          <Text style={styles.label}>Overall rating</Text>
+          <View style={styles.starsRow}>
+            {[1, 2, 3, 4, 5].map(star => (
+              <TouchableOpacity key={star} onPress={() => setRating(star)}>
+                <Ionicons
+                  name={star <= rating ? 'star' : 'star-outline'}
+                  size={32}
+                  color={star <= rating ? '#FACC15' : COLORS.muted}
+                />
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
         <View style={styles.field}>
           <Text style={styles.label}>Share your peer group experience</Text>
           <Input
@@ -62,8 +94,8 @@ export const FeedbackScreen = () => {
       </View>
 
       <View style={styles.submitRow}>
-        <Button onPress={handleSubmit} style={styles.submitBtn}>
-          Submit
+        <Button onPress={handleSubmit} style={styles.submitBtn} disabled={submitting}>
+          {submitting ? 'Submitting...' : 'Submit'}
         </Button>
       </View>
     </ScrollView>
@@ -109,5 +141,10 @@ const styles = StyleSheet.create({
     width: 180,
     backgroundColor: '#001B54',
     borderRadius: 28,
+  },
+  starsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingTop: 4,
   },
 });

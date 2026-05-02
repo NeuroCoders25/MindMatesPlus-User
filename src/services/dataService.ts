@@ -1,4 +1,4 @@
-import { Group, Dass21Result, Dass21SubscaleResult, JournalEntry } from '../types';
+import { Group, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
@@ -38,6 +38,22 @@ export const fetchJournalEntries = async (userId: string): Promise<JournalEntry[
 
 export const deleteJournalEntry = async (userId: string, entryId: string): Promise<void> => {
   await deleteDoc(doc(db, 'users', userId, 'journal_entries', entryId));
+};
+
+// ─── Feedback Firestore Functions ─────────────────────────────────────────────
+
+export const saveFeedback = async (
+  userId: string,
+  feedback: Omit<Feedback, 'id'>
+): Promise<string> => {
+  const ref = collection(db, 'users', userId, 'feedback');
+  const docRef = await addDoc(ref, {
+    rating: feedback.rating,
+    peer_comment: feedback.peerComment,
+    app_comment: feedback.appComment,
+    date: Timestamp.fromDate(feedback.date),
+  });
+  return docRef.id;
 };
 
 export const COLORS = {

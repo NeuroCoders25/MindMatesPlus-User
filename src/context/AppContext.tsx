@@ -9,8 +9,8 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
-import { saveJournalEntry, fetchJournalEntries, deleteJournalEntry } from '../services/dataService';
-import { User, Group, Message, JournalEntry, Dass21Result } from '../types';
+import { saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback } from '../services/dataService';
+import { User, Group, Message, JournalEntry, Dass21Result, Feedback } from '../types';
 import { encryptName, decryptName } from '../utils/encryption';
 
 interface AppContextType {
@@ -29,6 +29,7 @@ interface AppContextType {
   journalEntries: JournalEntry[];
   addJournalEntry: (title: string, content: string, mood: string) => Promise<void>;
   removeJournalEntry: (entryId: string) => Promise<void>;
+  submitFeedback: (rating: number, peerComment: string, appComment: string) => Promise<void>;
   groupMessages: Record<string, Message[]>;
   sendGroupMessage: (text: string, groupId: string) => void;
   aiMessages: Message[];
@@ -119,6 +120,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setJournalEntries(prev => prev.filter(e => e.id !== entryId));
   };
 
+  const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
+    if (!user) return;
+    await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
+  };
+
   const sendGroupMessage = (text: string, groupId: string) => {
     const newMsg: Message = {
       id: Date.now().toString(),
@@ -182,6 +188,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         assessmentScore, setAssessmentScore,
         dass21Result, setDass21Result,
         journalEntries, addJournalEntry, removeJournalEntry,
+        submitFeedback,
         groupMessages, sendGroupMessage,
         aiMessages, sendAiMessage,
         showCrisisAlert, setShowCrisisAlert,

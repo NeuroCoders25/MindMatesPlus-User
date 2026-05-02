@@ -59,3 +59,11 @@ export interface Dass21Result {
   reassessInDays: number;
   riskLevel: 'low' | 'moderate' | 'severe';
 }
+
+export interface Feedback {
+  id: string;
+  rating: number;
+  peerComment: string;
+  appComment: string;
+  date: Date;
+}
