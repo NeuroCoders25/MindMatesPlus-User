@@ -17,22 +17,48 @@ export const FeedbackScreen = () => {
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async () => {
-    if (rating === 0) {
-      Alert.alert('Rating required', 'Please select a star rating before submitting.');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await submitFeedback(rating, peerFeedback, appFeedback);
-      Alert.alert('Thank you!', 'Your feedback has been submitted.', [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
-    } catch {
-      Alert.alert('Error', 'Failed to submit feedback. Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  // Validate rating
+  if (rating === 0) {
+    Alert.alert('Rating Required', 'Please select a star rating before submitting.');
+    return;
+  }
+
+  // Validate peer feedback
+  if (!peerFeedback.trim()) {
+    Alert.alert('Feedback Required', 'Please share your peer group experience before submitting.');
+    return;
+  }
+
+  // Validate app feedback
+  if (!appFeedback.trim()) {
+    Alert.alert('Feedback Required', 'Please share your app experience before submitting.');
+    return;
+  }
+
+  setSubmitting(true);
+  try {
+    await submitFeedback(rating, peerFeedback, appFeedback);
+    Alert.alert('Thank you!', 'Your feedback has been submitted.', [
+      {
+        text: 'OK',
+        onPress: () =>
+          navigation.reset({
+            index: 0,
+            routes: [
+              {
+                name: 'Main',
+                state: { routes: [{ name: 'Profile' }], index: 4 },
+              },
+            ],
+          }),
+      },
+    ]);
+  } catch {
+    Alert.alert('Error', 'Failed to submit feedback. Please try again.');
+  } finally {
+    setSubmitting(false);
+  }
+};
 
   return (
     <ScrollView
