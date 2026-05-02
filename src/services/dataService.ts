@@ -1,9 +1,9 @@
-import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
-  setDoc, updateDoc, increment, getDoc,
+  setDoc, updateDoc, increment, getDoc, onSnapshot,
 } from 'firebase/firestore';
 
 // ─── Journal Firestore Functions ──────────────────────────────────────────────
@@ -429,3 +429,48 @@ export function computeDass21Result(answers: Record<number, number>): Dass21Resu
 
   return { answers, depression, anxiety, stress, group, groupCategory, groupColor, message, ctaLabel, ctaVariant, reassessInDays, riskLevel };
 }
+
+// ─── Group Chat Firestore Functions ───────────────────────────────────────────
+
+const CRISIS_KEYWORDS = ['hurt myself', 'end it', 'suicide', 'kill myself', 'self harm', 'want to die', 'no reason to live'];
+
+export const saveChatMessage = async (
+  groupId: string,
+  senderId: string,
+  senderName: string,
+  text: string
+): Promise<string> => {
+  const lower = text.toLowerCase();
+  const flagged = CRISIS_KEYWORDS.some(kw => lower.includes(kw));
+  const ref = collection(db, 'peer_groups', groupId, 'chatMessages');
+  const docRef = await addDoc(ref, {
+    senderId,
+    senderName,
+    text,
+    timestamp: Timestamp.now(),
+    flagged,
+  });
+  return docRef.id;
+};
+
+export const subscribeGroupMessages = (
+  groupId: string,
+  callback: (messages: Message[]) => void
+): (() => void) => {
+  const q = query(
+    collection(db, 'peer_groups', groupId, 'chatMessages'),
+    orderBy('timestamp', 'asc')
+  );
+  return onSnapshot(q, snapshot => {
+    const messages: Message[] = snapshot.docs.map(d => ({
+      id: d.id,
+      text: d.data().text,
+      sender: 'peer',
+      senderId: d.data().senderId as string,
+      senderName: d.data().senderName as string,
+      timestamp: (d.data().timestamp as Timestamp).toDate(),
+      flagged: d.data().flagged ?? false,
+    }));
+    callback(messages);
+  });
+};

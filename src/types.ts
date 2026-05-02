@@ -28,8 +28,10 @@ export interface Message {
   id: string;
   text: string;
   sender: 'user' | 'ai' | 'peer';
+  senderId?: string;
   senderName?: string;
   timestamp: Date;
+  flagged?: boolean;
 }
 
 export interface JournalEntry {

@@ -40,8 +40,6 @@ interface AppContextType {
   setMentalHealthProfile: (profile: MentalHealthProfile | null) => void;
   joinedGroupIds: string[];
   joinGroup: (groupId: string) => Promise<void>;
-  groupMessages: Record<string, Message[]>;
-  sendGroupMessage: (text: string, groupId: string) => void;
   aiMessages: Message[];
   sendAiMessage: (text: string) => void;
   showCrisisAlert: boolean;
@@ -67,7 +65,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [groupsLoading, setGroupsLoading] = useState(true);
   const [mentalHealthProfile, setMentalHealthProfile] = useState<MentalHealthProfile | null>(null);
   const [joinedGroupIds, setJoinedGroupIds] = useState<string[]>([]);
-  const [groupMessages, setGroupMessages] = useState<Record<string, Message[]>>({});
   const [aiMessages, setAiMessages] = useState<Message[]>([
     {
       id: '1',
@@ -161,32 +158,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
   };
 
-  const sendGroupMessage = (text: string, groupId: string) => {
-    const newMsg: Message = {
-      id: Date.now().toString(),
-      text,
-      sender: 'user',
-      timestamp: new Date(),
-    };
-    setGroupMessages(prev => ({
-      ...prev,
-      [groupId]: [...(prev[groupId] || []), newMsg],
-    }));
-    setTimeout(() => {
-      const peerResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        text: "I've felt that way too. You're not alone in this.",
-        sender: 'peer',
-        senderName: 'Sarah',
-        timestamp: new Date(),
-      };
-      setGroupMessages(prev => ({
-        ...prev,
-        [groupId]: [...(prev[groupId] || []), peerResponse],
-      }));
-    }, 2000);
-  };
-
   const sendAiMessage = (text: string) => {
     const newMsg: Message = {
       id: Date.now().toString(),
@@ -227,7 +198,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         joinedGroupIds, joinGroup,
         journalEntries, addJournalEntry, removeJournalEntry,
         submitFeedback,
-        groupMessages, sendGroupMessage,
         aiMessages, sendAiMessage,
         showCrisisAlert, setShowCrisisAlert,
       }}
