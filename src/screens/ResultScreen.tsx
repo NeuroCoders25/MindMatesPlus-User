@@ -39,7 +39,7 @@ export const ResultScreen: React.FC<Props> = ({ navigation }) => {
     );
   }
 
-  const { depression, anxiety, stress, group, groupLabel, groupColor, message, ctaLabel, ctaVariant, reassessInDays, riskLevel } = dass21Result;
+  const { depression, anxiety, stress, group, groupCategory, groupColor, message, ctaLabel, ctaVariant, reassessInDays, riskLevel } = dass21Result;
 
   const handleContinue = () => {
     if (user) {
@@ -77,7 +77,7 @@ export const ResultScreen: React.FC<Props> = ({ navigation }) => {
 
       {/* Overall group badge */}
       <View style={[styles.groupBadge, { backgroundColor: groupColor }]}>
-        <Text style={styles.groupBadgeText}>{groupLabel}</Text>
+        <Text style={styles.groupBadgeText}>{groupCategory}</Text>
       </View>
 
       {/* Description */}

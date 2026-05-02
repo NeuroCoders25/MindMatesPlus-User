@@ -9,7 +9,11 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
-import { saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback } from '../services/dataService';
+import {
+  saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
+  fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup,
+  fetchMentalHealthProfile, MentalHealthProfile,
+} from '../services/dataService';
 import { User, Group, Message, JournalEntry, Dass21Result, Feedback } from '../types';
 import { encryptName, decryptName } from '../utils/encryption';
 
@@ -30,6 +34,12 @@ interface AppContextType {
   addJournalEntry: (title: string, content: string, mood: string) => Promise<void>;
   removeJournalEntry: (entryId: string) => Promise<void>;
   submitFeedback: (rating: number, peerComment: string, appComment: string) => Promise<void>;
+  peerGroups: Group[];
+  groupsLoading: boolean;
+  mentalHealthProfile: MentalHealthProfile | null;
+  setMentalHealthProfile: (profile: MentalHealthProfile | null) => void;
+  joinedGroupIds: string[];
+  joinGroup: (groupId: string) => Promise<void>;
   groupMessages: Record<string, Message[]>;
   sendGroupMessage: (text: string, groupId: string) => void;
   aiMessages: Message[];
@@ -44,7 +54,6 @@ const mapFirebaseUser = (fbUser: FirebaseUser): User => ({
   id: fbUser.uid,
   name: decryptName(fbUser.displayName || '') || fbUser.email?.split('@')[0] || 'User',
   email: fbUser.email || '',
-  joinedGroups: [],
 });
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -54,6 +63,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [assessmentScore, setAssessmentScore] = useState(0);
   const [dass21Result, setDass21Result] = useState<Dass21Result | null>(null);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [peerGroups, setPeerGroups] = useState<Group[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(true);
+  const [mentalHealthProfile, setMentalHealthProfile] = useState<MentalHealthProfile | null>(null);
+  const [joinedGroupIds, setJoinedGroupIds] = useState<string[]>([]);
   const [groupMessages, setGroupMessages] = useState<Record<string, Message[]>>({});
   const [aiMessages, setAiMessages] = useState<Message[]>([
     {
@@ -69,11 +82,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
         setUser(mapFirebaseUser(fbUser));
-        const entries = await fetchJournalEntries(fbUser.uid);
+        setGroupsLoading(true);
+        const [entries, groups, joinedIds, profile] = await Promise.all([
+          fetchJournalEntries(fbUser.uid),
+          fetchPeerGroups(),
+          fetchUserJoinedGroupIds(fbUser.uid),
+          fetchMentalHealthProfile(fbUser.uid),
+        ]);
         setJournalEntries(entries);
+        setPeerGroups(groups);
+        setJoinedGroupIds(joinedIds);
+        setMentalHealthProfile(profile);
+        setGroupsLoading(false);
       } else {
         setUser(null);
         setJournalEntries([]);
+        setPeerGroups([]);
+        setMentalHealthProfile(null);
+        setJoinedGroupIds([]);
+        setGroupsLoading(false);
       }
       setAuthLoading(false);
     });
@@ -118,6 +145,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!user) return;
     await deleteJournalEntry(user.id, entryId);
     setJournalEntries(prev => prev.filter(e => e.id !== entryId));
+  };
+
+  const joinGroup = async (groupId: string) => {
+    if (!user) return;
+    await joinPeerGroup(user.id, groupId);
+    setJoinedGroupIds(prev => (prev.includes(groupId) ? prev : [...prev, groupId]));
+    setPeerGroups(prev =>
+      prev.map(g => g.id === groupId ? { ...g, members: g.members + 1 } : g)
+    );
   };
 
   const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
@@ -187,6 +223,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         selectedGroup, setSelectedGroup,
         assessmentScore, setAssessmentScore,
         dass21Result, setDass21Result,
+        peerGroups, groupsLoading, mentalHealthProfile, setMentalHealthProfile,
+        joinedGroupIds, joinGroup,
         journalEntries, addJournalEntry, removeJournalEntry,
         submitFeedback,
         groupMessages, sendGroupMessage,

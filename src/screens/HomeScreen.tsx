@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -6,23 +6,46 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { PEER_GROUPS, COLORS } from '../services/dataService';
+import { COLORS, getRecommendedGroups } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Group } from '../types';
 
 export const HomeScreen = () => {
-  const { user, setSelectedGroup } = useApp();
+  const { user, peerGroups, groupsLoading, mentalHealthProfile, joinedGroupIds, joinGroup, setSelectedGroup } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const [joiningId, setJoiningId] = useState<string | null>(null);
 
-  const handleGroupPress = (group: Group) => {
+  const recommended = getRecommendedGroups(peerGroups, mentalHealthProfile).slice(0, 4);
+
+  const handleJoin = async (group: Group) => {
+    setJoiningId(group.id);
+    try {
+      await joinGroup(group.id);
+      setSelectedGroup(group);
+      navigation.navigate('GroupChat', { groupId: group.id, groupName: group.name });
+    } finally {
+      setJoiningId(null);
+    }
+  };
+
+  const handleOpen = (group: Group) => {
     setSelectedGroup(group);
     navigation.navigate('GroupChat', { groupId: group.id, groupName: group.name });
+  };
+
+  const handleGroupPress = (group: Group) => {
+    if (joinedGroupIds.includes(group.id)) {
+      handleOpen(group);
+    } else {
+      handleJoin(group);
+    }
   };
 
   return (
@@ -58,38 +81,82 @@ export const HomeScreen = () => {
       {/* Recommended Groups */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Recommended Groups</Text>
-          <TouchableOpacity>
+          <View>
+            <Text style={styles.sectionTitle}>Recommended Groups</Text>
+            {mentalHealthProfile && (
+              <Text style={styles.categoryLabel}>{mentalHealthProfile.groupCategory}</Text>
+            )}
+          </View>
+          <TouchableOpacity onPress={() => navigation.navigate('Main')}>
             <Text style={styles.seeAll}>See All</Text>
           </TouchableOpacity>
         </View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.groupsRow}
-        >
-          {PEER_GROUPS.map(group => (
-            <Card
-              key={group.id}
-              style={styles.groupCard}
-              onPress={() => handleGroupPress(group)}
-            >
-              <Image
-                source={group.image}
-                style={styles.groupImage}
-                resizeMode="cover"
-              />
-              <Text style={styles.groupName}>{group.name}</Text>
-              <Text style={styles.groupDesc} numberOfLines={2}>
-                {group.description}
-              </Text>
-              <View style={styles.membersRow}>
-                <Ionicons name="people-outline" size={12} color={COLORS.accent} />
-                <Text style={styles.membersText}>{group.members} members</Text>
-              </View>
-            </Card>
-          ))}
-        </ScrollView>
+        {groupsLoading ? (
+          <View style={styles.groupsPlaceholder}>
+            <ActivityIndicator size="small" color={COLORS.accent} />
+            <Text style={styles.loadingText}>Loading groups…</Text>
+          </View>
+        ) : recommended.length === 0 ? (
+          <View style={styles.groupsPlaceholder}>
+            <Text style={styles.loadingText}>No groups found for your wellbeing category yet.</Text>
+          </View>
+        ) : (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.groupsRow}
+          >
+            {recommended.map(group => {
+              const isJoined = joinedGroupIds.includes(group.id);
+              const isLoading = joiningId === group.id;
+              return (
+                <Card
+                  key={group.id}
+                  style={styles.groupCard}
+                  onPress={() => handleGroupPress(group)}
+                >
+                  <Image
+                    source={group.image}
+                    style={styles.groupImage}
+                    resizeMode="cover"
+                  />
+                  <Text style={styles.groupName}>{group.name}</Text>
+                  <Text style={styles.groupDesc} numberOfLines={2}>
+                    {group.description}
+                  </Text>
+                  <View style={styles.groupFooter}>
+                    <View style={styles.membersRow}>
+                      <Ionicons name="people-outline" size={12} color={COLORS.accent} />
+                      <Text style={styles.membersText}>{group.members} members</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.joinBtn, isJoined && styles.joinBtnJoined]}
+                      onPress={() => handleGroupPress(group)}
+                      disabled={isLoading}
+                      activeOpacity={0.8}
+                    >
+                      {isLoading ? (
+                        <ActivityIndicator size="small" color="white" />
+                      ) : (
+                        <Text style={styles.joinBtnText}>
+                          {isJoined ? 'Open' : 'Join'}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </Card>
+              );
+            })}
+          </ScrollView>
+        )}
+        {mentalHealthProfile?.classificationLevel === 'severe' && (
+          <View style={styles.supportNotice}>
+            <Ionicons name="alert-circle-outline" size={16} color={COLORS.danger} />
+            <Text style={styles.supportNoticeText}>
+              Your wellbeing check suggests speaking with a professional advisor may help.
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Resources */}
@@ -157,8 +224,26 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   sectionTitle: { fontSize: 17, fontWeight: 'bold', color: COLORS.text },
+  categoryLabel: { fontSize: 11, color: COLORS.accent, fontWeight: '600', marginTop: 2 },
   seeAll: { fontSize: 13, color: COLORS.accent, fontWeight: '600' },
   groupsRow: { gap: 12, paddingRight: 4 },
+  groupsPlaceholder: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 20,
+  },
+  loadingText: { fontSize: 13, color: COLORS.muted },
+  supportNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 8,
+  },
+  supportNoticeText: { flex: 1, fontSize: 12, color: COLORS.danger, lineHeight: 18 },
   groupCard: { width: 220, padding: 16 },
   groupImage: { width: '100%', height: 120, borderRadius: 16, marginBottom: 12 },
   groupName: {
@@ -168,8 +253,23 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   groupDesc: { fontSize: 11, color: COLORS.muted, lineHeight: 16, marginBottom: 10 },
+  groupFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   membersRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   membersText: { fontSize: 11, color: COLORS.accent, fontWeight: '700' },
+  joinBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    minWidth: 46,
+    alignItems: 'center',
+  },
+  joinBtnJoined: { backgroundColor: COLORS.accent },
+  joinBtnText: { fontSize: 11, fontWeight: '700', color: 'white' },
   resourcesList: { gap: 12 },
   resourceCard: {
     flexDirection: 'row',

@@ -67,7 +67,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
         await login(email, password);
         const uid = auth.currentUser?.uid;
         if (uid) {
-          const profileSnap = await getDoc(doc(db, 'mentalHealthProfiles', uid));
+          const profileSnap = await getDoc(doc(db, 'users', uid, 'mentalHealthProfile', 'currentProfile'));
           navigation.replace(profileSnap.exists() ? 'Main' : 'Questionnaire');
         } else {
           navigation.replace('Main');
@@ -83,7 +83,6 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
             gender,
             age: parseInt(age, 10),
             createdAt: serverTimestamp(),
-            joinedGroups: [],
           });
         }
         navigation.replace('Questionnaire');

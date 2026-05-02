@@ -32,22 +32,20 @@ const saveToFirestore = async (
     totalScore:      result.depression.final + result.anxiety.final + result.stress.final,
   };
 
-  // One document per attempt — auto-generated response_id
-  await addDoc(collection(db, 'questionnaireResponses'), {
-    userId,
+  // One document per attempt — stored under the user's subcollection
+  await addDoc(collection(db, 'users', userId, 'questionnaireResponses'), {
     date:       serverTimestamp(),
     ...scores,
-    riskLevel:  result.riskLevel,   // user type
-    groupLabel: result.groupLabel,
+    riskLevel:     result.riskLevel,
+    groupCategory: result.groupCategory,
     answers,
   });
 
-  // One document per user — overwritten on each reassessment
-  await setDoc(doc(db, 'mentalHealthProfiles', userId), {
-    userId,
+  // Single document per user — overwritten on each reassessment
+  await setDoc(doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile'), {
     ...scores,
     classificationLevel: result.riskLevel,
-    groupLabel:          result.groupLabel,
+    groupCategory:       result.groupCategory,
     updatedAt:           serverTimestamp(),
   });
 };
