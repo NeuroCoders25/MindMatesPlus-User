@@ -1,4 +1,44 @@
-import { Group, Dass21Result, Dass21SubscaleResult } from '../types';
+import { Group, Dass21Result, Dass21SubscaleResult, JournalEntry } from '../types';
+import { db } from './firebaseConfig';
+import {
+  collection, addDoc, getDocs, deleteDoc,
+  doc, query, orderBy, Timestamp,
+} from 'firebase/firestore';
+
+// ─── Journal Firestore Functions ──────────────────────────────────────────────
+
+export const saveJournalEntry = async (
+  userId: string,
+  entry: Omit<JournalEntry, 'id'>
+): Promise<string> => {
+  const ref = collection(db, 'users', userId, 'journal_entries');
+  const docRef = await addDoc(ref, {
+    title: entry.title,
+    content: entry.content,
+    mood_tag: entry.mood,
+    date: Timestamp.fromDate(entry.timestamp),
+    analysis: entry.analysis ?? null,
+  });
+  return docRef.id;
+};
+
+export const fetchJournalEntries = async (userId: string): Promise<JournalEntry[]> => {
+  const ref = collection(db, 'users', userId, 'journal_entries');
+  const q = query(ref, orderBy('date', 'desc'));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map(d => ({
+    id: d.id,
+    title: d.data().title,
+    content: d.data().content,
+    mood: d.data().mood_tag,
+    timestamp: (d.data().date as Timestamp).toDate(),
+    analysis: d.data().analysis ?? undefined,
+  }));
+};
+
+export const deleteJournalEntry = async (userId: string, entryId: string): Promise<void> => {
+  await deleteDoc(doc(db, 'users', userId, 'journal_entries', entryId));
+};
 
 export const COLORS = {
   primary: '#0B1F5B',

@@ -9,6 +9,7 @@ import {
   User as FirebaseUser,
 } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
+import { saveJournalEntry, fetchJournalEntries, deleteJournalEntry } from '../services/dataService';
 import { User, Group, Message, JournalEntry, Dass21Result } from '../types';
 import { encryptName, decryptName } from '../utils/encryption';
 
@@ -26,7 +27,8 @@ interface AppContextType {
   dass21Result: Dass21Result | null;
   setDass21Result: (result: Dass21Result) => void;
   journalEntries: JournalEntry[];
-  addJournalEntry: (title: string, content: string, mood: string) => void;
+  addJournalEntry: (title: string, content: string, mood: string) => Promise<void>;
+  removeJournalEntry: (entryId: string) => Promise<void>;
   groupMessages: Record<string, Message[]>;
   sendGroupMessage: (text: string, groupId: string) => void;
   aiMessages: Message[];
@@ -63,8 +65,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [showCrisisAlert, setShowCrisisAlert] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
-      setUser(fbUser ? mapFirebaseUser(fbUser) : null);
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        setUser(mapFirebaseUser(fbUser));
+        const entries = await fetchJournalEntries(fbUser.uid);
+        setJournalEntries(entries);
+      } else {
+        setUser(null);
+        setJournalEntries([]);
+      }
       setAuthLoading(false);
     });
     return unsubscribe;
@@ -86,21 +95,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUser(null);
   };
 
-  const addJournalEntry = (title: string, content: string, mood: string) => {
-    const newEntry: JournalEntry = {
-      id: Date.now().toString(),
+  const addJournalEntry = async (title: string, content: string, mood: string) => {
+    if (!user) return;
+    const entryData: Omit<JournalEntry, 'id'> = {
       title,
       content,
       mood,
       timestamp: new Date(),
     };
-    setJournalEntries(prev => [newEntry, ...prev]);
+    const id = await saveJournalEntry(user.id, entryData);
+    setJournalEntries(prev => [{ ...entryData, id }, ...prev]);
     if (
       content.toLowerCase().includes('help') ||
       content.toLowerCase().includes('end it')
     ) {
       setTimeout(() => setShowCrisisAlert(true), 1000);
     }
+  };
+
+  const removeJournalEntry = async (entryId: string) => {
+    if (!user) return;
+    await deleteJournalEntry(user.id, entryId);
+    setJournalEntries(prev => prev.filter(e => e.id !== entryId));
   };
 
   const sendGroupMessage = (text: string, groupId: string) => {
@@ -165,7 +181,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         selectedGroup, setSelectedGroup,
         assessmentScore, setAssessmentScore,
         dass21Result, setDass21Result,
-        journalEntries, addJournalEntry,
+        journalEntries, addJournalEntry, removeJournalEntry,
         groupMessages, sendGroupMessage,
         aiMessages, sendAiMessage,
         showCrisisAlert, setShowCrisisAlert,
