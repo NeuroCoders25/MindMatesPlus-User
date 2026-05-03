@@ -7,6 +7,10 @@ import {
   StyleSheet,
   Animated,
   ScrollView,
+  TextInput,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { addDoc, collection, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -15,10 +19,47 @@ import { DASS_QUESTIONS, DASS_OPTIONS, computeDass21Result, COLORS } from '../se
 import { useApp } from '../context/AppContext';
 import { db } from '../services/firebaseConfig';
 import { Dass21Result } from '../types';
+import { askQuestionDoubt } from '../services/geminiService';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Questionnaire'>;
 
 const TOTAL = DASS_QUESTIONS.length; // 21
+
+// ─── Chatbot helpers ────────────────────────────────────────────────────
+
+const buildQuestionHelp = (questionText: string, subscale: 'depression' | 'anxiety' | 'stress') => {
+  const lower = questionText.toLowerCase();
+  let meaning = 'This item asks about how often this feeling happened over the past week.';
+  if (lower.includes('wind down') || lower.includes('relax') || lower.includes('agitated')) {
+    meaning = 'This item checks body tension and how hard it was to settle your mind or body.';
+  } else if (lower.includes('panic') || lower.includes('scared') || lower.includes('trembling') || lower.includes('breathing')) {
+    meaning = 'This item checks physical anxiety signs like panic feelings, fear, or body alarm reactions.';
+  } else if (lower.includes('nothing to look forward') || lower.includes('meaningless') || lower.includes('down-hearted')) {
+    meaning = 'This item checks low mood and hopeless thoughts during the week.';
+  }
+  const subscaleTip =
+    subscale === 'stress'
+      ? 'For stress items, think about irritability, pressure, and difficulty calming down.'
+      : subscale === 'anxiety'
+        ? 'For anxiety items, focus on fear, nervousness, and physical signs like heart racing or shakiness.'
+        : 'For depression items, focus on low mood, low motivation, and loss of positive feelings.';
+  return {
+    meaning,
+    tips: [
+      'Answer based on the past 7 days, not just today.',
+      subscaleTip,
+      'Choose the option that was true most often, even if not true every day.',
+      'If unsure between two choices, pick the lower one unless it happened frequently.',
+    ],
+  };
+};
+
+const OPTION_GUIDE = [
+  '0: Did not apply to me at all (never or almost never this week).',
+  '1: Applied to me to some degree (once or occasionally).',
+  '2: Applied to me to a considerable degree (many times this week).',
+  '3: Applied to me very much or most of the time (nearly every day/intense).',
+];
 
 const saveToFirestore = async (
   userId: string,
@@ -51,12 +92,39 @@ const saveToFirestore = async (
 };
 
 export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
-  const { setDass21Result, user } = useApp();
+  const { setDass21Result, prepareSupportChatFromDass, user } = useApp();
   const [showInstructions, setShowInstructions] = useState(true);
   const [currentStep, setCurrentStep] = useState(0); // 0-indexed; 0 = Q1
   const [answers, setAnswers] = useState<Record<number, number>>({});
+  const [showHelper, setShowHelper] = useState(false);
+  const [doubtInput, setDoubtInput] = useState('');
+  const [geminiReply, setGeminiReply] = useState<string | null>(null);
+  const [askingGemini, setAskingGemini] = useState(false);
   const opacity = useRef(new Animated.Value(1)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
+
+  const currentQuestion = DASS_QUESTIONS[currentStep];
+  const helperContent = buildQuestionHelp(currentQuestion.text, currentQuestion.subscale);
+
+  const handleOpenHelper = () => {
+    setGeminiReply(null);
+    setDoubtInput('');
+    setShowHelper(v => !v);
+  };
+
+  const handleAskGemini = async () => {
+    if (askingGemini) return;
+    setAskingGemini(true);
+    setGeminiReply(null);
+    const reply = await askQuestionDoubt(
+      doubtInput,
+      currentQuestion.text,
+      currentQuestion.subscale,
+      currentStep + 1,
+    );
+    setAskingGemini(false);
+    setGeminiReply(reply ?? (helperContent.meaning + '\n\n' + helperContent.tips.join('\n')));
+  };
 
   const progressWidth = progressAnim.interpolate({
     inputRange: [0, 100],
@@ -92,6 +160,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
       } else {
         const result = computeDass21Result(newAnswers);
         setDass21Result(result);
+        prepareSupportChatFromDass(result);
         if (user?.id) {
           saveToFirestore(user.id, newAnswers, result).catch(console.error);
         }
@@ -142,7 +211,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
       <Text style={styles.title}>Mental Wellness Check</Text>
 
       <Animated.View style={[styles.questionBlock, { opacity }]}>
-        <Text style={styles.question}>{DASS_QUESTIONS[currentStep].text}</Text>
+        <Text style={styles.question}>{currentQuestion.text}</Text>
         <ScrollView
           style={styles.optionsScroll}
           contentContainerStyle={styles.optionsContent}
@@ -161,21 +230,78 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
         </ScrollView>
       </Animated.View>
 
-      {/* Floating assistant — shown on every question screen */}
+      {/* Floating assistant */}
       <View style={styles.chatbotRow}>
-        <View style={styles.chatBubble}>
-          <Text style={styles.chatBubbleText}>
-            Are you struggling to select the right answer? I'm here to help you.
-          </Text>
-        </View>
-        <Image
-          source={{
-            uri: 'https://res.cloudinary.com/dov6pvinq/image/upload/v1773962201/c3bnxufurgzmcllpzgql.png',
-          }}
-          style={styles.chatbot}
-          resizeMode="contain"
-        />
+        <TouchableOpacity
+          onPress={handleOpenHelper}
+          activeOpacity={0.85}
+          style={styles.chatbotBtn}
+        >
+          <View style={styles.chatBubble}>
+            <Text style={styles.chatBubbleText}>Need help choosing an answer?</Text>
+          </View>
+          <Image
+            source={{
+              uri: 'https://res.cloudinary.com/dov6pvinq/image/upload/v1773962201/c3bnxufurgzmcllpzgql.png',
+            }}
+            style={styles.chatbot}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
       </View>
+
+      {showHelper && (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.helperCard}
+        >
+          <View style={styles.helperHeader}>
+            <Text style={styles.helperTitle}>Mindy Question Helper</Text>
+            <TouchableOpacity onPress={() => setShowHelper(false)}>
+              <Text style={styles.helperCloseX}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            style={styles.helperScroll}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text style={styles.helperBody}>{helperContent.meaning}</Text>
+            <View style={styles.helperDivider} />
+            {OPTION_GUIDE.map(row => (
+              <Text key={row} style={styles.optionGuideText}>{row}</Text>
+            ))}
+            {geminiReply && (
+              <View style={styles.geminiReplyBox}>
+                <Text style={styles.geminiReplyLabel}>Mindy says:</Text>
+                <Text style={styles.geminiReplyText}>{geminiReply}</Text>
+              </View>
+            )}
+          </ScrollView>
+          <View style={styles.askRow}>
+            <TextInput
+              style={styles.askInput}
+              placeholder="Type your doubt about this question…"
+              placeholderTextColor={COLORS.muted}
+              value={doubtInput}
+              onChangeText={setDoubtInput}
+              returnKeyType="send"
+              onSubmitEditing={handleAskGemini}
+            />
+            <TouchableOpacity
+              onPress={handleAskGemini}
+              style={[styles.askBtn, askingGemini && { opacity: 0.6 }]}
+              activeOpacity={0.85}
+              disabled={askingGemini}
+            >
+              {askingGemini
+                ? <ActivityIndicator size="small" color="white" />
+                : <Text style={styles.askBtnText}>Ask</Text>
+              }
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      )}
     </View>
   );
 };
@@ -254,6 +380,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
   },
+  chatbotBtn: { flexDirection: 'row', alignItems: 'flex-end' },
   chatBubble: {
     backgroundColor: '#3370B0',
     borderRadius: 14,
@@ -265,4 +392,72 @@ const styles = StyleSheet.create({
   },
   chatBubbleText: { color: 'white', fontSize: 10, fontWeight: '500', lineHeight: 14 },
   chatbot: { width: 80, height: 80 },
+
+  // Helper card
+  helperCard: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    bottom: 16,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#DCEBFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 8,
+    maxHeight: '65%',
+  },
+  helperHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  helperTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+  helperCloseX: { fontSize: 16, color: COLORS.muted, paddingHorizontal: 4 },
+  helperScroll: { flexGrow: 0, marginBottom: 10 },
+  helperBody: { fontSize: 13, color: COLORS.muted, lineHeight: 20, marginBottom: 8 },
+  helperDivider: { height: 1, backgroundColor: '#E6EEF8', marginVertical: 10 },
+  optionGuideText: { fontSize: 12, color: COLORS.muted, lineHeight: 18 },
+  geminiReplyBox: {
+    marginTop: 12,
+    backgroundColor: '#EEF4FF',
+    borderRadius: 12,
+    padding: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.primary,
+  },
+  geminiReplyLabel: { fontSize: 11, fontWeight: '700', color: COLORS.primary, marginBottom: 4 },
+  geminiReplyText: { fontSize: 13, color: COLORS.text, lineHeight: 20 },
+  askRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#E6EEF8',
+    paddingTop: 10,
+  },
+  askInput: {
+    flex: 1,
+    backgroundColor: '#F5F8FF',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: COLORS.text,
+  },
+  askBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minWidth: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  askBtnText: { color: COLORS.white, fontWeight: '700', fontSize: 13 },
 });

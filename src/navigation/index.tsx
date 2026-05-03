@@ -65,11 +65,13 @@ const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
 // ─── Main Tabs ────────────────────────────────────────────────────────────────
 
 const MainTabs = () => {
-  const { showCrisisAlert, setShowCrisisAlert } = useApp();
+  const { showCrisisAlert, setShowCrisisAlert, dass21Result } = useApp();
+  const initialTab = dass21Result ? 'AIChat' : 'Home';
 
   return (
     <>
       <MainTab.Navigator
+        initialRouteName={initialTab}
         screenOptions={({ route }) => {
           const [active, inactive] = TAB_ICONS[route.name] ?? [
             'home',
