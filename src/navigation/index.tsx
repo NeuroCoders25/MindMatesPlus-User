@@ -65,8 +65,8 @@ const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
 // ─── Main Tabs ────────────────────────────────────────────────────────────────
 
 const MainTabs = () => {
-  const { showCrisisAlert, setShowCrisisAlert, dass21Result } = useApp();
-  const initialTab = dass21Result ? 'AIChat' : 'Home';
+  const { showCrisisAlert, setShowCrisisAlert } = useApp();
+  const initialTab = 'Home';
 
   return (
     <>
