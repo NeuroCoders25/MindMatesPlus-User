@@ -1,4 +1,4 @@
-import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
@@ -19,6 +19,7 @@ export const saveJournalEntry = async (
     mood_tag: entry.mood,
     date: Timestamp.fromDate(entry.timestamp),
     analysis: entry.analysis ?? null,
+    ml_analysis: entry.mlAnalysis ?? null,
   });
   return docRef.id;
 };
@@ -472,5 +473,164 @@ export const subscribeGroupMessages = (
       flagged: d.data().flagged ?? false,
     }));
     callback(messages);
+  });
+};
+
+// ─── ML Recommendation Category Map ──────────────────────────────────────────
+
+// Maps BERT prediction labels to user-facing support category names
+export const ML_CATEGORY_MAP: Record<string, string> = {
+  depression: 'Depression Support',
+  anxiety: 'Anxiety Support',
+  normal: 'General Wellbeing',
+};
+
+// Maps each BERT prediction label to a single GroupCategory for group filtering.
+// depression → peer support for moderate wellbeing concerns (ML has no explicit severity)
+// anxiety    → stress-focused wellness groups
+// normal     → general thriving/wellness groups
+export const ML_TO_PRIMARY_CATEGORY: Record<string, GroupCategory> = {
+  depression: 'Moderate Support',
+  anxiety:    'Wellness - Stress Aware',
+  normal:     'Wellness - Thriving',
+};
+
+export const getGroupsByMlPrediction = (groups: Group[], prediction: string): Group[] => {
+  const category = ML_TO_PRIMARY_CATEGORY[prediction] ?? ML_TO_PRIMARY_CATEGORY['normal'];
+  const matched = groups.filter(g => g.category === category);
+  return matched.length > 0 ? matched : groups;
+};
+
+// Returns the single GroupCategory that corresponds to an ML dominant category string.
+export const getMlGroupCategory = (dominantCategory: string): GroupCategory =>
+  ML_TO_PRIMARY_CATEGORY[dominantCategory] ?? 'Wellness - Thriving';
+
+// ─── Resources Firestore Functions ───────────────────────────────────────────
+
+export const fetchResources = async (category?: string): Promise<Resource[]> => {
+  const ref = collection(db, 'resources');
+  const q = category
+    ? query(ref, where('category', '==', category))
+    : query(ref);
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({
+    id: d.id,
+    title: d.data().title as string,
+    category: d.data().category as string,
+    type: d.data().type as string,
+    content: d.data().content as string | undefined,
+    url: d.data().url as string | undefined,
+    createdAt: (d.data().createdAt as Timestamp).toDate(),
+  }));
+};
+
+// ─── ML Mental Health Profile (journal-based) ─────────────────────────────────
+
+// Reads up to the 10 most recent journal entries that have ML results,
+// counts prediction categories, finds the dominant one, then persists
+// the profile as a field on the user's Firestore document.
+export const updateMlMentalHealthProfile = async (
+  userId: string,
+  entries: JournalEntry[]
+): Promise<MlMentalHealthProfile> => {
+  const recent = entries.filter(e => e.mlAnalysis).slice(0, 10);
+  let depressionCount = 0;
+  let anxietyCount = 0;
+  let normalCount = 0;
+  let latestPrediction = 'normal';
+  let latestConfidence = 0;
+
+  recent.forEach((entry, i) => {
+    const p = entry.mlAnalysis!.prediction;
+    if (i === 0) {
+      latestPrediction = p;
+      latestConfidence = entry.mlAnalysis!.confidence;
+    }
+    if (p === 'depression') depressionCount++;
+    else if (p === 'anxiety') anxietyCount++;
+    else normalCount++;
+  });
+
+  let dominantCategory = 'normal';
+  if (depressionCount > 0 && depressionCount >= anxietyCount && depressionCount >= normalCount) {
+    dominantCategory = 'depression';
+  } else if (anxietyCount > 0 && anxietyCount >= normalCount) {
+    dominantCategory = 'anxiety';
+  }
+
+  const profile: MlMentalHealthProfile = {
+    latestPrediction,
+    latestConfidence,
+    dominantCategory,
+    depressionCount,
+    anxietyCount,
+    normalCount,
+    lastUpdated: new Date(),
+  };
+
+  await setDoc(doc(db, 'users', userId), {
+    mlMentalHealthProfile: {
+      latestPrediction: profile.latestPrediction,
+      latestConfidence: profile.latestConfidence,
+      dominantCategory: profile.dominantCategory,
+      depressionCount: profile.depressionCount,
+      anxietyCount: profile.anxietyCount,
+      normalCount: profile.normalCount,
+      lastUpdated: Timestamp.now(),
+    },
+  }, { merge: true });
+
+  return profile;
+};
+
+// ─── KNN Input Builder (prepared for future KNN model — not executed yet) ────
+
+export const buildKnnInput = (
+  dass21Result: Dass21Result | null,
+  mlProfile: MlMentalHealthProfile
+): KnnInput => {
+  const dassScore = dass21Result
+    ? dass21Result.depression.final + dass21Result.anxiety.final + dass21Result.stress.final
+    : 0;
+  return {
+    dassScore,
+    latestPrediction: mlProfile.latestPrediction,
+    dominantCategory: mlProfile.dominantCategory,
+    depressionCount: mlProfile.depressionCount,
+    anxietyCount: mlProfile.anxietyCount,
+    normalCount: mlProfile.normalCount,
+    preferredGroupCategory: ML_CATEGORY_MAP[mlProfile.dominantCategory] ?? 'General Wellbeing',
+  };
+};
+
+// ─── Realtime ML Mental Health Profile Listener ───────────────────────────────
+
+// Attaches an onSnapshot listener to the user document and extracts the
+// mlMentalHealthProfile field. Fires immediately with current data, then
+// again whenever the field changes (e.g. after a new journal entry is saved).
+// Returns an unsubscribe function — call it in a useEffect cleanup.
+export const subscribeToMlMentalHealthProfile = (
+  userId: string,
+  callback: (profile: MlMentalHealthProfile | null) => void
+): (() => void) => {
+  return onSnapshot(doc(db, 'users', userId), (snap) => {
+    if (!snap.exists()) {
+      callback(null);
+      return;
+    }
+    const raw = snap.data().mlMentalHealthProfile;
+    if (!raw) {
+      callback(null);
+      return;
+    }
+    callback({
+      latestPrediction: raw.latestPrediction ?? 'normal',
+      latestConfidence: raw.latestConfidence ?? 0,
+      dominantCategory: raw.dominantCategory ?? 'normal',
+      depressionCount: raw.depressionCount ?? 0,
+      anxietyCount: raw.anxietyCount ?? 0,
+      normalCount: raw.normalCount ?? 0,
+      lastUpdated: raw.lastUpdated?.toDate() ?? new Date(),
+    });
   });
 };

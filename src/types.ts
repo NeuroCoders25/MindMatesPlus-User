@@ -46,6 +46,15 @@ export interface JournalEntry {
     risk: 'Low' | 'Moderate' | 'High';
     score: number;
   };
+  mlAnalysis?: {
+    prediction: string;
+    confidence: number;
+    probabilities: {
+      depression: number;
+      anxiety: number;
+      normal: number;
+    };
+  };
 }
 
 export interface Dass21SubscaleResult {
@@ -76,4 +85,36 @@ export interface Feedback {
   peerComment: string;
   appComment: string;
   date: Date;
+}
+
+export interface Resource {
+  id: string;
+  title: string;
+  category: string;  // matches ML prediction: 'depression' | 'anxiety' | 'normal'
+  type: string;      // e.g. 'article' | 'video' | 'exercise'
+  content?: string;
+  url?: string;
+  createdAt: Date;
+}
+
+// Built from recent journal ML predictions — stored on the user document
+export interface MlMentalHealthProfile {
+  latestPrediction: string;
+  latestConfidence: number;
+  dominantCategory: string;
+  depressionCount: number;
+  anxietyCount: number;
+  normalCount: number;
+  lastUpdated: Date;
+}
+
+// Input shape prepared for future KNN model — not used for inference yet
+export interface KnnInput {
+  dassScore: number;
+  latestPrediction: string;
+  dominantCategory: string;
+  depressionCount: number;
+  anxietyCount: number;
+  normalCount: number;
+  preferredGroupCategory: string;
 }

@@ -10,8 +10,9 @@ import {
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { Input, Card, Button } from '../components/UI';
-import { COLORS } from '../services/dataService';
+import { COLORS, ML_CATEGORY_MAP } from '../services/dataService';
 import { JournalEntry } from '../types';
+import { predictText, MlPredictResponse } from '../services/mlApiService';
 
 interface AnalysisResult {
   sentiment: string;
@@ -40,28 +41,44 @@ export const JournalScreen = () => {
   const [selectedMood, setSelectedMood] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [mlResult, setMlResult] = useState<MlPredictResponse | null>(null);
+  const [mlError, setMlError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<JournalEntry | null>(null);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!content.trim()) return;
     setIsAnalyzing(true);
-    setTimeout(() => {
+    setMlError(null);
+
+    let mlAnalysis: MlPredictResponse | undefined;
+
+    try {
+      mlAnalysis = await predictText(content);
+      console.log('ML prediction result:', mlAnalysis);
       const result: AnalysisResult = {
-        sentiment: 'Positive',
-        emotion: 'Hopeful',
-        risk: 'Low',
-        score: 0.85,
+        emotion: ML_CATEGORY_MAP[mlAnalysis.prediction] ?? mlAnalysis.prediction,
+        sentiment: `${(mlAnalysis.confidence * 100).toFixed(0)}% confident`,
+        risk: mlAnalysis.prediction === 'normal' ? 'Low' : 'Moderate',
+        score: mlAnalysis.confidence,
       };
-      setIsAnalyzing(false);
       setAnalysis(result);
-      addJournalEntry(title || 'Untitled Entry', content, selectedMood || 'neutral');
-      setTimeout(() => {
-        setTitle('');
-        setContent('');
-        setSelectedMood('');
-        setAnalysis(null);
-      }, 3000);
-    }, 2000);
+      setMlResult(mlAnalysis);
+    } catch (err) {
+      console.error('ML API error:', err);
+      setMlError('Analysis service unavailable. Your entry has been saved.');
+    }
+
+    setIsAnalyzing(false);
+    await addJournalEntry(title || 'Untitled Entry', content, selectedMood || 'neutral', mlAnalysis);
+
+    setTimeout(() => {
+      setTitle('');
+      setContent('');
+      setSelectedMood('');
+      setAnalysis(null);
+      setMlResult(null);
+      setMlError(null);
+    }, 3000);
   };
 
   const riskBarColor = (risk: string, level: number) => {
@@ -129,6 +146,14 @@ export const JournalScreen = () => {
           </View>
         </Card>
 
+        {/* ML API error message */}
+        {mlError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={16} color="#F87171" />
+            <Text style={styles.errorText}>{mlError}</Text>
+          </View>
+        )}
+
         {/* AI Insight */}
         {analysis && (
           <View style={styles.insightCard}>
@@ -163,6 +188,20 @@ export const JournalScreen = () => {
                 ))}
               </View>
             </View>
+
+            {/* Probabilities breakdown */}
+            {mlResult && (
+              <View style={styles.probRow}>
+                {(['depression', 'anxiety', 'normal'] as const).map(key => (
+                  <View key={key} style={styles.probCell}>
+                    <Text style={styles.probLabel}>{ML_CATEGORY_MAP[key]}</Text>
+                    <Text style={styles.probValue}>
+                      {(mlResult.probabilities[key] * 100).toFixed(0)}%
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
         )}
 
@@ -414,4 +453,39 @@ const styles = StyleSheet.create({
     maxHeight: 240,
   },
   modalBodyText: { fontSize: 14, color: COLORS.text, lineHeight: 22 },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  errorText: { fontSize: 13, color: '#DC2626', flex: 1 },
+  probRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  probCell: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
+    padding: 10,
+    alignItems: 'center',
+    gap: 2,
+  },
+  probLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.6)',
+    textAlign: 'center',
+    letterSpacing: 0.5,
+  },
+  probValue: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: 'white',
+  },
 });

@@ -13,7 +13,11 @@ import {
   saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
   fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup,
   fetchMentalHealthProfile, MentalHealthProfile,
-} from '../services/dataService';import { sendSupportMessage } from '../services/geminiService';import { User, Group, Message, JournalEntry, Dass21Result, Feedback } from '../types';
+  updateMlMentalHealthProfile, addMlAnalysis,
+} from '../services/dataService';
+import { sendSupportMessage } from '../services/geminiService';
+import { predictText, MlPredictResponse } from '../services/mlApiService';
+import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile } from '../types';
 import { encryptName, decryptName } from '../utils/encryption';
 
 interface AppContextType {
@@ -31,7 +35,7 @@ interface AppContextType {
   setDass21Result: (result: Dass21Result) => void;
   prepareSupportChatFromDass: (result: Dass21Result) => void;
   journalEntries: JournalEntry[];
-  addJournalEntry: (title: string, content: string, mood: string) => Promise<void>;
+  addJournalEntry: (title: string, content: string, mood: string, mlAnalysis?: MlPredictResponse) => Promise<void>;
   removeJournalEntry: (entryId: string) => Promise<void>;
   submitFeedback: (rating: number, peerComment: string, appComment: string) => Promise<void>;
   peerGroups: Group[];
@@ -40,6 +44,7 @@ interface AppContextType {
   setMentalHealthProfile: (profile: MentalHealthProfile | null) => void;
   joinedGroupIds: string[];
   joinGroup: (groupId: string) => Promise<void>;
+  mlMentalHealthProfile: MlMentalHealthProfile | null;
   aiMessages: Message[];
   sendAiMessage: (text: string) => Promise<void>;
   showCrisisAlert: boolean;
@@ -117,6 +122,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [groupsLoading, setGroupsLoading] = useState(true);
   const [mentalHealthProfile, setMentalHealthProfile] = useState<MentalHealthProfile | null>(null);
   const [joinedGroupIds, setJoinedGroupIds] = useState<string[]>([]);
+  const [mlMentalHealthProfile, setMlMentalHealthProfile] = useState<MlMentalHealthProfile | null>(null);
   const [aiMessages, setAiMessages] = useState<Message[]>([
     {
       id: '1',
@@ -148,6 +154,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setJournalEntries([]);
         setPeerGroups([]);
         setMentalHealthProfile(null);
+        setMlMentalHealthProfile(null);
         setJoinedGroupIds([]);
         setGroupsLoading(false);
       }
@@ -172,16 +179,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUser(null);
   };
 
-  const addJournalEntry = async (title: string, content: string, mood: string) => {
+  const addJournalEntry = async (title: string, content: string, mood: string, mlAnalysis?: MlPredictResponse) => {
     if (!user) return;
     const entryData: Omit<JournalEntry, 'id'> = {
       title,
       content,
       mood,
       timestamp: new Date(),
+      mlAnalysis,
     };
     const id = await saveJournalEntry(user.id, entryData);
-    setJournalEntries(prev => [{ ...entryData, id }, ...prev]);
+    const updatedEntries = [{ ...entryData, id }, ...journalEntries];
+    setJournalEntries(updatedEntries);
+
+    if (mlAnalysis) {
+      updateMlMentalHealthProfile(user.id, updatedEntries)
+        .then(profile => setMlMentalHealthProfile(profile))
+        .catch(err => console.error('ML profile update failed:', err));
+    }
+
     if (
       content.toLowerCase().includes('help') ||
       content.toLowerCase().includes('end it')
@@ -207,7 +223,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
     if (!user) return;
-    await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
+    const feedbackId = await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
+
+    // Analyze feedback text via BERT ML to contribute to ML mental health profile
+    const textToAnalyze = [peerComment, appComment].filter(t => t.trim().length > 0).join(' ');
+    if (textToAnalyze.trim().length > 10) {
+      try {
+        const mlResult = await predictText(textToAnalyze);
+        await addMlAnalysis(user.id, {
+          source_type: 'feedback',
+          source_id: feedbackId,
+          emotion_detected: mlResult.prediction,
+          emotion_score: mlResult.confidence,
+          predicted_condition: mlResult.prediction,
+          confidence_score: mlResult.confidence,
+        });
+        // Rebuild ML profile treating feedback as a synthetic journal entry signal
+        const syntheticEntry = {
+          id: feedbackId,
+          title: 'Feedback',
+          content: textToAnalyze,
+          mood: 'neutral',
+          timestamp: new Date(),
+          mlAnalysis: mlResult,
+        };
+        const allEntries = [syntheticEntry, ...journalEntries];
+        updateMlMentalHealthProfile(user.id, allEntries)
+          .then(profile => setMlMentalHealthProfile(profile))
+          .catch(err => console.error('ML profile update from feedback failed:', err));
+      } catch (err) {
+        console.error('Feedback ML analysis failed:', err);
+      }
+    }
   };
 
   const prepareSupportChatFromDass = (result: Dass21Result) => {
@@ -265,6 +312,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         dass21Result, setDass21Result,
         prepareSupportChatFromDass,
         peerGroups, groupsLoading, mentalHealthProfile, setMentalHealthProfile,
+        mlMentalHealthProfile,
         joinedGroupIds, joinGroup,
         journalEntries, addJournalEntry, removeJournalEntry,
         submitFeedback,

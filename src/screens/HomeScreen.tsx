@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -13,16 +13,76 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { COLORS, getRecommendedGroups } from '../services/dataService';
+import { COLORS, getRecommendedGroups, getGroupsByMlPrediction, getMlGroupCategory, ML_CATEGORY_MAP, subscribeToMlMentalHealthProfile } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
-import { Group } from '../types';
+import { Group, MlMentalHealthProfile } from '../types';
+
+// ─── Colour helpers for ML insight categories ─────────────────────────────────
+
+const INSIGHT_COLORS: Record<string, { accent: string; bg: string; border: string }> = {
+  depression: { accent: '#EF4444', bg: 'rgba(239,68,68,0.08)',  border: '#EF4444' },
+  anxiety:    { accent: '#F59E0B', bg: 'rgba(245,158,11,0.08)', border: '#F59E0B' },
+  normal:     { accent: '#22C55E', bg: 'rgba(34,197,94,0.08)',  border: '#22C55E' },
+};
+
+const formatRelativeTime = (date: Date): string => {
+  const mins = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+// ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
   const { user, peerGroups, groupsLoading, mentalHealthProfile, joinedGroupIds, joinGroup, setSelectedGroup } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [joiningId, setJoiningId] = useState<string | null>(null);
+  const [mlInsight, setMlInsight] = useState<MlMentalHealthProfile | null>(null);
+  const [insightLoading, setInsightLoading] = useState(true);
 
-  const recommended = getRecommendedGroups(peerGroups, mentalHealthProfile).slice(0, 4);
+  // Attach a realtime Firestore listener as soon as we have a logged-in user.
+  // onSnapshot fires immediately with cached/current data, then again on any
+  // change — so the card updates the moment a new journal entry is analysed.
+  useEffect(() => {
+    if (!user) return;
+    const unsubscribe = subscribeToMlMentalHealthProfile(user.id, (profile) => {
+      setMlInsight(profile);
+      setInsightLoading(false);
+    });
+    return unsubscribe; // detaches the listener when the component unmounts
+  }, [user?.id]);
+
+  // Path 1 (DASS): severe/extremely severe → advisor redirect, no groups
+  const isDassAdvisorRequired = mentalHealthProfile?.groupCategory === 'Severe Support';
+
+  // Path 1 (DASS): filter groups by DASS-derived category when not severe
+  // Path 2 (ML):   fall back to ML dominant category when DASS profile is absent
+  const recommended: Group[] = (() => {
+    if (isDassAdvisorRequired) return [];
+    if (mentalHealthProfile) {
+      return getRecommendedGroups(peerGroups, mentalHealthProfile).slice(0, 4);
+    }
+    if (mlInsight) {
+      return getGroupsByMlPrediction(peerGroups, mlInsight.dominantCategory).slice(0, 4);
+    }
+    return [];
+  })();
+
+  // Label shown under the section title to indicate which path is active
+  const recommendationSource: 'dass' | 'ml' | null =
+    isDassAdvisorRequired ? null :
+    mentalHealthProfile ? 'dass' :
+    mlInsight ? 'ml' : null;
+
+  const recommendationCategoryLabel =
+    recommendationSource === 'dass'
+      ? mentalHealthProfile!.groupCategory
+      : recommendationSource === 'ml'
+      ? getMlGroupCategory(mlInsight!.dominantCategory)
+      : null;
 
   const handleJoin = async (group: Group) => {
     setJoiningId(group.id);
@@ -83,22 +143,52 @@ export const HomeScreen = () => {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Recommended Groups</Text>
-            {mentalHealthProfile && (
-              <Text style={styles.categoryLabel}>{mentalHealthProfile.groupCategory}</Text>
+            {recommendationCategoryLabel && (
+              <Text style={styles.categoryLabel}>
+                {recommendationCategoryLabel}
+                {recommendationSource === 'ml' ? '  •  Based on your activity' : '  •  Based on your wellbeing check'}
+              </Text>
             )}
           </View>
-          <TouchableOpacity onPress={() => navigation.navigate('Main')}>
-            <Text style={styles.seeAll}>See All</Text>
-          </TouchableOpacity>
+          {!isDassAdvisorRequired && (
+            <TouchableOpacity onPress={() => navigation.navigate('Main')}>
+              <Text style={styles.seeAll}>See All</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        {groupsLoading ? (
+
+        {/* Severe DASS case: redirect to advisor instead of showing groups */}
+        {isDassAdvisorRequired ? (
+          <View style={styles.advisorRedirectCard}>
+            <Ionicons name="alert-circle" size={32} color={COLORS.danger} />
+            <Text style={styles.advisorRedirectTitle}>Professional Support Recommended</Text>
+            <Text style={styles.advisorRedirectText}>
+              Your wellbeing check indicates a high level of distress. We recommend speaking with a professional advisor rather than joining a peer group at this time.
+            </Text>
+            <TouchableOpacity
+              style={styles.advisorRedirectBtn}
+              onPress={() => navigation.navigate('Advisor')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="call-outline" size={14} color="white" />
+              <Text style={styles.advisorRedirectBtnText}>Connect with Advisor</Text>
+            </TouchableOpacity>
+            <Text style={styles.advisorDisclaimer}>
+              AI suggestion only — not professional advice
+            </Text>
+          </View>
+        ) : groupsLoading ? (
           <View style={styles.groupsPlaceholder}>
             <ActivityIndicator size="small" color={COLORS.accent} />
             <Text style={styles.loadingText}>Loading groups…</Text>
           </View>
         ) : recommended.length === 0 ? (
           <View style={styles.groupsPlaceholder}>
-            <Text style={styles.loadingText}>No groups found for your wellbeing category yet.</Text>
+            <Text style={styles.loadingText}>
+              {!mentalHealthProfile && !mlInsight
+                ? 'Complete your wellbeing check or write a journal entry to get group recommendations.'
+                : 'No groups found for your wellbeing category yet.'}
+            </Text>
           </View>
         ) : (
           <ScrollView
@@ -149,15 +239,91 @@ export const HomeScreen = () => {
             })}
           </ScrollView>
         )}
-        {mentalHealthProfile?.classificationLevel === 'severe' && (
-          <View style={styles.supportNotice}>
-            <Ionicons name="alert-circle-outline" size={16} color={COLORS.danger} />
-            <Text style={styles.supportNoticeText}>
-              Your wellbeing check suggests speaking with a professional advisor may help.
-            </Text>
-          </View>
-        )}
       </View>
+
+      {/* Wellbeing Insight Card */}
+      {insightLoading ? (
+        <Card style={styles.insightCard}>
+          <ActivityIndicator size="small" color={COLORS.accent} />
+          <Text style={styles.insightLoadingText}>Loading insight…</Text>
+        </Card>
+      ) : !mlInsight ? (
+        <Card style={styles.insightCard}>
+          <Ionicons name="sparkles-outline" size={22} color={COLORS.muted} />
+          <Text style={styles.insightEmptyText}>No journal insights yet</Text>
+          <Text style={styles.insightEmptySubText}>
+            Write a journal entry to see your emotion pattern here.
+          </Text>
+        </Card>
+      ) : (() => {
+        const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
+        const categoryLabel = ML_CATEGORY_MAP[mlInsight.latestPrediction] ?? mlInsight.latestPrediction;
+        const dominantLabel = ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? mlInsight.dominantCategory;
+        const confidencePct = Math.round(mlInsight.latestConfidence * 100);
+        return (
+          <Card style={[styles.insightCard, { borderLeftColor: palette.border, borderLeftWidth: 4 }]}>
+            {/* Header */}
+            <View style={styles.insightHeader}>
+              <View style={styles.insightHeaderLeft}>
+                <Ionicons name="sparkles" size={14} color={palette.accent} />
+                <Text style={[styles.insightTitle, { color: palette.accent }]}>WELLBEING INSIGHT</Text>
+              </View>
+              <Text style={styles.insightTime}>{formatRelativeTime(mlInsight.lastUpdated)}</Text>
+            </View>
+
+            {/* Main row — emotion + confidence */}
+            <View style={styles.insightMainRow}>
+              <View style={styles.insightMainLeft}>
+                <Text style={styles.insightFieldLabel}>Latest Emotion</Text>
+                <View style={[styles.emotionBadge, { backgroundColor: palette.bg }]}>
+                  <Text style={[styles.emotionBadgeText, { color: palette.accent }]}>
+                    {categoryLabel}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.insightMainRight}>
+                <Text style={styles.insightFieldLabel}>Confidence</Text>
+                <Text style={[styles.confidenceValue, { color: palette.accent }]}>
+                  {confidencePct}%
+                </Text>
+              </View>
+            </View>
+
+            {/* Dominant pattern */}
+            <View style={styles.insightDominant}>
+              <Text style={styles.insightFieldLabel}>Dominant Pattern</Text>
+              <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
+            </View>
+
+            {/* Counts row */}
+            <View style={styles.countsRow}>
+              <View style={[styles.countChip, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
+                <Text style={styles.countChipLabel}>Depression</Text>
+                <Text style={[styles.countChipValue, { color: '#EF4444' }]}>
+                  {mlInsight.depressionCount}
+                </Text>
+              </View>
+              <View style={[styles.countChip, { backgroundColor: 'rgba(245,158,11,0.08)' }]}>
+                <Text style={styles.countChipLabel}>Anxiety</Text>
+                <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>
+                  {mlInsight.anxietyCount}
+                </Text>
+              </View>
+              <View style={[styles.countChip, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
+                <Text style={styles.countChipLabel}>Normal</Text>
+                <Text style={[styles.countChipValue, { color: '#22C55E' }]}>
+                  {mlInsight.normalCount}
+                </Text>
+              </View>
+            </View>
+
+            {/* Disclaimer */}
+            <Text style={styles.insightDisclaimer}>
+              AI suggestion only — not professional advice
+            </Text>
+          </Card>
+        );
+      })()}
 
       {/* Resources */}
       <View style={styles.section}>
@@ -234,16 +400,47 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
   },
   loadingText: { fontSize: 13, color: COLORS.muted },
-  supportNotice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
+  advisorRedirectCard: {
     backgroundColor: '#FEF2F2',
-    borderRadius: 12,
-    padding: 12,
-    marginTop: 8,
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(248,113,113,0.3)',
   },
-  supportNoticeText: { flex: 1, fontSize: 12, color: COLORS.danger, lineHeight: 18 },
+  advisorRedirectTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: COLORS.danger,
+    textAlign: 'center',
+  },
+  advisorRedirectText: {
+    fontSize: 13,
+    color: '#7F1D1D',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  advisorRedirectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.danger,
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  advisorRedirectBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: 'white',
+  },
+  advisorDisclaimer: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontStyle: 'italic',
+  },
   groupCard: { width: 220, padding: 16 },
   groupImage: { width: '100%', height: 120, borderRadius: 16, marginBottom: 12 },
   groupName: {
@@ -288,4 +485,110 @@ const styles = StyleSheet.create({
   resourceInfo: { flex: 1 },
   resourceTitle: { fontSize: 13, fontWeight: 'bold', color: COLORS.text },
   resourceMeta: { fontSize: 11, color: COLORS.muted, marginTop: 2 },
+
+  // ─── Wellbeing Insight Card ────────────────────────────────────────────────
+  insightCard: {
+    gap: 14,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.accent,
+  },
+  insightLoadingText: {
+    fontSize: 13,
+    color: COLORS.muted,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  insightEmptyText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  insightEmptySubText: {
+    fontSize: 12,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  insightHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  insightHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  insightTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  insightTime: {
+    fontSize: 10,
+    color: COLORS.muted,
+  },
+  insightMainRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  insightMainLeft: { flex: 1, gap: 6 },
+  insightMainRight: { gap: 6 },
+  insightFieldLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.muted,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  emotionBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  emotionBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  confidenceValue: {
+    fontSize: 28,
+    fontWeight: 'bold',
+  },
+  insightDominant: { gap: 4 },
+  dominantValue: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  countsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  countChip: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 2,
+  },
+  countChipLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: COLORS.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  countChipValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  insightDisclaimer: {
+    fontSize: 10,
+    color: COLORS.muted,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
 });
