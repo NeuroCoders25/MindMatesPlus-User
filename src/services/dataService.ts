@@ -1,4 +1,4 @@
-import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, MentalHealthRecommendationProfile, RecommendationResult } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
@@ -183,13 +183,35 @@ export interface MentalHealthProfile {
   groupCategory: GroupCategory;
 }
 
+function classificationFromCategory(category: GroupCategory | undefined): 'low' | 'moderate' | 'severe' {
+  if (category === 'Severe Support') return 'severe';
+  if (category === 'Moderate Support') return 'moderate';
+  return 'low';
+}
+
 export const fetchMentalHealthProfile = async (
   userId: string
 ): Promise<MentalHealthProfile | null> => {
   const ref = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
-  return snap.data() as MentalHealthProfile;
+  const data = snap.data();
+
+  // New nested structure
+  if (data.initialQuestionnaireScore) {
+    const qs = data.initialQuestionnaireScore;
+    const activeCategory: GroupCategory = data.activeRecommendationCategory ?? 'Wellness - Thriving';
+    return {
+      depressionScore:     qs.depressionScore ?? 0,
+      anxietyScore:        qs.anxietyScore ?? 0,
+      stressScore:         qs.stressScore ?? 0,
+      classificationLevel: classificationFromCategory(activeCategory),
+      groupCategory:       activeCategory,
+    };
+  }
+
+  // Legacy flat structure — pass through as-is
+  return data as MentalHealthProfile;
 };
 
 // ─── Group Recommendation Logic ───────────────────────────────────────────────
@@ -631,6 +653,228 @@ export const subscribeToMlMentalHealthProfile = (
       anxietyCount: raw.anxietyCount ?? 0,
       normalCount: raw.normalCount ?? 0,
       lastUpdated: raw.lastUpdated?.toDate() ?? new Date(),
+    });
+  });
+};
+
+// ─── Recommendation Category Logic ───────────────────────────────────────────
+
+// Maps a DASS subscale condition + severity level to a GroupCategory.
+// Also used for ML predictions: pass the BERT prediction label as condition
+// and a severity derived from confidence (see ML_DEFAULT_SEVERITY below).
+export const buildRecommendationCategory = (
+  condition: string,
+  severity: string
+): GroupCategory => {
+  const sev = severity.toLowerCase();
+  if (sev === 'extremely severe' || sev === 'severe') return 'Severe Support';
+  if (sev === 'moderate') return 'Moderate Support';
+  if (sev === 'mild') {
+    if (condition === 'anxiety' || condition === 'stress') return 'Wellness - Stress Aware';
+    return 'Mild Support';
+  }
+  // Normal severity — differentiate by condition for contextual grouping
+  if (condition === 'stress') return 'Wellness - Stress Aware';
+  if (condition === 'depression') return 'Recovery & Improvement';
+  return 'Wellness - Thriving';
+};
+
+// Default severity used when mapping ML BERT prediction labels through buildRecommendationCategory.
+// depression → Moderate Support, anxiety → Wellness - Stress Aware, normal → Wellness - Thriving
+const ML_DEFAULT_SEVERITY: Record<string, string> = {
+  depression: 'Moderate',
+  anxiety: 'Mild',
+  normal: 'Normal',
+};
+
+const ML_CONFIDENCE_THRESHOLD = 0.80;
+
+const SEVERITY_ORDER_DS = ['Normal', 'Mild', 'Moderate', 'Severe', 'Extremely Severe'];
+
+// Saves the questionnaire result as the immutable baseline.
+// No-ops if initialQuestionnaireScore already exists (questionnaire is one-time only).
+export const updateQuestionnaireBaseline = async (
+  userId: string,
+  dass21Result: Dass21Result
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(profileRef);
+  if (snap.exists() && snap.data()?.initialQuestionnaireScore) return;
+
+  const depRank = SEVERITY_ORDER_DS.indexOf(dass21Result.depression.severity);
+  const anxRank = SEVERITY_ORDER_DS.indexOf(dass21Result.anxiety.severity);
+  const strRank = SEVERITY_ORDER_DS.indexOf(dass21Result.stress.severity);
+
+  let mainCondition: string;
+  let mainSeverity: string;
+  if (depRank >= anxRank && depRank >= strRank) {
+    mainCondition = 'depression'; mainSeverity = dass21Result.depression.severity;
+  } else if (anxRank >= strRank) {
+    mainCondition = 'anxiety'; mainSeverity = dass21Result.anxiety.severity;
+  } else {
+    mainCondition = 'stress'; mainSeverity = dass21Result.stress.severity;
+  }
+
+  const totalScore = dass21Result.depression.final + dass21Result.anxiety.final + dass21Result.stress.final;
+  const baselineCategory = buildRecommendationCategory(mainCondition, mainSeverity);
+  const sevSlug = mainSeverity.toLowerCase().replace(/\s+/g, '_');
+  const userStatus = (sevSlug === 'severe' || sevSlug === 'extremely_severe') ? 'under_review' : 'normal';
+
+  await setDoc(profileRef, {
+    initialQuestionnaireScore: {
+      depressionScore: dass21Result.depression.final,
+      anxietyScore:    dass21Result.anxiety.final,
+      stressScore:     dass21Result.stress.final,
+      totalScore,
+      mainCondition,
+      category:        mainSeverity,
+      completedAt:     Timestamp.now(),
+    },
+    latestMlEmotionScore:           null,
+    baselineRecommendationCategory: baselineCategory,
+    activeRecommendationCategory:   baselineCategory,
+    recommendationSource:           'questionnaire',
+    userStatus,
+  }, { merge: true });
+};
+
+// Updates the recommendation profile when a new ML emotion analysis result arrives.
+// High-confidence results update activeRecommendationCategory unless the DASS
+// baseline is Severe Support, in which case the user is flagged for review instead.
+export const updateMlEmotionRecommendation = async (
+  userId: string,
+  mlResult: {
+    prediction: string;
+    confidence: number;
+    probabilities: { depression: number; anxiety: number; normal: number };
+  }
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(profileRef);
+  const existing = snap.data();
+  const baselineCategory: GroupCategory =
+    existing?.baselineRecommendationCategory ?? 'Wellness - Thriving';
+  const isSevereBaseline = baselineCategory === 'Severe Support';
+
+  const latestMlEmotionScore = {
+    prediction: mlResult.prediction,
+    confidence: mlResult.confidence,
+    probabilities: mlResult.probabilities,
+    recordedAt: Timestamp.now(),
+  };
+
+  const mlCategory = buildRecommendationCategory(
+    mlResult.prediction,
+    ML_DEFAULT_SEVERITY[mlResult.prediction] ?? 'Normal'
+  );
+
+  const update: Record<string, any> = {
+    latestMlEmotionScore,
+    lastUpdated: Timestamp.now(),
+  };
+
+  if (mlResult.confidence >= ML_CONFIDENCE_THRESHOLD) {
+    if (isSevereBaseline) {
+      // Do not auto-downgrade a DASS-severe user; flag for advisor review
+      update['userStatus'] = 'under_review';
+    } else {
+      update['activeRecommendationCategory'] = mlCategory;
+      update['recommendationSource'] = 'ml_analysis';
+      update['userStatus'] = 'normal';
+    }
+  } else {
+    // Low confidence — revert to questionnaire baseline
+    update['activeRecommendationCategory'] = baselineCategory;
+    update['recommendationSource'] = 'questionnaire';
+  }
+
+  await updateDoc(profileRef, update);
+};
+
+// Fetches active peer groups and resources for the given recommendation category.
+// peer_groups must have groupCategory + isActive fields.
+// resources must have resourceCategory + isActive fields.
+export const fetchRecommendations = async (
+  category: GroupCategory
+): Promise<RecommendationResult> => {
+  const [groupsSnap, resourcesSnap] = await Promise.all([
+    getDocs(query(
+      collection(db, 'peer_groups'),
+      where('groupCategory', '==', category),
+      where('isActive', '==', true)
+    )),
+    getDocs(query(
+      collection(db, 'resources'),
+      where('resourceCategory', '==', category),
+      where('isActive', '==', true)
+    )),
+  ]);
+
+  const groups: Group[] = groupsSnap.docs.map(d => {
+    const data = d.data();
+    return {
+      id: d.id,
+      name: data.groupName ?? data.group_name ?? '',
+      description: data.description ?? '',
+      members: data.memberCount ?? 0,
+      category: data.groupCategory as GroupCategory,
+      image: data.imageUrl
+        ? { uri: data.imageUrl }
+        : GROUP_IMAGE_MAP[category] ?? GROUP_IMAGE_MAP['Wellness - Thriving'],
+    };
+  });
+
+  const resources: Resource[] = resourcesSnap.docs.map(d => {
+    const data = d.data();
+    return {
+      id: d.id,
+      title: data.title as string,
+      category: data.resourceCategory as string,
+      type: data.type as string,
+      content: data.description as string | undefined,
+      url: data.contentUrl as string | undefined,
+      createdAt: (data.createdAt as Timestamp)?.toDate() ?? new Date(),
+    };
+  });
+
+  return { groups, resources };
+};
+
+// Realtime listener for the recommendation profile stored in mentalHealthProfile/currentProfile.
+// Returns an unsubscribe function — call it in a useEffect cleanup.
+export const subscribeToRecommendationProfile = (
+  userId: string,
+  callback: (profile: MentalHealthRecommendationProfile | null) => void
+): (() => void) => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  return onSnapshot(profileRef, snap => {
+    if (!snap.exists()) { callback(null); return; }
+    const raw = snap.data();
+    if (!raw.initialQuestionnaireScore) { callback(null); return; }
+
+    const qs = raw.initialQuestionnaireScore;
+    callback({
+      initialQuestionnaireScore: {
+        depressionScore: qs.depressionScore ?? 0,
+        anxietyScore:    qs.anxietyScore ?? 0,
+        stressScore:     qs.stressScore ?? 0,
+        totalScore:      qs.totalScore ?? 0,
+        mainCondition:   qs.mainCondition ?? '',
+        category:        qs.category ?? 'Normal',
+        completedAt:     qs.completedAt?.toDate() ?? new Date(),
+      },
+      latestMlEmotionScore: raw.latestMlEmotionScore
+        ? {
+            prediction:    raw.latestMlEmotionScore.prediction,
+            confidence:    raw.latestMlEmotionScore.confidence,
+            probabilities: raw.latestMlEmotionScore.probabilities,
+            recordedAt:    raw.latestMlEmotionScore.recordedAt?.toDate() ?? new Date(),
+          }
+        : null,
+      baselineRecommendationCategory: raw.baselineRecommendationCategory ?? 'Wellness - Thriving',
+      activeRecommendationCategory:   raw.activeRecommendationCategory ?? 'Wellness - Thriving',
+      recommendationSource:           raw.recommendationSource ?? 'questionnaire',
+      userStatus:                     raw.userStatus ?? 'normal',
     });
   });
 };

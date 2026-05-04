@@ -12,10 +12,10 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { addDoc, collection, doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { addDoc, collection, doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
-import { DASS_QUESTIONS, DASS_OPTIONS, computeDass21Result, COLORS } from '../services/dataService';
+import { DASS_QUESTIONS, DASS_OPTIONS, computeDass21Result, COLORS, buildRecommendationCategory } from '../services/dataService';
 import { useApp } from '../context/AppContext';
 import { db } from '../services/firebaseConfig';
 import { Dass21Result } from '../types';
@@ -61,33 +61,64 @@ const OPTION_GUIDE = [
   '3: Applied to me very much or most of the time (nearly every day/intense).',
 ];
 
+const SEVERITY_ORDER = ['Normal', 'Mild', 'Moderate', 'Severe', 'Extremely Severe'];
+
 const saveToFirestore = async (
   userId: string,
   answers: Record<number, number>,
   result: Dass21Result,
 ) => {
-  const scores = {
-    depressionScore: result.depression.final,
-    anxietyScore:    result.anxiety.final,
-    stressScore:     result.stress.final,
-    totalScore:      result.depression.final + result.anxiety.final + result.stress.final,
-  };
+  const depRank = SEVERITY_ORDER.indexOf(result.depression.severity);
+  const anxRank = SEVERITY_ORDER.indexOf(result.anxiety.severity);
+  const strRank = SEVERITY_ORDER.indexOf(result.stress.severity);
+
+  let mainCondition: string;
+  let mainSeverity: string;
+  if (depRank >= anxRank && depRank >= strRank) {
+    mainCondition = 'depression'; mainSeverity = result.depression.severity;
+  } else if (anxRank >= strRank) {
+    mainCondition = 'anxiety'; mainSeverity = result.anxiety.severity;
+  } else {
+    mainCondition = 'stress'; mainSeverity = result.stress.severity;
+  }
+
+  const totalScore = result.depression.final + result.anxiety.final + result.stress.final;
+  const baselineCategory = buildRecommendationCategory(mainCondition, mainSeverity);
+  const sevSlug = mainSeverity.toLowerCase().replace(/\s+/g, '_');
+  const userStatus = (sevSlug === 'severe' || sevSlug === 'extremely_severe') ? 'under_review' : 'normal';
 
   // One document per attempt — stored under the user's subcollection
   await addDoc(collection(db, 'users', userId, 'questionnaireResponses'), {
-    date:       serverTimestamp(),
-    ...scores,
-    riskLevel:     result.riskLevel,
-    groupCategory: result.groupCategory,
+    date:            serverTimestamp(),
+    depressionScore: result.depression.final,
+    anxietyScore:    result.anxiety.final,
+    stressScore:     result.stress.final,
+    totalScore,
+    riskLevel:       result.riskLevel,
+    groupCategory:   result.groupCategory,
     answers,
   });
 
-  // Single document per user — overwritten on each reassessment
-  await setDoc(doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile'), {
-    ...scores,
-    classificationLevel: result.riskLevel,
-    groupCategory:       result.groupCategory,
-    updatedAt:           serverTimestamp(),
+  // Profile document — written only once; guard prevents overwrite
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(profileRef);
+  if (snap.exists() && snap.data()?.initialQuestionnaireScore) return;
+
+  await setDoc(profileRef, {
+    initialQuestionnaireScore: {
+      depressionScore: result.depression.final,
+      anxietyScore:    result.anxiety.final,
+      stressScore:     result.stress.final,
+      totalScore,
+      mainCondition,
+      category:        mainSeverity,
+      completedAt:     serverTimestamp(),
+    },
+    latestMlEmotionScore:           null,
+    baselineRecommendationCategory: baselineCategory,
+    activeRecommendationCategory:   baselineCategory,
+    recommendationSource:           'questionnaire',
+    userStatus,
   });
 };
 

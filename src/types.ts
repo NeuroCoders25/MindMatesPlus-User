@@ -118,3 +118,36 @@ export interface KnnInput {
   normalCount: number;
   preferredGroupCategory: string;
 }
+
+export interface QuestionnaireScore {
+  depressionScore: number;
+  anxietyScore: number;
+  stressScore: number;
+  totalScore: number;
+  mainCondition: string;
+  category: string;
+  completedAt: Date;
+}
+
+export interface MlEmotionScore {
+  prediction: string;
+  confidence: number;
+  probabilities: { depression: number; anxiety: number; normal: number };
+  recordedAt: Date;
+}
+
+// Persistent recommendation profile stored on the user document.
+// Merges questionnaire baseline with ongoing ML emotion analysis.
+export interface MentalHealthRecommendationProfile {
+  initialQuestionnaireScore: QuestionnaireScore | null;
+  latestMlEmotionScore: MlEmotionScore | null;
+  baselineRecommendationCategory: GroupCategory;
+  activeRecommendationCategory: GroupCategory;
+  recommendationSource: 'questionnaire' | 'ml_analysis';
+  userStatus: 'normal' | 'under_review';
+}
+
+export interface RecommendationResult {
+  groups: Group[];
+  resources: Resource[];
+}
