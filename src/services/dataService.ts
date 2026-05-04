@@ -1,10 +1,11 @@
-import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, MentalHealthRecommendationProfile, RecommendationResult } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
-  setDoc, updateDoc, increment, getDoc, onSnapshot,
+  setDoc, updateDoc, increment, getDoc, onSnapshot, limit,
 } from 'firebase/firestore';
+import { predictText, MlPredictResponse } from './mlApiService';
 
 // ─── Journal Firestore Functions ──────────────────────────────────────────────
 
@@ -840,6 +841,125 @@ export const fetchRecommendations = async (
   return { groups, resources };
 };
 
+// ─── Public Recommendation API ────────────────────────────────────────────────
+
+// Maps DASS severity category + main condition to a GroupCategory.
+// category: 'Normal' | 'Mild' | 'Moderate' | 'Severe' | 'Extremely Severe'
+// condition: 'stress' | 'depression' | 'anxiety'
+export const mapToAppCategory = (category: string, condition: string): GroupCategory => {
+  const cat = category.toLowerCase().trim();
+  const cond = condition.toLowerCase();
+  if (cat === 'extremely severe' || cat === 'severe') return 'Severe Support';
+  if (cat === 'moderate') return 'Moderate Support';
+  if (cat === 'mild') return 'Mild Support';
+  // Normal severity — differentiate by condition
+  if (cond === 'stress') return 'Wellness - Stress Aware';
+  if (cond === 'depression') return 'Wellness - Emotionally Aware';
+  return 'Wellness - Thriving';
+};
+
+// Saves questionnaire result as the immutable baseline profile.
+// No-ops if initialQuestionnaireScore already exists (one-time only).
+export const updateQuestionnaireProfile = async (
+  userId: string,
+  dass21Result: Dass21Result
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(profileRef);
+  if (snap.exists() && snap.data()?.initialQuestionnaireScore) return;
+
+  const depRank = SEVERITY_ORDER_DS.indexOf(dass21Result.depression.severity);
+  const anxRank = SEVERITY_ORDER_DS.indexOf(dass21Result.anxiety.severity);
+  const strRank = SEVERITY_ORDER_DS.indexOf(dass21Result.stress.severity);
+
+  let mainCondition: string;
+  let mainSeverity: string;
+  if (depRank >= anxRank && depRank >= strRank) {
+    mainCondition = 'depression'; mainSeverity = dass21Result.depression.severity;
+  } else if (anxRank >= strRank) {
+    mainCondition = 'anxiety'; mainSeverity = dass21Result.anxiety.severity;
+  } else {
+    mainCondition = 'stress'; mainSeverity = dass21Result.stress.severity;
+  }
+
+  const totalScore = dass21Result.depression.final + dass21Result.anxiety.final + dass21Result.stress.final;
+  const baselineCategory = mapToAppCategory(mainSeverity, mainCondition);
+  const sevNorm = mainSeverity.toLowerCase();
+  const userStatus: 'normal' | 'under_review' =
+    (sevNorm === 'severe' || sevNorm === 'extremely severe') ? 'under_review' : 'normal';
+
+  await setDoc(profileRef, {
+    initialQuestionnaireScore: {
+      depressionScore: dass21Result.depression.final,
+      anxietyScore:    dass21Result.anxiety.final,
+      stressScore:     dass21Result.stress.final,
+      totalScore,
+      mainCondition,
+      category:        mainSeverity,
+      completedAt:     Timestamp.now(),
+    },
+    latestMlEmotionScore:           null,
+    baselineRecommendationCategory: baselineCategory,
+    activeRecommendationCategory:   baselineCategory,
+    recommendationSource:           'questionnaire',
+    userStatus,
+  }, { merge: true });
+};
+
+// ML prediction → GroupCategory for recommendation updates.
+// depression/anxiety both map to Moderate Support (ML has no severity signal).
+// normal maps to Wellness - Thriving.
+const ML_EMOTION_TO_CATEGORY: Record<string, GroupCategory> = {
+  depression: 'Moderate Support',
+  anxiety:    'Moderate Support',
+  normal:     'Wellness - Thriving',
+};
+
+// Updates the recommendation profile when a new ML result arrives.
+// Requires questionnaire to have been completed first (no-ops otherwise).
+// High-confidence results update activeRecommendationCategory; severe baseline
+// users are flagged for review instead of being auto-downgraded.
+export const updateMlEmotionProfile = async (
+  userId: string,
+  mlResult: {
+    prediction: string;
+    confidence: number;
+    probabilities: { depression: number; anxiety: number; normal: number };
+  }
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(profileRef);
+  if (!snap.exists()) return;
+
+  const existing = snap.data();
+  const baselineCategory: GroupCategory = existing?.baselineRecommendationCategory ?? 'Wellness - Thriving';
+  const isSevereBaseline = baselineCategory === 'Severe Support';
+
+  const latestMlEmotionScore = {
+    prediction:    mlResult.prediction,
+    confidence:    mlResult.confidence,
+    probabilities: mlResult.probabilities,
+    recordedAt:    Timestamp.now(),
+  };
+
+  const update: Record<string, any> = { latestMlEmotionScore, lastUpdated: Timestamp.now() };
+
+  if (mlResult.confidence >= ML_CONFIDENCE_THRESHOLD) {
+    if (isSevereBaseline) {
+      update['userStatus'] = 'under_review';
+    } else {
+      update['activeRecommendationCategory'] = ML_EMOTION_TO_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving';
+      update['recommendationSource'] = 'ml_analysis';
+      update['userStatus'] = 'normal';
+    }
+  } else {
+    update['activeRecommendationCategory'] = baselineCategory;
+    update['recommendationSource'] = 'questionnaire';
+  }
+
+  await updateDoc(profileRef, update);
+};
+
 // Realtime listener for the recommendation profile stored in mentalHealthProfile/currentProfile.
 // Returns an unsubscribe function — call it in a useEffect cleanup.
 export const subscribeToRecommendationProfile = (
@@ -853,6 +973,7 @@ export const subscribeToRecommendationProfile = (
     if (!raw.initialQuestionnaireScore) { callback(null); return; }
 
     const qs = raw.initialQuestionnaireScore;
+    const rawCounter = raw.mlStabilityCounter;
     callback({
       initialQuestionnaireScore: {
         depressionScore: qs.depressionScore ?? 0,
@@ -865,16 +986,283 @@ export const subscribeToRecommendationProfile = (
       },
       latestMlEmotionScore: raw.latestMlEmotionScore
         ? {
-            prediction:    raw.latestMlEmotionScore.prediction,
-            confidence:    raw.latestMlEmotionScore.confidence,
-            probabilities: raw.latestMlEmotionScore.probabilities,
-            recordedAt:    raw.latestMlEmotionScore.recordedAt?.toDate() ?? new Date(),
+            prediction:       raw.latestMlEmotionScore.prediction,
+            confidence:       raw.latestMlEmotionScore.confidence,
+            probabilities:    raw.latestMlEmotionScore.probabilities,
+            recordedAt:       raw.latestMlEmotionScore.recordedAt?.toDate() ?? new Date(),
+            analyzedAt:       raw.latestMlEmotionScore.analyzedAt?.toDate(),
+            sourceTextsUsed:  raw.latestMlEmotionScore.sourceTextsUsed,
           }
         : null,
       baselineRecommendationCategory: raw.baselineRecommendationCategory ?? 'Wellness - Thriving',
       activeRecommendationCategory:   raw.activeRecommendationCategory ?? 'Wellness - Thriving',
       recommendationSource:           raw.recommendationSource ?? 'questionnaire',
       userStatus:                     raw.userStatus ?? 'normal',
+      mlStabilityCounter: rawCounter
+        ? {
+            lastPrediction: rawCounter.lastPrediction ?? 'normal',
+            repeatedCount:  rawCounter.repeatedCount ?? 0,
+            lastUpdatedAt:  rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
+          }
+        : null,
     });
   });
+};
+
+// Alias for subscribeToRecommendationProfile — preferred name for feature code.
+export const listenToMentalHealthProfile = (
+  userId: string,
+  callback: (profile: MentalHealthRecommendationProfile | null) => void
+): (() => void) => subscribeToRecommendationProfile(userId, callback);
+
+// ─── ML Recommendation Order & Wellness Score ─────────────────────────────────
+
+// Ordered from lowest risk (best) to highest risk (worst).
+// Severe Support is intentionally excluded — it is only set by questionnaire baseline
+// and cannot be auto-assigned or transitioned into via ML analysis.
+export const ML_RECOMMENDATION_ORDER: GroupCategory[] = [
+  'Wellness - Thriving',
+  'Wellness - Stress Aware',
+  'Wellness - Emotionally Aware',
+  'Recovery & Improvement',
+  'Mild Support',
+  'Moderate Support',
+];
+
+const WELLNESS_SCORE_MAP: Record<GroupCategory, number> = {
+  'Wellness - Thriving':          100,
+  'Wellness - Stress Aware':      85,
+  'Wellness - Emotionally Aware': 75,
+  'Recovery & Improvement':       65,
+  'Mild Support':                 50,
+  'Moderate Support':             35,
+  'Severe Support':               20,
+};
+
+export const calculateWellnessScore = (category: GroupCategory): number =>
+  WELLNESS_SCORE_MAP[category] ?? 50;
+
+// ─── Stability-based Category Transition ─────────────────────────────────────
+
+// normal prediction → improving (move toward lower risk)
+// depression/anxiety prediction → worsening (move toward higher risk)
+const ML_PREDICTION_DIRECTION: Record<string, 'improve' | 'worsen'> = {
+  normal:     'improve',
+  depression: 'worsen',
+  anxiety:    'worsen',
+};
+
+export const updateCategoryWithStabilityRules = (
+  currentCategory: GroupCategory,
+  mlResult: { prediction: string; confidence: number },
+  counter: MlStabilityCounter | null
+): { newCategory: GroupCategory; newCounter: MlStabilityCounter; changed: boolean } => {
+  const now = new Date();
+
+  if (mlResult.confidence < ML_CONFIDENCE_THRESHOLD) {
+    return {
+      newCategory: currentCategory,
+      newCounter: counter ?? { lastPrediction: mlResult.prediction, repeatedCount: 0, lastUpdatedAt: now },
+      changed: false,
+    };
+  }
+
+  const isSame = counter?.lastPrediction === mlResult.prediction;
+  const repeatedCount = isSame ? (counter!.repeatedCount + 1) : 1;
+  const newCounter: MlStabilityCounter = {
+    lastPrediction: mlResult.prediction,
+    repeatedCount,
+    lastUpdatedAt: now,
+  };
+
+  // Category only changes after 3 consecutive confident same-direction predictions
+  if (repeatedCount < 3) {
+    return { newCategory: currentCategory, newCounter, changed: false };
+  }
+
+  const currentIndex = ML_RECOMMENDATION_ORDER.indexOf(currentCategory);
+  if (currentIndex === -1) {
+    // Severe Support or unknown — do not auto-transition
+    return { newCategory: currentCategory, newCounter, changed: false };
+  }
+
+  const direction = ML_PREDICTION_DIRECTION[mlResult.prediction] ?? 'improve';
+  const newIndex = direction === 'improve'
+    ? Math.max(0, currentIndex - 1)
+    : Math.min(ML_RECOMMENDATION_ORDER.length - 1, currentIndex + 1);
+
+  const newCategory = ML_RECOMMENDATION_ORDER[newIndex];
+  const changed = newCategory !== currentCategory;
+
+  if (changed) newCounter.repeatedCount = 0;
+
+  return { newCategory, newCounter, changed };
+};
+
+// ─── ML Text Collection Functions ─────────────────────────────────────────────
+
+export const fetchUserJournalTexts = async (userId: string): Promise<string[]> => {
+  const q = query(
+    collection(db, 'users', userId, 'journal_entries'),
+    orderBy('date', 'desc'),
+    limit(5)
+  );
+  const snap = await getDocs(q);
+  return snap.docs
+    .map(d => d.data().content as string)
+    .filter(text => text && text.trim().length > 10);
+};
+
+export const fetchUserGroupChatTexts = async (userId: string): Promise<string[]> => {
+  const memberSnap = await getDocs(
+    query(collection(db, 'groupMembers'), where('userId', '==', userId))
+  );
+  const groupIds = memberSnap.docs.map(d => d.data().groupId as string);
+
+  const results = await Promise.all(
+    groupIds.map(groupId =>
+      getDocs(
+        query(
+          collection(db, 'peer_groups', groupId, 'chatMessages'),
+          where('senderId', '==', userId),
+          limit(10)
+        )
+      )
+    )
+  );
+
+  return results.flatMap(snap =>
+    snap.docs
+      .map(d => d.data().text as string)
+      .filter(text => text && text.trim().length > 10)
+  );
+};
+
+export const fetchUserAiChatTexts = async (userId: string): Promise<string[]> => {
+  const q = query(
+    collection(db, 'users', userId, 'aiChatMessages'),
+    orderBy('timestamp', 'desc'),
+    limit(10)
+  );
+  const snap = await getDocs(q);
+  return snap.docs
+    .map(d => d.data().text as string)
+    .filter(text => text && text.trim().length > 10);
+};
+
+export const saveAiChatMessage = async (userId: string, text: string): Promise<void> => {
+  await addDoc(collection(db, 'users', userId, 'aiChatMessages'), {
+    text,
+    timestamp: Timestamp.now(),
+    sender: 'user',
+  });
+};
+
+export const collectUserMlTextBatch = async (
+  userId: string
+): Promise<{ texts: string[]; sources: string[] }> => {
+  const [journalTexts, groupTexts, aiTexts] = await Promise.all([
+    fetchUserJournalTexts(userId),
+    fetchUserGroupChatTexts(userId),
+    fetchUserAiChatTexts(userId),
+  ]);
+
+  const sources: string[] = [];
+  if (journalTexts.length > 0) sources.push('journal');
+  if (groupTexts.length > 0) sources.push('group_chat');
+  if (aiTexts.length > 0) sources.push('ai_chat');
+
+  const texts = [...journalTexts, ...groupTexts, ...aiTexts].filter(t => t.trim().length > 10);
+  return { texts, sources };
+};
+
+// ─── ML Analysis Runner ────────────────────────────────────────────────────────
+
+export const runMlAnalysis = async (textBatch: string[]): Promise<MlPredictResponse | null> => {
+  if (textBatch.length === 0) return null;
+  const combined = textBatch.join(' ').trim();
+  if (combined.length < 20) return null;
+  try {
+    return await predictText(combined);
+  } catch {
+    return null;
+  }
+};
+
+// ─── Update Mental Health Profile from ML (with stability rules) ──────────────
+
+export const updateMentalHealthProfileFromMl = async (
+  userId: string,
+  mlResult: MlPredictResponse,
+  sourceTextsUsed: string[] = []
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(profileRef);
+  if (!snap.exists() || !snap.data()?.initialQuestionnaireScore) return;
+
+  const existing = snap.data();
+  const baselineCategory: GroupCategory = existing.baselineRecommendationCategory ?? 'Wellness - Thriving';
+  const isSevereBaseline = baselineCategory === 'Severe Support';
+  const currentCategory: GroupCategory = existing.activeRecommendationCategory ?? baselineCategory;
+
+  const rawCounter = existing.mlStabilityCounter;
+  const counter: MlStabilityCounter | null = rawCounter
+    ? {
+        lastPrediction: rawCounter.lastPrediction,
+        repeatedCount:  rawCounter.repeatedCount,
+        lastUpdatedAt:  rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
+      }
+    : null;
+
+  const latestMlEmotionScore = {
+    prediction:      mlResult.prediction,
+    confidence:      mlResult.confidence,
+    probabilities:   mlResult.probabilities,
+    recordedAt:      Timestamp.now(),
+    analyzedAt:      Timestamp.now(),
+    sourceTextsUsed,
+  };
+
+  const update: Record<string, any> = {
+    latestMlEmotionScore,
+    lastUpdated: Timestamp.now(),
+  };
+
+  if (isSevereBaseline) {
+    update['userStatus'] = 'under_review';
+    const isSame = counter?.lastPrediction === mlResult.prediction;
+    update['mlStabilityCounter'] = {
+      lastPrediction: mlResult.prediction,
+      repeatedCount:  isSame ? (counter!.repeatedCount + 1) : 1,
+      lastUpdatedAt:  Timestamp.now(),
+    };
+  } else {
+    const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(
+      currentCategory, mlResult, counter
+    );
+
+    update['mlStabilityCounter'] = {
+      lastPrediction: newCounter.lastPrediction,
+      repeatedCount:  newCounter.repeatedCount,
+      lastUpdatedAt:  Timestamp.now(),
+    };
+
+    if (changed) {
+      update['activeRecommendationCategory'] = newCategory;
+      update['recommendationSource'] = 'ml_analysis';
+    }
+    update['userStatus'] = 'normal';
+  }
+
+  await updateDoc(profileRef, update);
+};
+
+// ─── Trigger Full Batch ML Analysis ───────────────────────────────────────────
+
+export const triggerBatchMlAnalysis = async (userId: string): Promise<void> => {
+  const { texts, sources } = await collectUserMlTextBatch(userId);
+  const mlResult = await runMlAnalysis(texts);
+  if (mlResult) {
+    await updateMentalHealthProfileFromMl(userId, mlResult, sources);
+  }
 };

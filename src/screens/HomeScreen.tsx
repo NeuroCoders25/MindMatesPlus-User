@@ -13,9 +13,17 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { COLORS, getRecommendedGroups, getGroupsByMlPrediction, getMlGroupCategory, ML_CATEGORY_MAP, subscribeToMlMentalHealthProfile } from '../services/dataService';
+import {
+  COLORS,
+  ML_CATEGORY_MAP,
+  subscribeToMlMentalHealthProfile,
+  listenToMentalHealthProfile,
+  fetchResources,
+  getGroupsByMlPrediction,
+  calculateWellnessScore,
+} from '../services/dataService';
 import { RootStackParamList } from '../navigation';
-import { Group, MlMentalHealthProfile } from '../types';
+import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile, Resource } from '../types';
 
 // ─── Colour helpers for ML insight categories ─────────────────────────────────
 
@@ -34,55 +42,108 @@ const formatRelativeTime = (date: Date): string => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
+const RESOURCE_ICONS: Record<string, string> = {
+  article: 'book-outline',
+  audio:   'musical-notes-outline',
+  video:   'play-circle-outline',
+  exercise:'fitness-outline',
+};
+
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
-  const { user, peerGroups, groupsLoading, mentalHealthProfile, joinedGroupIds, joinGroup, setSelectedGroup } = useApp();
+  const { user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [joiningId, setJoiningId] = useState<string | null>(null);
+
+  // Realtime wellbeing insight (journal-based ML profile on user doc)
   const [mlInsight, setMlInsight] = useState<MlMentalHealthProfile | null>(null);
   const [insightLoading, setInsightLoading] = useState(true);
 
-  // Attach a realtime Firestore listener as soon as we have a logged-in user.
-  // onSnapshot fires immediately with cached/current data, then again on any
-  // change — so the card updates the moment a new journal entry is analysed.
+  // Realtime recommendation profile (mentalHealthProfile/currentProfile)
+  const [recommendationProfile, setRecommendationProfile] = useState<MentalHealthRecommendationProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+
+  // Resources for the active recommendation category
+  const [recommendedResources, setRecommendedResources] = useState<Resource[]>([]);
+
   useEffect(() => {
     if (!user) return;
-    const unsubscribe = subscribeToMlMentalHealthProfile(user.id, (profile) => {
+    const unsub = subscribeToMlMentalHealthProfile(user.id, (profile) => {
       setMlInsight(profile);
       setInsightLoading(false);
     });
-    return unsubscribe; // detaches the listener when the component unmounts
+    return unsub;
   }, [user?.id]);
 
-  // Path 1 (DASS): severe/extremely severe → advisor redirect, no groups
-  const isDassAdvisorRequired = mentalHealthProfile?.groupCategory === 'Severe Support';
+  useEffect(() => {
+    if (!user) return;
+    const unsub = listenToMentalHealthProfile(user.id, (profile) => {
+      setRecommendationProfile(profile);
+      setProfileLoading(false);
+    });
+    return unsub;
+  }, [user?.id]);
 
-  // Path 1 (DASS): filter groups by DASS-derived category when not severe
-  // Path 2 (ML):   fall back to ML dominant category when DASS profile is absent
-  const recommended: Group[] = (() => {
-    if (isDassAdvisorRequired) return [];
-    if (mentalHealthProfile) {
-      return getRecommendedGroups(peerGroups, mentalHealthProfile).slice(0, 4);
+  // Fetch resources whenever the active recommendation category changes
+  useEffect(() => {
+    if (!recommendationProfile) { setRecommendedResources([]); return; }
+    fetchResources(recommendationProfile.activeRecommendationCategory)
+      .then(setRecommendedResources)
+      .catch(() => setRecommendedResources([]));
+  }, [recommendationProfile?.activeRecommendationCategory]);
+
+  // Advisor redirect when DASS result is severe
+  const isAdvisorRequired = recommendationProfile?.userStatus === 'under_review';
+
+  // Build primary + secondary groups, deduplicated
+  const { recommendedGroups, hasSecondary } = (() => {
+    if (isAdvisorRequired) return { recommendedGroups: [], hasSecondary: false };
+
+    if (recommendationProfile) {
+      const active   = recommendationProfile.activeRecommendationCategory;
+      const baseline = recommendationProfile.baselineRecommendationCategory;
+
+      const primary = peerGroups.filter(g => g.category === active).slice(0, 4);
+      const primaryIds = new Set(primary.map(g => g.id));
+
+      const secondary = baseline !== active
+        ? peerGroups.filter(g => g.category === baseline && !primaryIds.has(g.id)).slice(0, 2)
+        : [];
+
+      return {
+        recommendedGroups: [...primary, ...secondary],
+        hasSecondary: secondary.length > 0,
+      };
     }
+
+    // Fallback: no questionnaire yet — use ML insight
     if (mlInsight) {
-      return getGroupsByMlPrediction(peerGroups, mlInsight.dominantCategory).slice(0, 4);
+      return {
+        recommendedGroups: getGroupsByMlPrediction(peerGroups, mlInsight.dominantCategory).slice(0, 4),
+        hasSecondary: false,
+      };
     }
-    return [];
+
+    return { recommendedGroups: [], hasSecondary: false };
   })();
 
-  // Label shown under the section title to indicate which path is active
-  const recommendationSource: 'dass' | 'ml' | null =
-    isDassAdvisorRequired ? null :
-    mentalHealthProfile ? 'dass' :
-    mlInsight ? 'ml' : null;
+  // Source label and category subtitle
+  const sourceLabel: string | null = (() => {
+    if (recommendationProfile) {
+      return recommendationProfile.recommendationSource === 'ml_analysis'
+        ? 'Based on your recent activity'
+        : 'Based on your initial assessment';
+    }
+    if (mlInsight) return 'Based on your recent activity';
+    return null;
+  })();
 
-  const recommendationCategoryLabel =
-    recommendationSource === 'dass'
-      ? mentalHealthProfile!.groupCategory
-      : recommendationSource === 'ml'
-      ? getMlGroupCategory(mlInsight!.dominantCategory)
-      : null;
+  const categoryLabel: string | null = recommendationProfile
+    ? recommendationProfile.activeRecommendationCategory
+    : mlInsight
+    ? ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? null
+    : null;
 
   const handleJoin = async (group: Group) => {
     setJoiningId(group.id);
@@ -143,22 +204,21 @@ export const HomeScreen = () => {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Recommended Groups</Text>
-            {recommendationCategoryLabel && (
+            {categoryLabel && sourceLabel && (
               <Text style={styles.categoryLabel}>
-                {recommendationCategoryLabel}
-                {recommendationSource === 'ml' ? '  •  Based on your activity' : '  •  Based on your wellbeing check'}
+                {categoryLabel}{'  •  '}{sourceLabel}
               </Text>
             )}
           </View>
-          {!isDassAdvisorRequired && (
+          {!isAdvisorRequired && (
             <TouchableOpacity onPress={() => navigation.navigate('Main')}>
               <Text style={styles.seeAll}>See All</Text>
             </TouchableOpacity>
           )}
         </View>
 
-        {/* Severe DASS case: redirect to advisor instead of showing groups */}
-        {isDassAdvisorRequired ? (
+        {/* Advisor redirect for severe DASS users */}
+        {isAdvisorRequired ? (
           <View style={styles.advisorRedirectCard}>
             <Ionicons name="alert-circle" size={32} color={COLORS.danger} />
             <Text style={styles.advisorRedirectTitle}>Professional Support Recommended</Text>
@@ -177,15 +237,15 @@ export const HomeScreen = () => {
               AI suggestion only — not professional advice
             </Text>
           </View>
-        ) : groupsLoading ? (
+        ) : (groupsLoading || profileLoading) ? (
           <View style={styles.groupsPlaceholder}>
             <ActivityIndicator size="small" color={COLORS.accent} />
             <Text style={styles.loadingText}>Loading groups…</Text>
           </View>
-        ) : recommended.length === 0 ? (
+        ) : recommendedGroups.length === 0 ? (
           <View style={styles.groupsPlaceholder}>
             <Text style={styles.loadingText}>
-              {!mentalHealthProfile && !mlInsight
+              {!recommendationProfile && !mlInsight
                 ? 'Complete your wellbeing check or write a journal entry to get group recommendations.'
                 : 'No groups found for your wellbeing category yet.'}
             </Text>
@@ -196,13 +256,16 @@ export const HomeScreen = () => {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.groupsRow}
           >
-            {recommended.map(group => {
+            {recommendedGroups.map(group => {
               const isJoined = joinedGroupIds.includes(group.id);
               const isLoading = joiningId === group.id;
+              const isPrimary = recommendationProfile
+                ? group.category === recommendationProfile.activeRecommendationCategory
+                : true;
               return (
                 <Card
                   key={group.id}
-                  style={styles.groupCard}
+                  style={[styles.groupCard, !isPrimary && styles.groupCardSecondary]}
                   onPress={() => handleGroupPress(group)}
                 >
                   <Image
@@ -211,6 +274,9 @@ export const HomeScreen = () => {
                     resizeMode="cover"
                   />
                   <Text style={styles.groupName}>{group.name}</Text>
+                  {!isPrimary && (
+                    <Text style={styles.groupSecondaryTag}>Also recommended</Text>
+                  )}
                   <Text style={styles.groupDesc} numberOfLines={2}>
                     {group.description}
                   </Text>
@@ -257,12 +323,12 @@ export const HomeScreen = () => {
         </Card>
       ) : (() => {
         const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
-        const categoryLabel = ML_CATEGORY_MAP[mlInsight.latestPrediction] ?? mlInsight.latestPrediction;
+        const categoryLbl = ML_CATEGORY_MAP[mlInsight.latestPrediction] ?? mlInsight.latestPrediction;
         const dominantLabel = ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? mlInsight.dominantCategory;
-        const confidencePct = Math.round(mlInsight.latestConfidence * 100);
+        const activeCategory = recommendationProfile?.activeRecommendationCategory;
+        const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
         return (
           <Card style={[styles.insightCard, { borderLeftColor: palette.border, borderLeftWidth: 4 }]}>
-            {/* Header */}
             <View style={styles.insightHeader}>
               <View style={styles.insightHeaderLeft}>
                 <Ionicons name="sparkles" size={14} color={palette.accent} />
@@ -271,53 +337,53 @@ export const HomeScreen = () => {
               <Text style={styles.insightTime}>{formatRelativeTime(mlInsight.lastUpdated)}</Text>
             </View>
 
-            {/* Main row — emotion + confidence */}
+            {wellnessScore !== null && (
+              <View style={styles.wellnessScoreRow}>
+                <View style={styles.wellnessScoreLeft}>
+                  <Text style={styles.insightFieldLabel}>Mental Wellness Score</Text>
+                  <Text style={[styles.wellnessScoreValue, { color: palette.accent }]}>
+                    {wellnessScore}%
+                  </Text>
+                </View>
+                <View style={styles.wellnessScoreRight}>
+                  <Text style={styles.insightFieldLabel}>Category</Text>
+                  <Text style={[styles.dominantValue, { color: palette.accent }]} numberOfLines={2}>
+                    {activeCategory}
+                  </Text>
+                </View>
+              </View>
+            )}
+
             <View style={styles.insightMainRow}>
               <View style={styles.insightMainLeft}>
                 <Text style={styles.insightFieldLabel}>Latest Emotion</Text>
                 <View style={[styles.emotionBadge, { backgroundColor: palette.bg }]}>
                   <Text style={[styles.emotionBadgeText, { color: palette.accent }]}>
-                    {categoryLabel}
+                    {categoryLbl}
                   </Text>
                 </View>
               </View>
               <View style={styles.insightMainRight}>
-                <Text style={styles.insightFieldLabel}>Confidence</Text>
-                <Text style={[styles.confidenceValue, { color: palette.accent }]}>
-                  {confidencePct}%
-                </Text>
+                <Text style={styles.insightFieldLabel}>Dominant Pattern</Text>
+                <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
               </View>
             </View>
 
-            {/* Dominant pattern */}
-            <View style={styles.insightDominant}>
-              <Text style={styles.insightFieldLabel}>Dominant Pattern</Text>
-              <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
-            </View>
-
-            {/* Counts row */}
             <View style={styles.countsRow}>
               <View style={[styles.countChip, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
                 <Text style={styles.countChipLabel}>Depression</Text>
-                <Text style={[styles.countChipValue, { color: '#EF4444' }]}>
-                  {mlInsight.depressionCount}
-                </Text>
+                <Text style={[styles.countChipValue, { color: '#EF4444' }]}>{mlInsight.depressionCount}</Text>
               </View>
               <View style={[styles.countChip, { backgroundColor: 'rgba(245,158,11,0.08)' }]}>
                 <Text style={styles.countChipLabel}>Anxiety</Text>
-                <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>
-                  {mlInsight.anxietyCount}
-                </Text>
+                <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>{mlInsight.anxietyCount}</Text>
               </View>
               <View style={[styles.countChip, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
                 <Text style={styles.countChipLabel}>Normal</Text>
-                <Text style={[styles.countChipValue, { color: '#22C55E' }]}>
-                  {mlInsight.normalCount}
-                </Text>
+                <Text style={[styles.countChipValue, { color: '#22C55E' }]}>{mlInsight.normalCount}</Text>
               </View>
             </View>
 
-            {/* Disclaimer */}
             <Text style={styles.insightDisclaimer}>
               AI suggestion only — not professional advice
             </Text>
@@ -329,22 +395,41 @@ export const HomeScreen = () => {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Recent Resources</Text>
         <View style={styles.resourcesList}>
-          {[
-            { title: 'Managing Social Anxiety', type: 'Article', time: '5 min read' },
-            { title: '10 Min Guided Meditation', type: 'Audio', time: '10 min' },
-          ].map((item, i) => (
-            <Card key={i} style={styles.resourceCard}>
-              <View style={styles.resourceIconBox}>
-                <Ionicons name="book-outline" size={24} color={COLORS.accent} />
-              </View>
-              <View style={styles.resourceInfo}>
-                <Text style={styles.resourceTitle}>{item.title}</Text>
-                <Text style={styles.resourceMeta}>
-                  {item.type} • {item.time}
-                </Text>
-              </View>
-            </Card>
-          ))}
+          {recommendedResources.length > 0 ? (
+            recommendedResources.slice(0, 4).map(resource => (
+              <Card key={resource.id} style={styles.resourceCard}>
+                <View style={styles.resourceIconBox}>
+                  <Ionicons
+                    name={(RESOURCE_ICONS[resource.type?.toLowerCase()] ?? 'book-outline') as any}
+                    size={24}
+                    color={COLORS.accent}
+                  />
+                </View>
+                <View style={styles.resourceInfo}>
+                  <Text style={styles.resourceTitle}>{resource.title}</Text>
+                  <Text style={styles.resourceMeta}>
+                    {resource.type}
+                    {resource.category ? `  •  ${resource.category}` : ''}
+                  </Text>
+                </View>
+              </Card>
+            ))
+          ) : (
+            [
+              { title: 'Managing Social Anxiety', type: 'Article', time: '5 min read' },
+              { title: '10 Min Guided Meditation', type: 'Audio',   time: '10 min' },
+            ].map((item, i) => (
+              <Card key={i} style={styles.resourceCard}>
+                <View style={styles.resourceIconBox}>
+                  <Ionicons name="book-outline" size={24} color={COLORS.accent} />
+                </View>
+                <View style={styles.resourceInfo}>
+                  <Text style={styles.resourceTitle}>{item.title}</Text>
+                  <Text style={styles.resourceMeta}>{item.type} • {item.time}</Text>
+                </View>
+              </Card>
+            ))
+          )}
         </View>
       </View>
     </ScrollView>
@@ -442,11 +527,18 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   groupCard: { width: 220, padding: 16 },
+  groupCardSecondary: { opacity: 0.85 },
   groupImage: { width: '100%', height: 120, borderRadius: 16, marginBottom: 12 },
   groupName: {
     fontSize: 14,
     fontWeight: 'bold',
     color: COLORS.text,
+    marginBottom: 4,
+  },
+  groupSecondaryTag: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontStyle: 'italic',
     marginBottom: 4,
   },
   groupDesc: { fontSize: 11, color: COLORS.muted, lineHeight: 16, marginBottom: 10 },
@@ -530,6 +622,17 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: COLORS.muted,
   },
+  wellnessScoreRow: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingVertical: 4,
+  },
+  wellnessScoreLeft: { flex: 1, gap: 4 },
+  wellnessScoreRight: { flex: 1, gap: 4 },
+  wellnessScoreValue: {
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
   insightMainRow: {
     flexDirection: 'row',
     gap: 12,
@@ -553,14 +656,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-  confidenceValue: {
-    fontSize: 28,
-    fontWeight: 'bold',
-  },
-  insightDominant: { gap: 4 },
   dominantValue: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
+    flexShrink: 1,
   },
   countsRow: {
     flexDirection: 'row',

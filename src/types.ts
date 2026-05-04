@@ -134,6 +134,14 @@ export interface MlEmotionScore {
   confidence: number;
   probabilities: { depression: number; anxiety: number; normal: number };
   recordedAt: Date;
+  analyzedAt?: Date;
+  sourceTextsUsed?: string[];
+}
+
+export interface MlStabilityCounter {
+  lastPrediction: string;
+  repeatedCount: number;
+  lastUpdatedAt: Date;
 }
 
 // Persistent recommendation profile stored on the user document.
@@ -145,6 +153,7 @@ export interface MentalHealthRecommendationProfile {
   activeRecommendationCategory: GroupCategory;
   recommendationSource: 'questionnaire' | 'ml_analysis';
   userStatus: 'normal' | 'under_review';
+  mlStabilityCounter: MlStabilityCounter | null;
 }
 
 export interface RecommendationResult {

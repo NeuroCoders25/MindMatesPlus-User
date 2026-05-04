@@ -13,10 +13,10 @@ import {
   saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
   fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup,
   fetchMentalHealthProfile, MentalHealthProfile,
-  updateMlMentalHealthProfile, addMlAnalysis,
+  updateMlMentalHealthProfile, saveAiChatMessage, triggerBatchMlAnalysis,
 } from '../services/dataService';
 import { sendSupportMessage } from '../services/geminiService';
-import { predictText, MlPredictResponse } from '../services/mlApiService';
+import { MlPredictResponse } from '../services/mlApiService';
 import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile } from '../types';
 import { encryptName, decryptName } from '../utils/encryption';
 
@@ -196,6 +196,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateMlMentalHealthProfile(user.id, updatedEntries)
         .then(profile => setMlMentalHealthProfile(profile))
         .catch(err => console.error('ML profile update failed:', err));
+      triggerBatchMlAnalysis(user.id)
+        .catch(err => console.error('Batch ML analysis failed:', err));
     }
 
     if (
@@ -223,38 +225,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
     if (!user) return;
-    const feedbackId = await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
-
-    // Analyze feedback text via BERT ML to contribute to ML mental health profile
-    const textToAnalyze = [peerComment, appComment].filter(t => t.trim().length > 0).join(' ');
-    if (textToAnalyze.trim().length > 10) {
-      try {
-        const mlResult = await predictText(textToAnalyze);
-        await addMlAnalysis(user.id, {
-          source_type: 'feedback',
-          source_id: feedbackId,
-          emotion_detected: mlResult.prediction,
-          emotion_score: mlResult.confidence,
-          predicted_condition: mlResult.prediction,
-          confidence_score: mlResult.confidence,
-        });
-        // Rebuild ML profile treating feedback as a synthetic journal entry signal
-        const syntheticEntry = {
-          id: feedbackId,
-          title: 'Feedback',
-          content: textToAnalyze,
-          mood: 'neutral',
-          timestamp: new Date(),
-          mlAnalysis: mlResult,
-        };
-        const allEntries = [syntheticEntry, ...journalEntries];
-        updateMlMentalHealthProfile(user.id, allEntries)
-          .then(profile => setMlMentalHealthProfile(profile))
-          .catch(err => console.error('ML profile update from feedback failed:', err));
-      } catch (err) {
-        console.error('Feedback ML analysis failed:', err);
-      }
-    }
+    await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
   };
 
   const prepareSupportChatFromDass = (result: Dass21Result) => {
@@ -276,6 +247,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: new Date(),
     };
     setAiMessages(prev => [...prev, newMsg]);
+
+    if (user) {
+      saveAiChatMessage(user.id, text).catch(() => {});
+      triggerBatchMlAnalysis(user.id).catch(() => {});
+    }
+
     const result = dass21Result;
     let responseText: string;
     if (result) {
