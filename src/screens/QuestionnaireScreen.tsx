@@ -402,7 +402,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   optionsScroll: { flex: 1 },
-  optionsContent: { gap: 12, paddingBottom: 120 },
+  optionsContent: { gap: 12, paddingBottom: 24 },
   option: {
     backgroundColor: COLORS.white,
     borderWidth: 1,
@@ -427,7 +427,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingTop: 16,
-    paddingBottom: 24,
+    paddingBottom: 8,
   },
   navBtn: {
     paddingVertical: 14,
@@ -458,11 +458,12 @@ const styles = StyleSheet.create({
 
   // Floating assistant
   chatbotRow: {
-    position: 'absolute',
-    bottom: 100,
-    right: 12,
+    alignSelf: 'flex-end',
     flexDirection: 'row',
     alignItems: 'flex-end',
+    marginTop: 8,
+    marginRight: -12,
+    marginBottom: -12,
   },
   chatbotBtn: { flexDirection: 'row', alignItems: 'flex-end' },
   chatBubble: {
