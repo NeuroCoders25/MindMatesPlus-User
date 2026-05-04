@@ -142,8 +142,12 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleAnswer = (value: number) => {
     const questionNum = currentStep + 1;
-    const newAnswers = { ...answers, [questionNum]: value };
-    setAnswers(newAnswers);
+    setAnswers({ ...answers, [questionNum]: value });
+  };
+
+  const handleNext = () => {
+    const questionNum = currentStep + 1;
+    if (answers[questionNum] === undefined) return;
 
     Animated.timing(opacity, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
       if (currentStep < TOTAL - 1) {
@@ -158,15 +162,32 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
           }),
         ]).start();
       } else {
-        const result = computeDass21Result(newAnswers);
+        const result = computeDass21Result(answers);
         setDass21Result(result);
         prepareSupportChatFromDass(result);
         if (user?.id) {
-          saveToFirestore(user.id, newAnswers, result).catch(console.error);
+          saveToFirestore(user.id, answers, result).catch(console.error);
         }
         navigation.replace('Result');
       }
     });
+  };
+
+  const handleBack = () => {
+    if (currentStep > 0) {
+      Animated.timing(opacity, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+        const prev = currentStep - 1;
+        setCurrentStep(prev);
+        Animated.parallel([
+          Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+          Animated.timing(progressAnim, {
+            toValue: ((prev + 1) / TOTAL) * 100,
+            duration: 300,
+            useNativeDriver: false,
+          }),
+        ]).start();
+      });
+    }
   };
 
   // ─── Instructions screen ───────────────────────────────────────────────────
@@ -217,18 +238,43 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
           contentContainerStyle={styles.optionsContent}
           showsVerticalScrollIndicator={false}
         >
-          {DASS_OPTIONS.map(option => (
-            <TouchableOpacity
-              key={option.value}
-              onPress={() => handleAnswer(option.value)}
-              activeOpacity={0.8}
-              style={styles.option}
-            >
-              <Text style={styles.optionText}>{option.label}</Text>
-            </TouchableOpacity>
-          ))}
+          {DASS_OPTIONS.map(option => {
+            const isSelected = answers[currentStep + 1] === option.value;
+            return (
+              <TouchableOpacity
+                key={option.value}
+                onPress={() => handleAnswer(option.value)}
+                activeOpacity={0.8}
+                style={[styles.option, isSelected && styles.optionSelected]}
+              >
+                <Text style={[styles.optionText, isSelected && styles.optionTextSelected]}>{option.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </ScrollView>
       </Animated.View>
+
+      <View style={styles.navRow}>
+        <TouchableOpacity
+          style={[styles.navBtn, styles.navBtnBack, currentStep === 0 && { opacity: 0 }]}
+          onPress={handleBack}
+          disabled={currentStep === 0}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.navBtnBackText}>Back</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.navBtn, styles.navBtnNext, answers[currentStep + 1] === undefined && styles.navBtnDisabled]}
+          onPress={handleNext}
+          disabled={answers[currentStep + 1] === undefined}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.navBtnNextText}>
+            {currentStep === TOTAL - 1 ? 'Finish' : 'Next'}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Floating assistant */}
       <View style={styles.chatbotRow}>
@@ -370,12 +416,50 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
+  optionSelected: {
+    borderColor: COLORS.primary,
+    backgroundColor: '#EEF4FF',
+  },
   optionText: { fontSize: 14, fontWeight: '500', color: COLORS.text, lineHeight: 20 },
+  optionTextSelected: { color: COLORS.primary, fontWeight: '700' },
+
+  navRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingTop: 16,
+    paddingBottom: 24,
+  },
+  navBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  navBtnBack: {
+    backgroundColor: '#F3F4F6',
+  },
+  navBtnBackText: {
+    color: COLORS.muted,
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  navBtnNext: {
+    backgroundColor: COLORS.primary,
+  },
+  navBtnNextText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  navBtnDisabled: {
+    backgroundColor: '#D1D5DB',
+  },
 
   // Floating assistant
   chatbotRow: {
     position: 'absolute',
-    bottom: 28,
+    bottom: 100,
     right: 12,
     flexDirection: 'row',
     alignItems: 'flex-end',

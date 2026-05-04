@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Ionicons } from '@expo/vector-icons';
 import {
   View,
   Text,
@@ -41,22 +42,44 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [name, setName] = useState('');
+  const [nickname, setNickname] = useState('');
   const [gender, setGender] = useState('');
-  const [age, setAge] = useState('');
+  const [dob, setDob] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
 
   const handleAuth = async () => {
     setError('');
+    let calculatedAge = 0;
 
     if (!isLogin) {
+      if (!acceptedPrivacy) {
+        setError('Please read and accept the privacy policy.');
+        return;
+      }
       if (password !== confirmPassword) {
         setError('Passwords do not match.');
         return;
       }
-      const parsedAge = parseInt(age, 10);
-      if (!age || isNaN(parsedAge) || parsedAge < 10 || parsedAge > 100) {
-        setError('Please enter a valid age (10–100).');
+      const dobRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dobRegex.test(dob)) {
+        setError('Please enter your Date of Birth in YYYY-MM-DD format.');
+        return;
+      }
+      const birthDate = new Date(dob);
+      if (isNaN(birthDate.getTime())) {
+        setError('Please enter a valid Date of Birth.');
+        return;
+      }
+      const today = new Date();
+      calculatedAge = today.getFullYear() - birthDate.getFullYear();
+      const m = today.getMonth() - birthDate.getMonth();
+      if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+        calculatedAge--;
+      }
+      if (calculatedAge < 10 || calculatedAge > 100) {
+        setError('You must be between 10 and 100 years old.');
         return;
       }
     }
@@ -79,9 +102,10 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
           const encryptedName = encryptName(name);
           await setDoc(doc(db, 'users', uid), {
             name: encryptedName,
+            nickname: nickname.trim(),
             email,
             gender,
-            age: parseInt(age, 10),
+            age: calculatedAge,
             createdAt: serverTimestamp(),
           });
         }
@@ -143,15 +167,19 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                   onChangeText={setName}
                 />
                 <Input
+                  placeholder="Nickname (Optional)"
+                  value={nickname}
+                  onChangeText={setNickname}
+                />
+                <Input
                   placeholder="Gender (e.g. Male, Female, Non-binary)"
                   value={gender}
                   onChangeText={setGender}
                 />
                 <Input
-                  placeholder="Age"
-                  type="number"
-                  value={age}
-                  onChangeText={setAge}
+                  placeholder="Date of Birth (YYYY-MM-DD)"
+                  value={dob}
+                  onChangeText={setDob}
                 />
               </>
             )}
@@ -174,6 +202,22 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                 value={confirmPassword}
                 onChangeText={setConfirmPassword}
               />
+            )}
+            {!isLogin && (
+              <TouchableOpacity 
+                style={styles.checkboxContainer} 
+                onPress={() => setAcceptedPrivacy(!acceptedPrivacy)}
+                activeOpacity={0.7}
+              >
+                <Ionicons 
+                  name={acceptedPrivacy ? 'checkbox' : 'square-outline'} 
+                  size={20} 
+                  color={acceptedPrivacy ? COLORS.primary : COLORS.muted} 
+                />
+                <Text style={styles.disclaimerText}>
+                  I agree that my data is collected solely for mental health wellness and is handled securely.
+                </Text>
+              </TouchableOpacity>
             )}
             {error !== '' && (
               <Text style={styles.errorText}>{error}</Text>
@@ -198,7 +242,9 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
               setIsLogin(!isLogin);
               setError('');
               setConfirmPassword('');
-              setAge('');
+              setDob('');
+              setNickname('');
+              setAcceptedPrivacy(false);
             }}
           >
             <Text style={styles.toggleText}>
@@ -243,6 +289,8 @@ const styles = StyleSheet.create({
   form: { gap: 16 },
   authBtn: { marginTop: 8 },
   errorText: { color: '#EF4444', fontSize: 13, textAlign: 'center', marginTop: -4 },
+  checkboxContainer: { flexDirection: 'row', alignItems: 'flex-start', paddingHorizontal: 4, marginTop: 4, gap: 8 },
+  disclaimerText: { color: COLORS.muted, fontSize: 12, flex: 1, lineHeight: 16 },
   forgotBtn: { alignItems: 'center', paddingVertical: 4 },
   forgotText: { color: COLORS.muted, fontWeight: '500', fontSize: 13 },
   toggleBtn: { marginTop: 40, alignItems: 'center' },
