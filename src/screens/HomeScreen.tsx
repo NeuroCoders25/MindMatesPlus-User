@@ -283,9 +283,11 @@ export const HomeScreen = () => {
               </View>
               <View style={styles.insightMainRight}>
                 <Text style={styles.insightFieldLabel}>Confidence</Text>
-                <Text style={[styles.confidenceValue, { color: palette.accent }]}>
-                  {confidencePct}%
-                </Text>
+                <View style={[styles.confidenceCircle, { borderColor: palette.accent }]}>
+                  <Text style={[styles.confidenceValue, { color: palette.accent }]}>
+                    {confidencePct}%
+                  </Text>
+                </View>
               </View>
             </View>
 
@@ -295,32 +297,7 @@ export const HomeScreen = () => {
               <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
             </View>
 
-            {/* Counts row */}
-            <View style={styles.countsRow}>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Depression</Text>
-                <Text style={[styles.countChipValue, { color: '#EF4444' }]}>
-                  {mlInsight.depressionCount}
-                </Text>
-              </View>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(245,158,11,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Anxiety</Text>
-                <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>
-                  {mlInsight.anxietyCount}
-                </Text>
-              </View>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Normal</Text>
-                <Text style={[styles.countChipValue, { color: '#22C55E' }]}>
-                  {mlInsight.normalCount}
-                </Text>
-              </View>
-            </View>
 
-            {/* Disclaimer */}
-            <Text style={styles.insightDisclaimer}>
-              AI suggestion only — not professional advice
-            </Text>
           </Card>
         );
       })()}
@@ -535,7 +512,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   insightMainLeft: { flex: 1, gap: 6 },
-  insightMainRight: { gap: 6 },
+  insightMainRight: { gap: 6, alignItems: 'center' },
   insightFieldLabel: {
     fontSize: 10,
     fontWeight: '700',
@@ -553,42 +530,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  confidenceCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
   confidenceValue: {
-    fontSize: 28,
+    fontSize: 20,
     fontWeight: 'bold',
   },
   insightDominant: { gap: 4 },
   dominantValue: {
     fontSize: 15,
     fontWeight: '700',
-  },
-  countsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  countChip: {
-    flex: 1,
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-    gap: 2,
-  },
-  countChipLabel: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: COLORS.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  countChipValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  insightDisclaimer: {
-    fontSize: 10,
-    color: COLORS.muted,
-    textAlign: 'center',
-    fontStyle: 'italic',
   },
 });
