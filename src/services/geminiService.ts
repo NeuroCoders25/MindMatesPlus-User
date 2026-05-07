@@ -68,7 +68,7 @@ export const sendSupportMessage = async (
   userText: string,
   dass21Result: Dass21Result,
 ): Promise<string | null> => {
-  if (!API_KEY || API_KEY === 'addkey') return null;
+  if (!API_KEY || API_KEY === 'process.env.EXPO_PUBLIC_GEMINI_API_KEY ??') return null;
   try {
     const model = getClient().getGenerativeModel({ model: 'gemini-2.0-flash' });
     const chat = model.startChat({
@@ -81,6 +81,11 @@ export const sendSupportMessage = async (
     return null;
   }
 };
+
+// ─── Moderation circuit breaker ──────────────────────────────────────────────
+// When Gemini returns 429, skip it for COOLDOWN_MS to avoid hammering the API.
+const COOLDOWN_MS = 60_000;
+let moderationCircuitOpenUntil = 0;
 
 // ─── Content Moderation ───────────────────────────────────────────────────────
 
@@ -133,21 +138,26 @@ export const moderateContent = async (text: string): Promise<ModerationResult> =
   const key = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
 
   // ── Primary: Gemini API ───────────────────────────────────────────────────
-  if (key && key !== 'addkey') {
+  const circuitOpen = Date.now() < moderationCircuitOpenUntil;
+  if (!circuitOpen && key && key !== 'process.env.EXPO_PUBLIC_GEMINI_API_KEY ??') {
     try {
       const model = getClient().getGenerativeModel({ model: 'gemini-2.0-flash' });
       const prompt = `${MODERATION_PROMPT}\n\nUser text:\n"""${text.trim()}"""`;
       const res = await model.generateContent(prompt);
       const raw = res.response.text().trim();
-      console.log('[Moderation] raw response:', raw);
       const json = raw.replace(/```json|```/g, '').trim();
       const parsed = JSON.parse(json) as ModerationResult;
-      console.log('[Moderation] result:', parsed);
       return parsed;
     } catch (err) {
-      console.warn('[Moderation] Gemini unavailable, falling back to local filter:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('429')) {
+        moderationCircuitOpenUntil = Date.now() + COOLDOWN_MS;
+        console.warn('[Moderation] Rate limited — local filter active for 60 s');
+      } else {
+        console.warn('[Moderation] Gemini unavailable, falling back to local filter:', msg.split('\n')[0]);
+      }
     }
-  } else {
+  } else if (!key || key === 'process.env.EXPO_PUBLIC_GEMINI_API_KEY ??') {
     console.warn('[Moderation] No API key — using local filter');
   }
 
@@ -168,7 +178,7 @@ export const askQuestionDoubt = async (
   subscale: 'depression' | 'anxiety' | 'stress',
   questionNum: number,
 ): Promise<string | null> => {
-  if (!API_KEY || API_KEY === 'addkey') return null;
+  if (!API_KEY || API_KEY === 'process.env.EXPO_PUBLIC_GEMINI_API_KEY ??') return null;
   try {
     const model = getClient().getGenerativeModel({ model: 'gemini-2.0-flash' });
     const chat = model.startChat({
