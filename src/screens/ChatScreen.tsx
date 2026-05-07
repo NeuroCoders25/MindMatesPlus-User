@@ -9,6 +9,8 @@ import {
   Platform,
   SafeAreaView,
   ActivityIndicator,
+  Modal,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -24,18 +26,45 @@ import { Message } from '../types';
 export const ChatScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const { user, aiMessages, sendAiMessage } = useApp();
+  const { user, aiMessages, sendAiMessage, peerGroups, leaveGroup } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
   const title = isAI ? 'Mindy AI' : params.groupName ?? '';
   const groupId = params.groupId ?? '';
 
+  const group = peerGroups.find(g => g.id === groupId);
+
   const [groupMessages, setGroupMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
   const [moderationError, setModerationError] = useState<string | null>(null);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [infoVisible, setInfoVisible] = useState(false);
   const listRef = useRef<FlatList>(null);
+
+  const handleExitGroup = () => {
+    setMenuVisible(false);
+    // Delay Alert until the modal fade animation finishes — on Android the Alert
+    // is swallowed if shown while the Modal is still animating closed.
+    setTimeout(() => {
+      Alert.alert(
+        'Exit Group',
+        `Are you sure you want to leave "${title}"?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Exit',
+            style: 'destructive',
+            onPress: async () => {
+              await leaveGroup(groupId);
+              navigation.goBack();
+            },
+          },
+        ],
+      );
+    }, 300);
+  };
 
   const messages: Message[] = isAI ? aiMessages : groupMessages;
 
@@ -99,6 +128,44 @@ export const ChatScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Group Info Modal */}
+      <Modal visible={infoVisible} transparent animationType="fade" onRequestClose={() => setInfoVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setInfoVisible(false)}>
+          <View style={styles.infoCard}>
+            <View style={styles.infoAvatar}>
+              <Ionicons name="people-outline" size={32} color="#2563EB" />
+            </View>
+            <Text style={styles.infoTitle}>{group?.name ?? title}</Text>
+            <Text style={styles.infoBadge}>{group?.category}</Text>
+            <Text style={styles.infoDesc}>{group?.description}</Text>
+            <View style={styles.infoRow}>
+              <Ionicons name="person-outline" size={14} color={COLORS.muted} />
+              <Text style={styles.infoMeta}>{group?.members ?? '—'} members</Text>
+            </View>
+            <TouchableOpacity style={styles.infoClose} onPress={() => setInfoVisible(false)}>
+              <Text style={styles.infoCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Dropdown Menu Modal */}
+      <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={() => setMenuVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
+          <View style={styles.dropdownMenu}>
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); setInfoVisible(true); }}>
+              <Ionicons name="information-circle-outline" size={20} color={COLORS.text} />
+              <Text style={styles.menuItemText}>Group info</Text>
+            </TouchableOpacity>
+            <View style={styles.menuDivider} />
+            <TouchableOpacity style={styles.menuItem} onPress={handleExitGroup}>
+              <Ionicons name="exit-outline" size={20} color="#DC2626" />
+              <Text style={[styles.menuItemText, styles.menuItemDanger]}>Exit group</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Header */}
       <View style={styles.header}>
         {!isAI && (
@@ -116,10 +183,15 @@ export const ChatScreen = () => {
             color={isAI ? '#7C3AED' : '#2563EB'}
           />
         </View>
-        <View>
+        <View style={styles.headerInfo}>
           <Text style={styles.headerTitle}>{title}</Text>
           <Text style={styles.onlineText}>Live</Text>
         </View>
+        {!isAI && (
+          <TouchableOpacity style={styles.menuBtn} onPress={() => setMenuVisible(true)}>
+            <Ionicons name="ellipsis-vertical" size={20} color={COLORS.text} />
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Messages */}
@@ -316,4 +388,89 @@ const styles = StyleSheet.create({
     color: '#DC2626',
     lineHeight: 18,
   },
+  headerInfo: { flex: 1 },
+  menuBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#EFF6FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 'auto',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 60,
+    paddingRight: 16,
+  },
+  dropdownMenu: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    paddingVertical: 6,
+    minWidth: 190,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  menuItemText: { fontSize: 15, color: COLORS.text, fontWeight: '500' },
+  menuItemDanger: { color: '#DC2626' },
+  menuDivider: { height: 1, backgroundColor: '#F1F5F9', marginHorizontal: 12 },
+  infoCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    width: 300,
+    alignSelf: 'center',
+    marginTop: 'auto',
+    marginBottom: 'auto',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  infoAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    backgroundColor: '#DBEAFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  infoTitle: { fontSize: 18, fontWeight: 'bold', color: COLORS.text, marginBottom: 6, textAlign: 'center' },
+  infoBadge: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#2563EB',
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  infoDesc: { fontSize: 13, color: COLORS.muted, textAlign: 'center', lineHeight: 20, marginBottom: 14 },
+  infoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 20 },
+  infoMeta: { fontSize: 13, color: COLORS.muted },
+  infoClose: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    paddingHorizontal: 32,
+    paddingVertical: 10,
+  },
+  infoCloseText: { color: 'white', fontWeight: '700', fontSize: 14 },
 });

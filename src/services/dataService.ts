@@ -118,6 +118,18 @@ export const joinPeerGroup = async (userId: string, groupId: string): Promise<vo
   });
 };
 
+export const leavePeerGroup = async (userId: string, groupId: string): Promise<void> => {
+  const memberRef = doc(db, 'groupMembers', `${groupId}_${userId}`);
+  const existing = await getDoc(memberRef);
+  if (!existing.exists()) return;
+
+  await Promise.all([
+    deleteDoc(memberRef),
+    deleteDoc(doc(db, 'users', userId, 'group_memberships', groupId)),
+    updateDoc(doc(db, 'peer_groups', groupId), { memberCount: increment(-1) }).catch(() => {}),
+  ]);
+};
+
 // ─── Mental Health Profile ────────────────────────────────────────────────────
 
 export const saveMentalHealthProfile = async (

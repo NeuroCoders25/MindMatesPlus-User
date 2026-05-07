@@ -11,7 +11,7 @@ import {
 import { auth } from '../services/firebaseConfig';
 import {
   saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
-  fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup,
+  fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup, leavePeerGroup,
   fetchMentalHealthProfile, MentalHealthProfile,
   updateMlMentalHealthProfile, saveAiChatMessage, triggerBatchMlAnalysis,
 } from '../services/dataService';
@@ -44,6 +44,7 @@ interface AppContextType {
   setMentalHealthProfile: (profile: MentalHealthProfile | null) => void;
   joinedGroupIds: string[];
   joinGroup: (groupId: string) => Promise<void>;
+  leaveGroup: (groupId: string) => Promise<void>;
   mlMentalHealthProfile: MlMentalHealthProfile | null;
   aiMessages: Message[];
   sendAiMessage: (text: string) => Promise<void>;
@@ -223,6 +224,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
+  const leaveGroup = async (groupId: string) => {
+    if (!user) return;
+    await leavePeerGroup(user.id, groupId);
+    setJoinedGroupIds(prev => prev.filter(id => id !== groupId));
+    setPeerGroups(prev =>
+      prev.map(g => g.id === groupId ? { ...g, members: Math.max(0, g.members - 1) } : g)
+    );
+  };
+
   const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
     if (!user) return;
     await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
@@ -290,7 +300,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         prepareSupportChatFromDass,
         peerGroups, groupsLoading, mentalHealthProfile, setMentalHealthProfile,
         mlMentalHealthProfile,
-        joinedGroupIds, joinGroup,
+        joinedGroupIds, joinGroup, leaveGroup,
         journalEntries, addJournalEntry, removeJournalEntry,
         submitFeedback,
         aiMessages, sendAiMessage,
