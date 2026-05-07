@@ -13,6 +13,7 @@ import { Input, Card, Button } from '../components/UI';
 import { COLORS, ML_CATEGORY_MAP } from '../services/dataService';
 import { JournalEntry } from '../types';
 import { predictText, MlPredictResponse } from '../services/mlApiService';
+import { moderateContent } from '../services/geminiService';
 
 interface AnalysisResult {
   sentiment: string;
@@ -43,11 +44,24 @@ export const JournalScreen = () => {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [mlResult, setMlResult] = useState<MlPredictResponse | null>(null);
   const [mlError, setMlError] = useState<string | null>(null);
+  const [moderationError, setModerationError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<JournalEntry | null>(null);
 
   const handleSave = async () => {
     if (!content.trim()) return;
+
+    setModerationError(null);
     setIsAnalyzing(true);
+    const moderation = await moderateContent(content);
+    if (!moderation.safe) {
+      setIsAnalyzing(false);
+      setModerationError(
+        moderation.reason ??
+          'Your journal entry contains inappropriate content and cannot be saved. Please keep your writing respectful.',
+      );
+      return;
+    }
+
     setMlError(null);
 
     let mlAnalysis: MlPredictResponse | undefined;
@@ -117,7 +131,7 @@ export const JournalScreen = () => {
           <Input
             placeholder="How are you really feeling today?"
             value={content}
-            onChangeText={setContent}
+            onChangeText={t => { setContent(t); if (moderationError) setModerationError(null); }}
             type="textarea"
             style={styles.contentInput}
           />
@@ -145,6 +159,14 @@ export const JournalScreen = () => {
             </Button>
           </View>
         </Card>
+
+        {/* Moderation error */}
+        {moderationError && (
+          <View style={styles.moderationBanner}>
+            <Ionicons name="warning-outline" size={16} color="#DC2626" />
+            <Text style={styles.moderationBannerText}>{moderationError}</Text>
+          </View>
+        )}
 
         {/* ML API error message */}
         {mlError && (
@@ -487,5 +509,21 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: 'bold',
     color: 'white',
+  },
+  moderationBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  moderationBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#DC2626',
+    lineHeight: 18,
   },
 });

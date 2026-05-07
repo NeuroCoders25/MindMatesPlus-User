@@ -17,6 +17,7 @@ import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
 import { COLORS } from '../services/dataService';
 import { saveChatMessage, subscribeGroupMessages } from '../services/dataService';
+import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
 import { Message } from '../types';
 
@@ -33,6 +34,7 @@ export const ChatScreen = () => {
   const [groupMessages, setGroupMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
+  const [moderationError, setModerationError] = useState<string | null>(null);
   const listRef = useRef<FlatList>(null);
 
   const messages: Message[] = isAI ? aiMessages : groupMessages;
@@ -61,12 +63,32 @@ export const ChatScreen = () => {
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || sending) return;
+
+    setModerationError(null);
+    setSending(true);
+    try {
+      const moderation = await moderateContent(text);
+      if (!moderation.safe) {
+        setModerationError(
+          moderation.reason ??
+            'Your message contains inappropriate content. Please keep conversations respectful.',
+        );
+        setSending(false);
+        return;
+      }
+    } catch {
+      setSending(false);
+      return;
+    }
+
     setInputText('');
+
     if (isAI) {
+      setSending(false);
       sendAiMessage(text);
       return;
     }
-    if (!user) return;
+    if (!user) { setSending(false); return; }
     setSending(true);
     try {
       await saveChatMessage(groupId, user.id, user.name, text);
@@ -155,24 +177,32 @@ export const ChatScreen = () => {
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <View style={styles.inputBar}>
-          <Input
-            placeholder={isAI ? 'Talk to Mindy...' : 'Type a message...'}
-            value={inputText}
-            onChangeText={setInputText}
-            style={styles.inputField}
-          />
-          <TouchableOpacity
-            onPress={handleSend}
-            style={[styles.sendBtn, sending && styles.sendBtnDisabled]}
-            activeOpacity={0.8}
-            disabled={sending}
-          >
-            {sending
-              ? <ActivityIndicator size="small" color="white" />
-              : <Ionicons name="send" size={18} color="white" />
-            }
-          </TouchableOpacity>
+        <View>
+          {moderationError && (
+            <View style={styles.moderationBanner}>
+              <Ionicons name="warning-outline" size={16} color="#DC2626" />
+              <Text style={styles.moderationBannerText}>{moderationError}</Text>
+            </View>
+          )}
+          <View style={styles.inputBar}>
+            <Input
+              placeholder={isAI ? 'Talk to Mindy...' : 'Type a message...'}
+              value={inputText}
+              onChangeText={t => { setInputText(t); if (moderationError) setModerationError(null); }}
+              style={styles.inputField}
+            />
+            <TouchableOpacity
+              onPress={handleSend}
+              style={[styles.sendBtn, sending && styles.sendBtnDisabled]}
+              activeOpacity={0.8}
+              disabled={sending}
+            >
+              {sending
+                ? <ActivityIndicator size="small" color="white" />
+                : <Ionicons name="send" size={18} color="white" />
+              }
+            </TouchableOpacity>
+          </View>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -270,4 +300,20 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   sendBtnDisabled: { opacity: 0.6 },
+  moderationBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderTopWidth: 1,
+    borderTopColor: '#FECACA',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  moderationBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#DC2626',
+    lineHeight: 18,
+  },
 });
