@@ -145,7 +145,12 @@ export const moderateContent = async (text: string): Promise<ModerationResult> =
       console.log('[Moderation] result:', parsed);
       return parsed;
     } catch (err) {
-      console.warn('[Moderation] Gemini unavailable, falling back to local filter:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('429') || msg.toLowerCase().includes('quota')) {
+        // quota exhausted — silent fallback, no console noise
+      } else {
+        console.warn('[Moderation] Gemini unavailable, falling back to local filter');
+      }
     }
   } else {
     console.warn('[Moderation] No API key — using local filter');
