@@ -7,20 +7,22 @@ import { Navigation } from './src/navigation';
 import { auth, db } from './src/services/firebaseConfig';
 import { collection, getDocs } from 'firebase/firestore';
 
+// Temporary Firebase connection test — remove after confirming it works
 function FirebaseTest() {
   useEffect(() => {
     const test = async () => {
       try {
-        if (auth.currentUser) console.log('✅ Auth ready');
+        console.log("✅ Auth ready:", auth.currentUser);
         const snap = await getDocs(collection(db, 'users'));
-        if (snap) console.log('✅ Firestore connected');
+        console.log("✅ Firestore connected. Docs:", snap.size);
       } catch (e) {
-        console.error('❌ Firebase error:', e);
+        console.error("❌ Firebase error:", e);
       }
     };
     test();
   }, []);
-  return null;
+
+  return null; // renders nothing
 }
 
 export default function App() {
