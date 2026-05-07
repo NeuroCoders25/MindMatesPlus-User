@@ -13,17 +13,17 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
+import { ResourceFeed, TabType } from '../components/ResourceFeed';
 import {
   COLORS,
   ML_CATEGORY_MAP,
   subscribeToMlMentalHealthProfile,
   listenToMentalHealthProfile,
-  fetchResources,
   getGroupsByMlPrediction,
   calculateWellnessScore,
 } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
-import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile, Resource } from '../types';
+import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
 
 // ─── Colour helpers for ML insight categories ─────────────────────────────────
 
@@ -42,13 +42,6 @@ const formatRelativeTime = (date: Date): string => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-const RESOURCE_ICONS: Record<string, string> = {
-  article: 'book-outline',
-  audio:   'musical-notes-outline',
-  video:   'play-circle-outline',
-  exercise:'fitness-outline',
-};
-
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
@@ -64,8 +57,9 @@ export const HomeScreen = () => {
   const [recommendationProfile, setRecommendationProfile] = useState<MentalHealthRecommendationProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
 
-  // Resources for the active recommendation category
-  const [recommendedResources, setRecommendedResources] = useState<Resource[]>([]);
+  // Resource Tab State
+  const [activeResourceTab, setActiveResourceTab] = useState<TabType>('image');
+
 
   useEffect(() => {
     if (!user) return;
@@ -84,14 +78,6 @@ export const HomeScreen = () => {
     });
     return unsub;
   }, [user?.id]);
-
-  // Fetch resources whenever the active recommendation category changes
-  useEffect(() => {
-    if (!recommendationProfile) { setRecommendedResources([]); return; }
-    fetchResources(recommendationProfile.activeRecommendationCategory)
-      .then(setRecommendedResources)
-      .catch(() => setRecommendedResources([]));
-  }, [recommendationProfile?.activeRecommendationCategory]);
 
   // Advisor redirect when DASS result is severe
   const isAdvisorRequired = recommendationProfile?.userStatus === 'under_review';
@@ -196,8 +182,31 @@ export const HomeScreen = () => {
             "One small step at a time is still progress."
           </Text>
         </View>
-        <Ionicons name="happy-outline" size={42} color="rgba(255,255,255,0.45)" />
+        <Ionicons name="happy-outline" size={32} color="rgba(255,255,255,0.45)" />
       </View>
+
+      {/* Compact Mental Wellness Score */}
+      {!insightLoading && mlInsight && (() => {
+        const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
+        const activeCategory = recommendationProfile?.activeRecommendationCategory;
+        const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
+        if (wellnessScore === null) return null;
+        return (
+          <View style={[styles.compactScoreCard, { borderLeftColor: palette.border }]}>
+            <View style={styles.compactScoreLeft}>
+              <Text style={styles.compactScoreLabel}>Mental Wellness Score</Text>
+              <Text style={[styles.compactScoreValue, { color: palette.accent }]}>{wellnessScore}%</Text>
+            </View>
+            <View style={styles.compactScoreDivider} />
+            <View style={styles.compactScoreRight}>
+              <Text style={styles.compactScoreLabel}>Category</Text>
+              <Text style={[styles.compactScoreCategory, { color: palette.accent }]} numberOfLines={2}>
+                {activeCategory}
+              </Text>
+            </View>
+          </View>
+        );
+      })()}
 
       {/* Recommended Groups */}
       <View style={styles.section}>
@@ -307,6 +316,40 @@ export const HomeScreen = () => {
         )}
       </View>
 
+      {/* Resource Feed — right after groups */}
+      {user && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Resources For You</Text>
+            <View style={styles.smallTabContainer}>
+              <TouchableOpacity
+                style={[styles.smallTab, activeResourceTab === 'image' && styles.smallTabActive]}
+                onPress={() => setActiveResourceTab('image')}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={activeResourceTab === 'image' ? 'image' : 'image-outline'}
+                  size={14}
+                  color={activeResourceTab === 'image' ? COLORS.white : COLORS.muted}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.smallTab, activeResourceTab === 'text' && styles.smallTabActive]}
+                onPress={() => setActiveResourceTab('text')}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={activeResourceTab === 'text' ? 'document-text' : 'document-text-outline'}
+                  size={14}
+                  color={activeResourceTab === 'text' ? COLORS.white : COLORS.muted}
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+          <ResourceFeed userId={user.id} activeTab={activeResourceTab} hideTabs={true} />
+        </View>
+      )}
+
       {/* Wellbeing Insight Card */}
       {insightLoading ? (
         <Card style={styles.insightCard}>
@@ -391,47 +434,6 @@ export const HomeScreen = () => {
         );
       })()}
 
-      {/* Resources */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Recent Resources</Text>
-        <View style={styles.resourcesList}>
-          {recommendedResources.length > 0 ? (
-            recommendedResources.slice(0, 4).map(resource => (
-              <Card key={resource.id} style={styles.resourceCard}>
-                <View style={styles.resourceIconBox}>
-                  <Ionicons
-                    name={(RESOURCE_ICONS[resource.type?.toLowerCase()] ?? 'book-outline') as any}
-                    size={24}
-                    color={COLORS.accent}
-                  />
-                </View>
-                <View style={styles.resourceInfo}>
-                  <Text style={styles.resourceTitle}>{resource.title}</Text>
-                  <Text style={styles.resourceMeta}>
-                    {resource.type}
-                    {resource.category ? `  •  ${resource.category}` : ''}
-                  </Text>
-                </View>
-              </Card>
-            ))
-          ) : (
-            [
-              { title: 'Managing Social Anxiety', type: 'Article', time: '5 min read' },
-              { title: '10 Min Guided Meditation', type: 'Audio',   time: '10 min' },
-            ].map((item, i) => (
-              <Card key={i} style={styles.resourceCard}>
-                <View style={styles.resourceIconBox}>
-                  <Ionicons name="book-outline" size={24} color={COLORS.accent} />
-                </View>
-                <View style={styles.resourceInfo}>
-                  <Text style={styles.resourceTitle}>{item.title}</Text>
-                  <Text style={styles.resourceMeta}>{item.type} • {item.time}</Text>
-                </View>
-              </Card>
-            ))
-          )}
-        </View>
-      </View>
     </ScrollView>
   );
 };
@@ -449,24 +451,64 @@ const styles = StyleSheet.create({
   logo: { width: 80, height: 36 },
   motivationCard: {
     backgroundColor: COLORS.primary,
-    borderRadius: 20,
-    padding: 24,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
   },
   motivationContent: { flex: 1, marginRight: 12 },
   motivationLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#BFDBFE',
     fontWeight: '600',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   motivationQuote: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
     color: 'white',
-    lineHeight: 24,
+    lineHeight: 20,
+  },
+  compactScoreCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.accent,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  compactScoreLeft: { flex: 1, gap: 2 },
+  compactScoreDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: COLORS.cardBorder,
+    marginHorizontal: 14,
+  },
+  compactScoreRight: { flex: 1, gap: 2 },
+  compactScoreLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  compactScoreValue: {
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+  compactScoreCategory: {
+    fontSize: 13,
+    fontWeight: '700',
+    flexShrink: 1,
   },
   section: { gap: 14 },
   sectionHeader: {
@@ -476,6 +518,23 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 17, fontWeight: 'bold', color: COLORS.text },
   categoryLabel: { fontSize: 11, color: COLORS.accent, fontWeight: '600', marginTop: 2 },
+  smallTabContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(219, 234, 254, 0.4)',
+    borderRadius: 10,
+    padding: 2,
+    gap: 2,
+  },
+  smallTab: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  smallTabActive: {
+    backgroundColor: COLORS.accent,
+  },
   seeAll: { fontSize: 13, color: COLORS.accent, fontWeight: '600' },
   groupsRow: { gap: 12, paddingRight: 4 },
   groupsPlaceholder: {
@@ -559,25 +618,6 @@ const styles = StyleSheet.create({
   },
   joinBtnJoined: { backgroundColor: COLORS.accent },
   joinBtnText: { fontSize: 11, fontWeight: '700', color: 'white' },
-  resourcesList: { gap: 12 },
-  resourceCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-  },
-  resourceIconBox: {
-    width: 48,
-    height: 48,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
-  },
-  resourceInfo: { flex: 1 },
-  resourceTitle: { fontSize: 13, fontWeight: 'bold', color: COLORS.text },
-  resourceMeta: { fontSize: 11, color: COLORS.muted, marginTop: 2 },
-
   // ─── Wellbeing Insight Card ────────────────────────────────────────────────
   insightCard: {
     gap: 14,

@@ -90,8 +90,18 @@ export interface Feedback {
 export interface Resource {
   id: string;
   title: string;
-  category: string;  // matches ML prediction: 'depression' | 'anxiety' | 'normal'
-  type: string;      // e.g. 'article' | 'video' | 'exercise'
+  description?: string;
+  category: string;
+  contentType: 'text' | 'image';
+  imageUrl?: string;
+  textContent?: string;
+  isActive?: boolean;
+  postedBy?: string;
+  authorInitials?: string;
+  advisor?: { name?: string };
+  author?: { name?: string };
+  // legacy fields kept for backwards compat
+  type?: string;
   content?: string;
   url?: string;
   createdAt: Date;

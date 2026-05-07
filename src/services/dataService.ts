@@ -530,21 +530,96 @@ export const getMlGroupCategory = (dominantCategory: string): GroupCategory =>
 
 // ─── Resources Firestore Functions ───────────────────────────────────────────
 
+const mapResourceDoc = (d: any): Resource => {
+  const data = d.data();
+  const getVal = (fields: string[]) => {
+    for (const f of fields) {
+      if (data[f] !== undefined && data[f] !== null && data[f] !== '') return data[f];
+    }
+    return undefined;
+  };
+
+  const postedBy = getVal([
+    'author', 'postedBy', 'posted_by', 'advisorName', 'advisor_name', 'authorName', 'author_name', 
+    'posted_by_name', 'advisor_profile_name'
+  ]) ?? data.advisor?.name ?? data.author?.name ?? data.posted_by_profile?.name;
+
+  return {
+    id: d.id,
+    title: (getVal(['title', 'resource_title']) ?? '') as string,
+    description: (getVal(['description', 'resource_description']) ?? '') as string | undefined,
+    category: (getVal(['category', 'resource_category']) ?? '') as string,
+    contentType: (getVal(['resource_type', 'contentType', 'type']) ?? 'text') as 'text' | 'image',
+    imageUrl: getVal(['image_url', 'imageUrl', 'imageURL', 'url']) as string | undefined,
+    textContent: getVal(['resource', 'textContent', 'resource_content', 'content']) as string | undefined,
+    isActive: data.isActive ?? true,
+    postedBy: postedBy as string | undefined,
+    authorInitials: getVal(['authorInitials', 'author_initials']) as string | undefined,
+    type: data.type as string | undefined,
+    content: data.content as string | undefined,
+    url: data.url as string | undefined,
+    createdAt: (data.createdAt ?? data.created_at ?? data.timestamp ? (data.createdAt ?? data.created_at ?? data.timestamp).toDate() : new Date()),
+  };
+};
+
 export const fetchResources = async (category?: string): Promise<Resource[]> => {
   const ref = collection(db, 'resources');
   const q = category
     ? query(ref, where('category', '==', category))
     : query(ref);
   const snap = await getDocs(q);
-  return snap.docs.map(d => ({
-    id: d.id,
-    title: d.data().title as string,
-    category: d.data().category as string,
-    type: d.data().type as string,
-    content: d.data().content as string | undefined,
-    url: d.data().url as string | undefined,
-    createdAt: (d.data().createdAt as Timestamp).toDate(),
-  }));
+  return snap.docs
+    .map(mapResourceDoc)
+    .filter(r => r.isActive !== false)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+};
+
+// Fetches active resources for the given category, plus non-duplicate baseline resources.
+// Filters isActive client-side and sorts by createdAt descending.
+export const fetchResourcesByCategory = async (
+  activeCategory: string,
+  baselineCategory?: string,
+): Promise<Resource[]> => {
+  const ref = collection(db, 'resources');
+
+  const fetchByCategory = async (cat: string): Promise<Resource[]> => {
+    const snap = await getDocs(query(ref, where('category', '==', cat)));
+    return snap.docs
+      .map(mapResourceDoc)
+      .filter(r => r.isActive !== false)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  };
+
+  const primary = await fetchByCategory(activeCategory);
+
+  if (!baselineCategory || baselineCategory === activeCategory) return primary;
+
+  const primaryIds = new Set(primary.map(r => r.id));
+  const baseline = (await fetchByCategory(baselineCategory)).filter(
+    r => !primaryIds.has(r.id),
+  );
+
+  return [...primary, ...baseline];
+};
+
+// Realtime listener that emits the active + baseline recommendation categories
+// from mentalHealthProfile/currentProfile whenever they change.
+export const listenToUserRecommendationCategory = (
+  userId: string,
+  callback: (categories: { active: GroupCategory | null; baseline: GroupCategory | null }) => void,
+): (() => void) => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  return onSnapshot(profileRef, snap => {
+    if (!snap.exists()) {
+      callback({ active: null, baseline: null });
+      return;
+    }
+    const raw = snap.data();
+    callback({
+      active: (raw.activeRecommendationCategory as GroupCategory) ?? null,
+      baseline: (raw.baselineRecommendationCategory as GroupCategory) ?? null,
+    });
+  });
 };
 
 // ─── ML Mental Health Profile (journal-based) ─────────────────────────────────
@@ -830,8 +905,13 @@ export const fetchRecommendations = async (
     return {
       id: d.id,
       title: data.title as string,
-      category: data.resourceCategory as string,
-      type: data.type as string,
+      description: data.description as string | undefined,
+      category: (data.resourceCategory ?? data.category) as string,
+      contentType: (data.contentType as 'text' | 'image') ?? 'text',
+      imageUrl: data.imageUrl as string | undefined,
+      textContent: data.textContent as string | undefined,
+      isActive: data.isActive as boolean | undefined,
+      type: data.type as string | undefined,
       content: data.description as string | undefined,
       url: data.contentUrl as string | undefined,
       createdAt: (data.createdAt as Timestamp)?.toDate() ?? new Date(),
