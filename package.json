@@ -21,6 +21,7 @@
     "expo": "~54.0.33",
     "expo-status-bar": "~3.0.9",
     "firebase": "^12.12.1",
+    "groq-sdk": "^1.1.2",
     "lucide-react-native": "^1.11.0",
     "nativewind": "^4.2.3",
     "react": "19.1.0",
