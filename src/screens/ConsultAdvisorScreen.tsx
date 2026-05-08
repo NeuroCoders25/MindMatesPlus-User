@@ -1,5 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Image,
+  ActivityIndicator,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -8,87 +16,73 @@ import { Advisor } from '../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ConsultAdvisor'>;
 
-// Fallback avatars based on specialty
-const FALLBACK_AVATARS: Record<string, any> = {
-  'Clinical Psychologist': require('../assets/group_image1.jpg'),
-  'Mental Health Advisor': require('../assets/group_image3.png'),
-  'Depression Specialist': require('../assets/group_image4.jpeg'),
-  default: require('../assets/group_image5.png'),
-};
+const AvatarPlaceholder = () => (
+  <View style={styles.avatarPlaceholder}>
+    <Ionicons name="person-circle" size={52} color={COLORS.primary} />
+  </View>
+);
 
 export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const loadAdvisors = async () => {
-      try {
-        const data = await fetchAdvisors();
-        setAdvisors(data);
-      } catch (error) {
-        console.error('Error fetching advisors:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadAdvisors();
+    fetchAdvisors()
+      .then(data => setAdvisors(data))
+      .catch(err => console.error('Error fetching advisors:', err))
+      .finally(() => setLoading(false));
   }, []);
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Consult Advisor</Text>
-        <View style={{ width: 24 }} /> {/* Spacer to center title */}
+        <View style={styles.headerSpacer} />
       </View>
-
-      {/* Description */}
       <Text style={styles.description}>
         Please select a professional advisor to help you navigate through this difficult time.
       </Text>
-
-      {/* List */}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContainer}>
         {loading ? (
-          <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 40 }} />
+          <ActivityIndicator size="large" color={COLORS.primary} style={styles.loader} />
         ) : advisors.length === 0 ? (
           <Text style={styles.emptyText}>No advisors available at the moment.</Text>
         ) : (
-          advisors.map((advisor) => {
-            const avatar = advisor.imageUrl ? { uri: advisor.imageUrl } : (FALLBACK_AVATARS[advisor.specialty] || FALLBACK_AVATARS['default']);
-            return (
-              <TouchableOpacity
-                key={advisor.id}
-                style={styles.card}
-                activeOpacity={0.7}
-                onPress={() => navigation.navigate('AdvisorDetails', { advisor })}
-              >
-                {/* Avatar */}
-                <Image source={avatar} style={styles.avatar} />
-
-                {/* Details */}
-                <View style={styles.details}>
-                  <View style={styles.nameRow}>
-                    <Text style={styles.name}>{advisor.name}</Text>
-                    <View style={styles.ratingBox}>
-                      <Ionicons name="star" size={12} color="#FACC15" />
+          advisors.map(advisor => (
+            <TouchableOpacity
+              key={advisor.id}
+              style={styles.card}
+              activeOpacity={0.7}
+              onPress={() => navigation.navigate('AdvisorDetails', { advisor })}
+            >
+              {advisor.imageUrl
+                ? <Image source={{ uri: advisor.imageUrl }} style={styles.avatar} />
+                : <AvatarPlaceholder />}
+              <View style={styles.details}>
+                <View style={styles.nameRow}>
+                  <Text style={styles.name}>{advisor.name ?? ''}</Text>
+                  <View style={styles.ratingBox}>
+                    <Ionicons name="star" size={12} color="#FACC15" />
+                    {advisor.rating != null && (
                       <Text style={styles.ratingText}>{advisor.rating}</Text>
-                    </View>
-                  </View>
-                  
-                  <Text style={styles.specialty}>{advisor.specialty}</Text>
-                  
-                  <View style={styles.availabilityRow}>
-                    <Ionicons name="time-outline" size={12} color={COLORS.muted} />
-                    <Text style={styles.availabilityText}>Available: {advisor.availability}</Text>
+                    )}
                   </View>
                 </View>
-              </TouchableOpacity>
-            );
-          })
+                {!!advisor.specialty && (
+                  <Text style={styles.specialty}>{advisor.specialty}</Text>
+                )}
+                <View style={styles.availabilityRow}>
+                  <Ionicons name="time-outline" size={12} color={COLORS.muted} />
+                  <Text style={styles.availabilityText}>
+                    {advisor.availability ? `Available: ${advisor.availability}` : 'Available'}
+                  </Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+          ))
         )}
       </ScrollView>
     </View>
@@ -108,14 +102,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 20,
   },
-  backButton: {
-    padding: 4,
-  },
+  backButton: { padding: 4 },
   headerTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     color: COLORS.text,
   },
+  headerSpacer: { width: 24 },
   description: {
     fontSize: 14,
     color: COLORS.muted,
@@ -128,6 +121,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 16,
   },
+  loader: { marginTop: 40 },
   emptyText: {
     textAlign: 'center',
     color: COLORS.muted,
@@ -153,9 +147,16 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     marginRight: 16,
   },
-  details: {
-    flex: 1,
+  avatarPlaceholder: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    marginRight: 16,
+    backgroundColor: '#EEF4FF',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  details: { flex: 1 },
   nameRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

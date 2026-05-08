@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -83,7 +83,7 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
       {/* Footer Action */}
       <View style={styles.footer}>
         <Button
-          onPress={() => Alert.alert('Starting live chat...')}
+          onPress={() => navigation.navigate('AdvisorChat', { advisor })}
           variant="primary"
           style={styles.chatButton}
         >

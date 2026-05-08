@@ -133,7 +133,32 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleAnswer = (value: number) => {
     const questionNum = currentStep + 1;
-    setAnswers({ ...answers, [questionNum]: value });
+    const newAnswers = { ...answers, [questionNum]: value };
+    setAnswers(newAnswers);
+
+    // Auto-advance on selection (fast testing)
+    Animated.timing(opacity, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
+      if (currentStep < TOTAL - 1) {
+        const next = currentStep + 1;
+        setCurrentStep(next);
+        Animated.parallel([
+          Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+          Animated.timing(progressAnim, {
+            toValue: ((next + 1) / TOTAL) * 100,
+            duration: 300,
+            useNativeDriver: false,
+          }),
+        ]).start();
+      } else {
+        const result = computeDass21Result(newAnswers);
+        setDass21Result(result);
+        prepareSupportChatFromDass(result);
+        if (user?.id) {
+          saveToFirestore(user.id, newAnswers, result).catch(console.error);
+        }
+        navigation.replace('Result');
+      }
+    });
   };
 
   const handleNext = () => {
@@ -210,7 +235,10 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
 
   // ─── Question screen ───────────────────────────────────────────────────────
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <Image source={require('../assets/logo.png')} style={styles.logo} resizeMode="contain" />
 
       <View style={styles.progressSection}>
@@ -288,10 +316,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
       </View>
 
       {showHelper && (
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.helperCard}
-        >
+        <View style={styles.helperCard}>
           <View style={styles.helperHeader}>
             <Text style={styles.helperTitle}>Mindy Question Helper</Text>
             <TouchableOpacity onPress={() => setShowHelper(false)}>
@@ -337,9 +362,9 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
               }
             </TouchableOpacity>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       )}
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -384,7 +409,7 @@ const styles = StyleSheet.create({
   startButtonText: { color: COLORS.white, fontWeight: '600', fontSize: 15 },
 
   // Questions
-  questionBlock: { flex: 1 },
+  questionBlock: {},
   question: {
     fontSize: 18,
     fontWeight: '500',
@@ -392,7 +417,7 @@ const styles = StyleSheet.create({
     lineHeight: 27,
     marginBottom: 24,
   },
-  optionsScroll: { flex: 1 },
+  optionsScroll: {},
   optionsContent: { gap: 12, paddingBottom: 24 },
   option: {
     backgroundColor: COLORS.white,
@@ -417,8 +442,9 @@ const styles = StyleSheet.create({
   navRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingTop: 16,
+    paddingTop: 12,
     paddingBottom: 8,
+    marginTop: 8,
   },
   navBtn: {
     paddingVertical: 14,

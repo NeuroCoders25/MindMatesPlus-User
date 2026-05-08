@@ -16,6 +16,7 @@ import { ResultScreen } from '../screens/ResultScreen';
 import { AdvisorScreen } from '../screens/AdvisorScreen';
 import { ConsultAdvisorScreen } from '../screens/ConsultAdvisorScreen';
 import { AdvisorDetailsScreen } from '../screens/AdvisorDetailsScreen';
+import { AdvisorChatScreen } from '../screens/AdvisorChatScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { GroupsScreen } from '../screens/GroupsScreen';
 import { ChatScreen } from '../screens/ChatScreen';
@@ -37,6 +38,7 @@ export type RootStackParamList = {
   Advisor: undefined;
   ConsultAdvisor: undefined;
   AdvisorDetails: { advisor: Advisor };
+  AdvisorChat: { advisor: Advisor };
   Main: undefined;
   GroupChat: { groupId: string; groupName: string };
   Feedback: undefined;
@@ -166,6 +168,7 @@ export const Navigation = () => (
       <RootStack.Screen name="Advisor" component={AdvisorScreen} />
       <RootStack.Screen name="ConsultAdvisor" component={ConsultAdvisorScreen} />
       <RootStack.Screen name="AdvisorDetails" component={AdvisorDetailsScreen} />
+      <RootStack.Screen name="AdvisorChat" component={AdvisorChatScreen} />
       <RootStack.Screen name="Main" component={MainTabs} />
       <RootStack.Screen
         name="GroupChat"
