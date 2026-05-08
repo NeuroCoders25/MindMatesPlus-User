@@ -170,3 +170,15 @@ export interface RecommendationResult {
   groups: Group[];
   resources: Resource[];
 }
+
+export interface Advisor {
+  id: string;
+  name: string;
+  specialty: string;
+  rating: number;
+  availability: string;
+  imageUrl?: string;
+  experience?: string;
+  sessions?: string;
+  about?: string;
+}
