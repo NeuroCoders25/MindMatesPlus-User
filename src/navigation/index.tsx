@@ -66,10 +66,12 @@ const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
 
 const MainTabs = () => {
   const { showCrisisAlert, setShowCrisisAlert } = useApp();
+  const initialTab = 'Home';
 
   return (
     <>
       <MainTab.Navigator
+        initialRouteName={initialTab}
         screenOptions={({ route }) => {
           const [active, inactive] = TAB_ICONS[route.name] ?? [
             'home',

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -13,16 +13,123 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { COLORS, getRecommendedGroups } from '../services/dataService';
+import { ResourceFeed, TabType } from '../components/ResourceFeed';
+import {
+  COLORS,
+  ML_CATEGORY_MAP,
+  subscribeToMlMentalHealthProfile,
+  listenToMentalHealthProfile,
+  getGroupsByMlPrediction,
+  calculateWellnessScore,
+} from '../services/dataService';
 import { RootStackParamList } from '../navigation';
-import { Group } from '../types';
+import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
+
+// ─── Colour helpers for ML insight categories ─────────────────────────────────
+
+const INSIGHT_COLORS: Record<string, { accent: string; bg: string; border: string }> = {
+  depression: { accent: '#EF4444', bg: 'rgba(239,68,68,0.08)',  border: '#EF4444' },
+  anxiety:    { accent: '#F59E0B', bg: 'rgba(245,158,11,0.08)', border: '#F59E0B' },
+  normal:     { accent: '#22C55E', bg: 'rgba(34,197,94,0.08)',  border: '#22C55E' },
+};
+
+const formatRelativeTime = (date: Date): string => {
+  const mins = Math.floor((Date.now() - date.getTime()) / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+// ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
-  const { user, peerGroups, groupsLoading, mentalHealthProfile, joinedGroupIds, joinGroup, setSelectedGroup } = useApp();
+  const { user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [joiningId, setJoiningId] = useState<string | null>(null);
 
-  const recommended = getRecommendedGroups(peerGroups, mentalHealthProfile).slice(0, 4);
+  // Realtime wellbeing insight (journal-based ML profile on user doc)
+  const [mlInsight, setMlInsight] = useState<MlMentalHealthProfile | null>(null);
+  const [insightLoading, setInsightLoading] = useState(true);
+
+  // Realtime recommendation profile (mentalHealthProfile/currentProfile)
+  const [recommendationProfile, setRecommendationProfile] = useState<MentalHealthRecommendationProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+
+  // Resource Tab State
+  const [activeResourceTab, setActiveResourceTab] = useState<TabType>('image');
+
+
+  useEffect(() => {
+    if (!user) return;
+    const unsub = subscribeToMlMentalHealthProfile(user.id, (profile) => {
+      setMlInsight(profile);
+      setInsightLoading(false);
+    });
+    return unsub;
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsub = listenToMentalHealthProfile(user.id, (profile) => {
+      setRecommendationProfile(profile);
+      setProfileLoading(false);
+    });
+    return unsub;
+  }, [user?.id]);
+
+  // Advisor redirect when DASS result is severe
+  const isAdvisorRequired = recommendationProfile?.userStatus === 'under_review';
+
+  // Build primary + secondary groups, deduplicated
+  const { recommendedGroups, hasSecondary } = (() => {
+    if (isAdvisorRequired) return { recommendedGroups: [], hasSecondary: false };
+
+    if (recommendationProfile) {
+      const active   = recommendationProfile.activeRecommendationCategory;
+      const baseline = recommendationProfile.baselineRecommendationCategory;
+
+      const primary = peerGroups.filter(g => g.category === active).slice(0, 4);
+      const primaryIds = new Set(primary.map(g => g.id));
+
+      const secondary = baseline !== active
+        ? peerGroups.filter(g => g.category === baseline && !primaryIds.has(g.id)).slice(0, 2)
+        : [];
+
+      return {
+        recommendedGroups: [...primary, ...secondary],
+        hasSecondary: secondary.length > 0,
+      };
+    }
+
+    // Fallback: no questionnaire yet — use ML insight
+    if (mlInsight) {
+      return {
+        recommendedGroups: getGroupsByMlPrediction(peerGroups, mlInsight.dominantCategory).slice(0, 4),
+        hasSecondary: false,
+      };
+    }
+
+    return { recommendedGroups: [], hasSecondary: false };
+  })();
+
+  // Source label and category subtitle
+  const sourceLabel: string | null = (() => {
+    if (recommendationProfile) {
+      return recommendationProfile.recommendationSource === 'ml_analysis'
+        ? 'Based on your recent activity'
+        : 'Based on your initial assessment';
+    }
+    if (mlInsight) return 'Based on your recent activity';
+    return null;
+  })();
+
+  const categoryLabel: string | null = recommendationProfile
+    ? recommendationProfile.activeRecommendationCategory
+    : mlInsight
+    ? ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? null
+    : null;
 
   const handleJoin = async (group: Group) => {
     setJoiningId(group.id);
@@ -75,30 +182,82 @@ export const HomeScreen = () => {
             "One small step at a time is still progress."
           </Text>
         </View>
-        <Ionicons name="happy-outline" size={42} color="rgba(255,255,255,0.45)" />
+        <Ionicons name="happy-outline" size={32} color="rgba(255,255,255,0.45)" />
       </View>
+
+      {/* Compact Mental Wellness Score */}
+      {!insightLoading && mlInsight && (() => {
+        const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
+        const activeCategory = recommendationProfile?.activeRecommendationCategory;
+        const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
+        if (wellnessScore === null) return null;
+        return (
+          <View style={[styles.compactScoreCard, { borderLeftColor: palette.border }]}>
+            <View style={styles.compactScoreLeft}>
+              <Text style={styles.compactScoreLabel}>Mental Wellness Score</Text>
+              <Text style={[styles.compactScoreValue, { color: palette.accent }]}>{wellnessScore}%</Text>
+            </View>
+            <View style={styles.compactScoreDivider} />
+            <View style={styles.compactScoreRight}>
+              <Text style={styles.compactScoreLabel}>Category</Text>
+              <Text style={[styles.compactScoreCategory, { color: palette.accent }]} numberOfLines={2}>
+                {activeCategory}
+              </Text>
+            </View>
+          </View>
+        );
+      })()}
 
       {/* Recommended Groups */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Recommended Groups</Text>
-            {mentalHealthProfile && (
-              <Text style={styles.categoryLabel}>{mentalHealthProfile.groupCategory}</Text>
+            {categoryLabel && sourceLabel && (
+              <Text style={styles.categoryLabel}>
+                {categoryLabel}{'  •  '}{sourceLabel}
+              </Text>
             )}
           </View>
-          <TouchableOpacity onPress={() => navigation.navigate('Main')}>
-            <Text style={styles.seeAll}>See All</Text>
-          </TouchableOpacity>
+          {!isAdvisorRequired && (
+            <TouchableOpacity onPress={() => navigation.navigate('Main')}>
+              <Text style={styles.seeAll}>See All</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        {groupsLoading ? (
+
+        {/* Advisor redirect for severe DASS users */}
+        {isAdvisorRequired ? (
+          <View style={styles.advisorRedirectCard}>
+            <Ionicons name="alert-circle" size={32} color={COLORS.danger} />
+            <Text style={styles.advisorRedirectTitle}>Professional Support Recommended</Text>
+            <Text style={styles.advisorRedirectText}>
+              Your wellbeing check indicates a high level of distress. We recommend speaking with a professional advisor rather than joining a peer group at this time.
+            </Text>
+            <TouchableOpacity
+              style={styles.advisorRedirectBtn}
+              onPress={() => navigation.navigate('Advisor')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="call-outline" size={14} color="white" />
+              <Text style={styles.advisorRedirectBtnText}>Connect with Advisor</Text>
+            </TouchableOpacity>
+            <Text style={styles.advisorDisclaimer}>
+              AI suggestion only — not professional advice
+            </Text>
+          </View>
+        ) : (groupsLoading || profileLoading) ? (
           <View style={styles.groupsPlaceholder}>
             <ActivityIndicator size="small" color={COLORS.accent} />
             <Text style={styles.loadingText}>Loading groups…</Text>
           </View>
-        ) : recommended.length === 0 ? (
+        ) : recommendedGroups.length === 0 ? (
           <View style={styles.groupsPlaceholder}>
-            <Text style={styles.loadingText}>No groups found for your wellbeing category yet.</Text>
+            <Text style={styles.loadingText}>
+              {!recommendationProfile && !mlInsight
+                ? 'Complete your wellbeing check or write a journal entry to get group recommendations.'
+                : 'No groups found for your wellbeing category yet.'}
+            </Text>
           </View>
         ) : (
           <ScrollView
@@ -106,13 +265,16 @@ export const HomeScreen = () => {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.groupsRow}
           >
-            {recommended.map(group => {
+            {recommendedGroups.map(group => {
               const isJoined = joinedGroupIds.includes(group.id);
               const isLoading = joiningId === group.id;
+              const isPrimary = recommendationProfile
+                ? group.category === recommendationProfile.activeRecommendationCategory
+                : true;
               return (
                 <Card
                   key={group.id}
-                  style={styles.groupCard}
+                  style={[styles.groupCard, !isPrimary && styles.groupCardSecondary]}
                   onPress={() => handleGroupPress(group)}
                 >
                   <Image
@@ -121,6 +283,9 @@ export const HomeScreen = () => {
                     resizeMode="cover"
                   />
                   <Text style={styles.groupName}>{group.name}</Text>
+                  {!isPrimary && (
+                    <Text style={styles.groupSecondaryTag}>Also recommended</Text>
+                  )}
                   <Text style={styles.groupDesc} numberOfLines={2}>
                     {group.description}
                   </Text>
@@ -149,38 +314,126 @@ export const HomeScreen = () => {
             })}
           </ScrollView>
         )}
-        {mentalHealthProfile?.classificationLevel === 'severe' && (
-          <View style={styles.supportNotice}>
-            <Ionicons name="alert-circle-outline" size={16} color={COLORS.danger} />
-            <Text style={styles.supportNoticeText}>
-              Your wellbeing check suggests speaking with a professional advisor may help.
-            </Text>
-          </View>
-        )}
       </View>
 
-      {/* Resources */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Recent Resources</Text>
-        <View style={styles.resourcesList}>
-          {[
-            { title: 'Managing Social Anxiety', type: 'Article', time: '5 min read' },
-            { title: '10 Min Guided Meditation', type: 'Audio', time: '10 min' },
-          ].map((item, i) => (
-            <Card key={i} style={styles.resourceCard}>
-              <View style={styles.resourceIconBox}>
-                <Ionicons name="book-outline" size={24} color={COLORS.accent} />
-              </View>
-              <View style={styles.resourceInfo}>
-                <Text style={styles.resourceTitle}>{item.title}</Text>
-                <Text style={styles.resourceMeta}>
-                  {item.type} • {item.time}
-                </Text>
-              </View>
-            </Card>
-          ))}
+      {/* Resource Feed — right after groups */}
+      {user && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Resources For You</Text>
+            <View style={styles.smallTabContainer}>
+              <TouchableOpacity
+                style={[styles.smallTab, activeResourceTab === 'image' && styles.smallTabActive]}
+                onPress={() => setActiveResourceTab('image')}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={activeResourceTab === 'image' ? 'image' : 'image-outline'}
+                  size={14}
+                  color={activeResourceTab === 'image' ? COLORS.white : COLORS.muted}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.smallTab, activeResourceTab === 'text' && styles.smallTabActive]}
+                onPress={() => setActiveResourceTab('text')}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={activeResourceTab === 'text' ? 'document-text' : 'document-text-outline'}
+                  size={14}
+                  color={activeResourceTab === 'text' ? COLORS.white : COLORS.muted}
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+          <ResourceFeed userId={user.id} activeTab={activeResourceTab} hideTabs={true} />
         </View>
-      </View>
+      )}
+
+      {/* Wellbeing Insight Card */}
+      {insightLoading ? (
+        <Card style={styles.insightCard}>
+          <ActivityIndicator size="small" color={COLORS.accent} />
+          <Text style={styles.insightLoadingText}>Loading insight…</Text>
+        </Card>
+      ) : !mlInsight ? (
+        <Card style={styles.insightCard}>
+          <Ionicons name="sparkles-outline" size={22} color={COLORS.muted} />
+          <Text style={styles.insightEmptyText}>No journal insights yet</Text>
+          <Text style={styles.insightEmptySubText}>
+            Write a journal entry to see your emotion pattern here.
+          </Text>
+        </Card>
+      ) : (() => {
+        const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
+        const categoryLbl = ML_CATEGORY_MAP[mlInsight.latestPrediction] ?? mlInsight.latestPrediction;
+        const dominantLabel = ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? mlInsight.dominantCategory;
+        const activeCategory = recommendationProfile?.activeRecommendationCategory;
+        const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
+        return (
+          <Card style={[styles.insightCard, { borderLeftColor: palette.border, borderLeftWidth: 4 }]}>
+            <View style={styles.insightHeader}>
+              <View style={styles.insightHeaderLeft}>
+                <Ionicons name="sparkles" size={14} color={palette.accent} />
+                <Text style={[styles.insightTitle, { color: palette.accent }]}>WELLBEING INSIGHT</Text>
+              </View>
+              <Text style={styles.insightTime}>{formatRelativeTime(mlInsight.lastUpdated)}</Text>
+            </View>
+
+            {wellnessScore !== null && (
+              <View style={styles.wellnessScoreRow}>
+                <View style={styles.wellnessScoreLeft}>
+                  <Text style={styles.insightFieldLabel}>Mental Wellness Score</Text>
+                  <Text style={[styles.wellnessScoreValue, { color: palette.accent }]}>
+                    {wellnessScore}%
+                  </Text>
+                </View>
+                <View style={styles.wellnessScoreRight}>
+                  <Text style={styles.insightFieldLabel}>Category</Text>
+                  <Text style={[styles.dominantValue, { color: palette.accent }]} numberOfLines={2}>
+                    {activeCategory}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            <View style={styles.insightMainRow}>
+              <View style={styles.insightMainLeft}>
+                <Text style={styles.insightFieldLabel}>Latest Emotion</Text>
+                <View style={[styles.emotionBadge, { backgroundColor: palette.bg }]}>
+                  <Text style={[styles.emotionBadgeText, { color: palette.accent }]}>
+                    {categoryLbl}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.insightMainRight}>
+                <Text style={styles.insightFieldLabel}>Dominant Pattern</Text>
+                <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
+              </View>
+            </View>
+
+            <View style={styles.countsRow}>
+              <View style={[styles.countChip, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
+                <Text style={styles.countChipLabel}>Depression</Text>
+                <Text style={[styles.countChipValue, { color: '#EF4444' }]}>{mlInsight.depressionCount}</Text>
+              </View>
+              <View style={[styles.countChip, { backgroundColor: 'rgba(245,158,11,0.08)' }]}>
+                <Text style={styles.countChipLabel}>Anxiety</Text>
+                <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>{mlInsight.anxietyCount}</Text>
+              </View>
+              <View style={[styles.countChip, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
+                <Text style={styles.countChipLabel}>Normal</Text>
+                <Text style={[styles.countChipValue, { color: '#22C55E' }]}>{mlInsight.normalCount}</Text>
+              </View>
+            </View>
+
+            <Text style={styles.insightDisclaimer}>
+              AI suggestion only — not professional advice
+            </Text>
+          </Card>
+        );
+      })()}
+
     </ScrollView>
   );
 };
@@ -198,24 +451,64 @@ const styles = StyleSheet.create({
   logo: { width: 80, height: 36 },
   motivationCard: {
     backgroundColor: COLORS.primary,
-    borderRadius: 20,
-    padding: 24,
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
   },
   motivationContent: { flex: 1, marginRight: 12 },
   motivationLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#BFDBFE',
     fontWeight: '600',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   motivationQuote: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
     color: 'white',
-    lineHeight: 24,
+    lineHeight: 20,
+  },
+  compactScoreCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.accent,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  compactScoreLeft: { flex: 1, gap: 2 },
+  compactScoreDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: COLORS.cardBorder,
+    marginHorizontal: 14,
+  },
+  compactScoreRight: { flex: 1, gap: 2 },
+  compactScoreLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  compactScoreValue: {
+    fontSize: 22,
+    fontWeight: 'bold',
+  },
+  compactScoreCategory: {
+    fontSize: 13,
+    fontWeight: '700',
+    flexShrink: 1,
   },
   section: { gap: 14 },
   sectionHeader: {
@@ -225,6 +518,23 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 17, fontWeight: 'bold', color: COLORS.text },
   categoryLabel: { fontSize: 11, color: COLORS.accent, fontWeight: '600', marginTop: 2 },
+  smallTabContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(219, 234, 254, 0.4)',
+    borderRadius: 10,
+    padding: 2,
+    gap: 2,
+  },
+  smallTab: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  smallTabActive: {
+    backgroundColor: COLORS.accent,
+  },
   seeAll: { fontSize: 13, color: COLORS.accent, fontWeight: '600' },
   groupsRow: { gap: 12, paddingRight: 4 },
   groupsPlaceholder: {
@@ -234,22 +544,60 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
   },
   loadingText: { fontSize: 13, color: COLORS.muted },
-  supportNotice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
+  advisorRedirectCard: {
     backgroundColor: '#FEF2F2',
-    borderRadius: 12,
-    padding: 12,
-    marginTop: 8,
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(248,113,113,0.3)',
   },
-  supportNoticeText: { flex: 1, fontSize: 12, color: COLORS.danger, lineHeight: 18 },
+  advisorRedirectTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: COLORS.danger,
+    textAlign: 'center',
+  },
+  advisorRedirectText: {
+    fontSize: 13,
+    color: '#7F1D1D',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  advisorRedirectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.danger,
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  advisorRedirectBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: 'white',
+  },
+  advisorDisclaimer: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontStyle: 'italic',
+  },
   groupCard: { width: 220, padding: 16 },
+  groupCardSecondary: { opacity: 0.85 },
   groupImage: { width: '100%', height: 120, borderRadius: 16, marginBottom: 12 },
   groupName: {
     fontSize: 14,
     fontWeight: 'bold',
     color: COLORS.text,
+    marginBottom: 4,
+  },
+  groupSecondaryTag: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontStyle: 'italic',
     marginBottom: 4,
   },
   groupDesc: { fontSize: 11, color: COLORS.muted, lineHeight: 16, marginBottom: 10 },
@@ -270,22 +618,116 @@ const styles = StyleSheet.create({
   },
   joinBtnJoined: { backgroundColor: COLORS.accent },
   joinBtnText: { fontSize: 11, fontWeight: '700', color: 'white' },
-  resourcesList: { gap: 12 },
-  resourceCard: {
+  // ─── Wellbeing Insight Card ────────────────────────────────────────────────
+  insightCard: {
+    gap: 14,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.accent,
+  },
+  insightLoadingText: {
+    fontSize: 13,
+    color: COLORS.muted,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  insightEmptyText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  insightEmptySubText: {
+    fontSize: 12,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  insightHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
+    justifyContent: 'space-between',
   },
-  resourceIconBox: {
-    width: 48,
-    height: 48,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 14,
+  insightHeaderLeft: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
+    gap: 6,
   },
-  resourceInfo: { flex: 1 },
-  resourceTitle: { fontSize: 13, fontWeight: 'bold', color: COLORS.text },
-  resourceMeta: { fontSize: 11, color: COLORS.muted, marginTop: 2 },
+  insightTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  insightTime: {
+    fontSize: 10,
+    color: COLORS.muted,
+  },
+  wellnessScoreRow: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingVertical: 4,
+  },
+  wellnessScoreLeft: { flex: 1, gap: 4 },
+  wellnessScoreRight: { flex: 1, gap: 4 },
+  wellnessScoreValue: {
+    fontSize: 32,
+    fontWeight: 'bold',
+  },
+  insightMainRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  insightMainLeft: { flex: 1, gap: 6 },
+  insightMainRight: { gap: 6 },
+  insightFieldLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.muted,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  emotionBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  emotionBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  dominantValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  countsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  countChip: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    gap: 2,
+  },
+  countChipLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: COLORS.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  countChipValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  insightDisclaimer: {
+    fontSize: 10,
+    color: COLORS.muted,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
 });

@@ -10,8 +10,10 @@ import {
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { Input, Card, Button } from '../components/UI';
-import { COLORS } from '../services/dataService';
+import { COLORS, ML_CATEGORY_MAP } from '../services/dataService';
 import { JournalEntry } from '../types';
+import { predictText, MlPredictResponse } from '../services/mlApiService';
+import { moderateContent } from '../services/geminiService';
 
 interface AnalysisResult {
   sentiment: string;
@@ -40,28 +42,57 @@ export const JournalScreen = () => {
   const [selectedMood, setSelectedMood] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
+  const [mlResult, setMlResult] = useState<MlPredictResponse | null>(null);
+  const [mlError, setMlError] = useState<string | null>(null);
+  const [moderationError, setModerationError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<JournalEntry | null>(null);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!content.trim()) return;
+
+    setModerationError(null);
     setIsAnalyzing(true);
-    setTimeout(() => {
-      const result: AnalysisResult = {
-        sentiment: 'Positive',
-        emotion: 'Hopeful',
-        risk: 'Low',
-        score: 0.85,
-      };
+    const moderation = await moderateContent(content);
+    if (!moderation.safe) {
       setIsAnalyzing(false);
+      setModerationError(
+        moderation.reason ??
+          'Your journal entry contains inappropriate content and cannot be saved. Please keep your writing respectful.',
+      );
+      return;
+    }
+
+    setMlError(null);
+
+    let mlAnalysis: MlPredictResponse | undefined;
+
+    try {
+      mlAnalysis = await predictText(content);
+      console.log('ML prediction result:', mlAnalysis);
+      const result: AnalysisResult = {
+        emotion: ML_CATEGORY_MAP[mlAnalysis.prediction] ?? mlAnalysis.prediction,
+        sentiment: `${(mlAnalysis.confidence * 100).toFixed(0)}% confident`,
+        risk: mlAnalysis.prediction === 'normal' ? 'Low' : 'Moderate',
+        score: mlAnalysis.confidence,
+      };
       setAnalysis(result);
-      addJournalEntry(title || 'Untitled Entry', content, selectedMood || 'neutral');
-      setTimeout(() => {
-        setTitle('');
-        setContent('');
-        setSelectedMood('');
-        setAnalysis(null);
-      }, 3000);
-    }, 2000);
+      setMlResult(mlAnalysis);
+    } catch (err) {
+      console.error('ML API error:', err);
+      setMlError('Analysis service unavailable. Your entry has been saved.');
+    }
+
+    setIsAnalyzing(false);
+    await addJournalEntry(title || 'Untitled Entry', content, selectedMood || 'neutral', mlAnalysis);
+
+    setTimeout(() => {
+      setTitle('');
+      setContent('');
+      setSelectedMood('');
+      setAnalysis(null);
+      setMlResult(null);
+      setMlError(null);
+    }, 3000);
   };
 
   const riskBarColor = (risk: string, level: number) => {
@@ -100,7 +131,7 @@ export const JournalScreen = () => {
           <Input
             placeholder="How are you really feeling today?"
             value={content}
-            onChangeText={setContent}
+            onChangeText={t => { setContent(t); if (moderationError) setModerationError(null); }}
             type="textarea"
             style={styles.contentInput}
           />
@@ -128,6 +159,22 @@ export const JournalScreen = () => {
             </Button>
           </View>
         </Card>
+
+        {/* Moderation error */}
+        {moderationError && (
+          <View style={styles.moderationBanner}>
+            <Ionicons name="warning-outline" size={16} color="#DC2626" />
+            <Text style={styles.moderationBannerText}>{moderationError}</Text>
+          </View>
+        )}
+
+        {/* ML API error message */}
+        {mlError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={16} color="#F87171" />
+            <Text style={styles.errorText}>{mlError}</Text>
+          </View>
+        )}
 
         {/* AI Insight */}
         {analysis && (
@@ -163,6 +210,20 @@ export const JournalScreen = () => {
                 ))}
               </View>
             </View>
+
+            {/* Probabilities breakdown */}
+            {mlResult && (
+              <View style={styles.probRow}>
+                {(['depression', 'anxiety', 'normal'] as const).map(key => (
+                  <View key={key} style={styles.probCell}>
+                    <Text style={styles.probLabel}>{ML_CATEGORY_MAP[key]}</Text>
+                    <Text style={styles.probValue}>
+                      {(mlResult.probabilities[key] * 100).toFixed(0)}%
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
         )}
 
@@ -414,4 +475,55 @@ const styles = StyleSheet.create({
     maxHeight: 240,
   },
   modalBodyText: { fontSize: 14, color: COLORS.text, lineHeight: 22 },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  errorText: { fontSize: 13, color: '#DC2626', flex: 1 },
+  probRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  probCell: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
+    padding: 10,
+    alignItems: 'center',
+    gap: 2,
+  },
+  probLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.6)',
+    textAlign: 'center',
+    letterSpacing: 0.5,
+  },
+  probValue: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: 'white',
+  },
+  moderationBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  moderationBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#DC2626',
+    lineHeight: 18,
+  },
 });

@@ -11,10 +11,14 @@ import {
 import { auth } from '../services/firebaseConfig';
 import {
   saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
-  fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup,
+  fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup, leavePeerGroup,
   fetchMentalHealthProfile, MentalHealthProfile,
+  updateMlMentalHealthProfile, saveAiChatMessage,
+  saveChatMessage, runUserTextMlAnalysis,
 } from '../services/dataService';
-import { User, Group, Message, JournalEntry, Dass21Result, Feedback } from '../types';
+import { sendSupportMessage } from '../services/geminiService';
+import { MlPredictResponse } from '../services/mlApiService';
+import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile } from '../types';
 import { encryptName, decryptName } from '../utils/encryption';
 
 interface AppContextType {
@@ -30,8 +34,9 @@ interface AppContextType {
   setAssessmentScore: (score: number) => void;
   dass21Result: Dass21Result | null;
   setDass21Result: (result: Dass21Result) => void;
+  prepareSupportChatFromDass: (result: Dass21Result) => void;
   journalEntries: JournalEntry[];
-  addJournalEntry: (title: string, content: string, mood: string) => Promise<void>;
+  addJournalEntry: (title: string, content: string, mood: string, mlAnalysis?: MlPredictResponse) => Promise<void>;
   removeJournalEntry: (entryId: string) => Promise<void>;
   submitFeedback: (rating: number, peerComment: string, appComment: string) => Promise<void>;
   peerGroups: Group[];
@@ -40,13 +45,68 @@ interface AppContextType {
   setMentalHealthProfile: (profile: MentalHealthProfile | null) => void;
   joinedGroupIds: string[];
   joinGroup: (groupId: string) => Promise<void>;
+  leaveGroup: (groupId: string) => Promise<void>;
+  mlMentalHealthProfile: MlMentalHealthProfile | null;
   aiMessages: Message[];
-  sendAiMessage: (text: string) => void;
+  sendAiMessage: (text: string) => Promise<void>;
+  sendGroupMessage: (groupId: string, text: string) => Promise<void>;
   showCrisisAlert: boolean;
   setShowCrisisAlert: (show: boolean) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+
+// ─── Chatbot helpers ────────────────────────────────────────────────────────
+
+const topConcernLabel = (result: Dass21Result) => {
+  const dims = [
+    { label: 'stress', score: result.stress.final },
+    { label: 'anxiety', score: result.anxiety.final },
+    { label: 'depression', score: result.depression.final },
+  ];
+  dims.sort((a, b) => b.score - a.score);
+  return dims[0].label;
+};
+
+const supportMessagesFromResult = (result: Dass21Result): string[] => {
+  const concern = topConcernLabel(result);
+  if (result.riskLevel === 'severe') {
+    return [
+      "I'm here with you. Your check-in shows a high level of distress right now.",
+      'Before anything else, please connect with a professional advisor or trusted person as soon as possible.',
+      "While you connect, let's do one grounding step: breathe in for 4, hold 4, and out for 6 for 5 rounds.",
+      `If you'd like, I can stay with you and guide one tiny step focused on your ${concern}.`,
+    ];
+  }
+  if (result.riskLevel === 'moderate') {
+    return [
+      `Thanks for completing the DASS-21. I can see your ${concern} needs support right now.`,
+      "Let's make a simple plan for today: one calming action now, one supportive action later, and a short reflection tonight.",
+      'Would you like to start with a 2-minute breathing reset or a quick thought reframing prompt?',
+    ];
+  }
+  return [
+    'Nice work completing your mental wellness check.',
+    `Your scores suggest mild to manageable symptoms, with ${concern} as the main area to watch.`,
+    'I can help you keep momentum with a short daily routine and check-ins. Want a 3-step plan for today?',
+  ];
+};
+
+const getRuleBasedReply = (text: string, result: Dass21Result | null): string => {
+  const lower = text.toLowerCase();
+  if (result?.riskLevel === 'severe') {
+    return 'Thank you for sharing this. Your safety matters most right now. If you feel overwhelmed, please contact a trusted person or crisis support immediately.';
+  } else if (lower.includes('breath') || lower.includes('anxious') || lower.includes('panic')) {
+    return 'Try this now: inhale for 4, hold 4, exhale for 6. Repeat 5 times. When done, tell me your stress level from 1 to 10.';
+  } else if (lower.includes('sad') || lower.includes('down') || lower.includes('hopeless')) {
+    return 'I hear you. Let us do one gentle activation step: drink water, open a window, and take a 5-minute walk. Small actions help shift heavy moods.';
+  } else if (lower.includes('plan') || lower.includes('routine')) {
+    return 'Here is your mini plan: 1) 2-minute breathing now, 2) one supportive message to a trusted person today, 3) 5-minute journal reflection tonight.';
+  } else if (result?.riskLevel === 'moderate') {
+    return 'You are doing the right thing by checking in. We can break today into one small, doable step. Would you like calm-body, calm-thought, or connection support first?';
+  }
+  return "I understand. It's important to acknowledge those feelings. Would you like to try a quick breathing exercise?";
+};
 
 const mapFirebaseUser = (fbUser: FirebaseUser): User => ({
   id: fbUser.uid,
@@ -65,6 +125,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [groupsLoading, setGroupsLoading] = useState(true);
   const [mentalHealthProfile, setMentalHealthProfile] = useState<MentalHealthProfile | null>(null);
   const [joinedGroupIds, setJoinedGroupIds] = useState<string[]>([]);
+  const [mlMentalHealthProfile, setMlMentalHealthProfile] = useState<MlMentalHealthProfile | null>(null);
   const [aiMessages, setAiMessages] = useState<Message[]>([
     {
       id: '1',
@@ -96,6 +157,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setJournalEntries([]);
         setPeerGroups([]);
         setMentalHealthProfile(null);
+        setMlMentalHealthProfile(null);
         setJoinedGroupIds([]);
         setGroupsLoading(false);
       }
@@ -120,16 +182,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUser(null);
   };
 
-  const addJournalEntry = async (title: string, content: string, mood: string) => {
+  const addJournalEntry = async (title: string, content: string, mood: string, mlAnalysis?: MlPredictResponse) => {
     if (!user) return;
     const entryData: Omit<JournalEntry, 'id'> = {
       title,
       content,
       mood,
       timestamp: new Date(),
+      mlAnalysis,
     };
     const id = await saveJournalEntry(user.id, entryData);
-    setJournalEntries(prev => [{ ...entryData, id }, ...prev]);
+    const updatedEntries = [{ ...entryData, id }, ...journalEntries];
+    setJournalEntries(updatedEntries);
+
+    if (mlAnalysis) {
+      updateMlMentalHealthProfile(user.id, updatedEntries)
+        .then(profile => setMlMentalHealthProfile(profile))
+        .catch(err => console.error('[ML] journal profile update failed:', err));
+      runUserTextMlAnalysis(user.id)
+        .catch(err => console.error('[ML] journal ML analysis failed:', err));
+    }
+
     if (
       content.toLowerCase().includes('help') ||
       content.toLowerCase().includes('end it')
@@ -153,12 +226,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
+  const leaveGroup = async (groupId: string) => {
+    if (!user) return;
+    await leavePeerGroup(user.id, groupId);
+    setJoinedGroupIds(prev => prev.filter(id => id !== groupId));
+    setPeerGroups(prev =>
+      prev.map(g => g.id === groupId ? { ...g, members: Math.max(0, g.members - 1) } : g)
+    );
+  };
+
   const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
     if (!user) return;
     await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
   };
 
-  const sendAiMessage = (text: string) => {
+  const prepareSupportChatFromDass = (result: Dass21Result) => {
+    const now = Date.now();
+    const seeded = supportMessagesFromResult(result).map((text, index) => ({
+      id: `${now + index}`,
+      text,
+      sender: 'ai' as const,
+      timestamp: new Date(now + index * 1000),
+    }));
+    setAiMessages(seeded);
+  };
+
+  const sendGroupMessage = async (groupId: string, text: string) => {
+    if (!user) return;
+    await saveChatMessage(groupId, user.id, user.name, text);
+    // Fire-and-forget: collect all sources and update latestMlEmotionScore.
+    runUserTextMlAnalysis(user.id).catch(() => {});
+  };
+
+  const sendAiMessage = async (text: string) => {
     const newMsg: Message = {
       id: Date.now().toString(),
       text,
@@ -166,15 +266,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: new Date(),
     };
     setAiMessages(prev => [...prev, newMsg]);
-    setTimeout(() => {
-      const aiResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        text: "I understand. It's important to acknowledge those feelings. Would you like to try a quick breathing exercise?",
-        sender: 'ai',
-        timestamp: new Date(),
-      };
-      setAiMessages(prev => [...prev, aiResponse]);
-    }, 1000);
+
+    if (user) {
+      const uid = user.id;
+      // Save first so the new message is included when runUserTextMlAnalysis fetches.
+      saveAiChatMessage(uid, text)
+        .then(() => runUserTextMlAnalysis(uid))
+        .catch(() => {});
+    }
+
+    const result = dass21Result;
+    let responseText: string;
+    if (result) {
+      const geminiReply = await sendSupportMessage(text, result);
+      responseText = geminiReply ?? getRuleBasedReply(text, result);
+    } else {
+      responseText = getRuleBasedReply(text, null);
+    }
+    const aiResponse: Message = {
+      id: (Date.now() + 1).toString(),
+      text: responseText,
+      sender: 'ai',
+      timestamp: new Date(),
+    };
+    setAiMessages(prev => [...prev, aiResponse]);
   };
 
   if (authLoading) {
@@ -194,11 +309,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         selectedGroup, setSelectedGroup,
         assessmentScore, setAssessmentScore,
         dass21Result, setDass21Result,
+        prepareSupportChatFromDass,
         peerGroups, groupsLoading, mentalHealthProfile, setMentalHealthProfile,
-        joinedGroupIds, joinGroup,
+        mlMentalHealthProfile,
+        joinedGroupIds, joinGroup, leaveGroup,
         journalEntries, addJournalEntry, removeJournalEntry,
         submitFeedback,
-        aiMessages, sendAiMessage,
+        aiMessages, sendAiMessage, sendGroupMessage,
         showCrisisAlert, setShowCrisisAlert,
       }}
     >

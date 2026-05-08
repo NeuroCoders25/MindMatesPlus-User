@@ -12,7 +12,7 @@ function FirebaseTest() {
   useEffect(() => {
     const test = async () => {
       try {
-        console.log("✅ Auth ready:", auth.currentUser);
+        console.log("✅ Auth ready");
         const snap = await getDocs(collection(db, 'users'));
         console.log("✅ Firestore connected. Docs:", snap.size);
       } catch (e) {
