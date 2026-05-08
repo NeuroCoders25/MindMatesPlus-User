@@ -13,7 +13,8 @@ import {
   saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
   fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup, leavePeerGroup,
   fetchMentalHealthProfile, MentalHealthProfile,
-  updateMlMentalHealthProfile, saveAiChatMessage, triggerBatchMlAnalysis,
+  updateMlMentalHealthProfile, saveAiChatMessage,
+  saveChatMessage, runUserTextMlAnalysis,
 } from '../services/dataService';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
@@ -48,6 +49,7 @@ interface AppContextType {
   mlMentalHealthProfile: MlMentalHealthProfile | null;
   aiMessages: Message[];
   sendAiMessage: (text: string) => Promise<void>;
+  sendGroupMessage: (groupId: string, text: string) => Promise<void>;
   showCrisisAlert: boolean;
   setShowCrisisAlert: (show: boolean) => void;
 }
@@ -196,9 +198,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (mlAnalysis) {
       updateMlMentalHealthProfile(user.id, updatedEntries)
         .then(profile => setMlMentalHealthProfile(profile))
-        .catch(err => console.error('ML profile update failed:', err));
-      triggerBatchMlAnalysis(user.id)
-        .catch(err => console.error('Batch ML analysis failed:', err));
+        .catch(err => console.error('[ML] journal profile update failed:', err));
+      runUserTextMlAnalysis(user.id)
+        .catch(err => console.error('[ML] journal ML analysis failed:', err));
     }
 
     if (
@@ -249,6 +251,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAiMessages(seeded);
   };
 
+  const sendGroupMessage = async (groupId: string, text: string) => {
+    if (!user) return;
+    await saveChatMessage(groupId, user.id, user.name, text);
+    // Fire-and-forget: collect all sources and update latestMlEmotionScore.
+    runUserTextMlAnalysis(user.id).catch(() => {});
+  };
+
   const sendAiMessage = async (text: string) => {
     const newMsg: Message = {
       id: Date.now().toString(),
@@ -259,8 +268,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAiMessages(prev => [...prev, newMsg]);
 
     if (user) {
-      saveAiChatMessage(user.id, text).catch(() => {});
-      triggerBatchMlAnalysis(user.id).catch(() => {});
+      const uid = user.id;
+      // Save first so the new message is included when runUserTextMlAnalysis fetches.
+      saveAiChatMessage(uid, text)
+        .then(() => runUserTextMlAnalysis(uid))
+        .catch(() => {});
     }
 
     const result = dass21Result;
@@ -303,7 +315,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         joinedGroupIds, joinGroup, leaveGroup,
         journalEntries, addJournalEntry, removeJournalEntry,
         submitFeedback,
-        aiMessages, sendAiMessage,
+        aiMessages, sendAiMessage, sendGroupMessage,
         showCrisisAlert, setShowCrisisAlert,
       }}
     >

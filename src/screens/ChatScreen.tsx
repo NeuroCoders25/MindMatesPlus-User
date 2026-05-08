@@ -18,7 +18,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
 import { COLORS } from '../services/dataService';
-import { saveChatMessage, subscribeGroupMessages } from '../services/dataService';
+import { subscribeGroupMessages } from '../services/dataService';
 import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
 import { Message } from '../types';
@@ -26,7 +26,7 @@ import { Message } from '../types';
 export const ChatScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const { user, aiMessages, sendAiMessage, peerGroups, leaveGroup } = useApp();
+  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
@@ -120,7 +120,7 @@ export const ChatScreen = () => {
     if (!user) { setSending(false); return; }
     setSending(true);
     try {
-      await saveChatMessage(groupId, user.id, user.name, text);
+      await sendGroupMessage(groupId, text);
     } finally {
       setSending(false);
     }

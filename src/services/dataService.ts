@@ -229,15 +229,15 @@ export const fetchMentalHealthProfile = async (
 
 // ─── Group Recommendation Logic ───────────────────────────────────────────────
 
-// Secondary categories shown when primary matches are insufficient
+// Fallback categories when no exact-match groups exist, using adjacent ordered levels.
 const RELATED_CATEGORIES: Record<GroupCategory, GroupCategory[]> = {
   'Severe Support':               ['Moderate Support'],
-  'Moderate Support':             ['Recovery & Improvement'],
-  'Mild Support':                 ['Recovery & Improvement', 'Wellness - Thriving'],
-  'Wellness - Stress Aware':      ['Wellness - Thriving', 'Recovery & Improvement'],
-  'Wellness - Emotionally Aware': ['Wellness - Thriving', 'Recovery & Improvement'],
-  'Wellness - Thriving':          ['Recovery & Improvement'],
-  'Recovery & Improvement':       ['Mild Support', 'Wellness - Thriving'],
+  'Moderate Support':             ['Mild Support'],
+  'Mild Support':                 ['Recovery & Improvement', 'Moderate Support'],
+  'Recovery & Improvement':       ['Wellness - Emotionally Aware', 'Mild Support'],
+  'Wellness - Emotionally Aware': ['Wellness - Stress Aware', 'Recovery & Improvement'],
+  'Wellness - Stress Aware':      ['Wellness - Thriving', 'Wellness - Emotionally Aware'],
+  'Wellness - Thriving':          ['Wellness - Stress Aware'],
 };
 
 export const getRecommendedGroups = (
@@ -748,8 +748,6 @@ export const subscribeToMlMentalHealthProfile = (
 // ─── Recommendation Category Logic ───────────────────────────────────────────
 
 // Maps a DASS subscale condition + severity level to a GroupCategory.
-// Also used for ML predictions: pass the BERT prediction label as condition
-// and a severity derived from confidence (see ML_DEFAULT_SEVERITY below).
 export const buildRecommendationCategory = (
   condition: string,
   severity: string
@@ -765,14 +763,6 @@ export const buildRecommendationCategory = (
   if (condition === 'stress') return 'Wellness - Stress Aware';
   if (condition === 'depression') return 'Recovery & Improvement';
   return 'Wellness - Thriving';
-};
-
-// Default severity used when mapping ML BERT prediction labels through buildRecommendationCategory.
-// depression → Moderate Support, anxiety → Wellness - Stress Aware, normal → Wellness - Thriving
-const ML_DEFAULT_SEVERITY: Record<string, string> = {
-  depression: 'Moderate',
-  anxiety: 'Mild',
-  normal: 'Normal',
 };
 
 const ML_CONFIDENCE_THRESHOLD = 0.80;
@@ -827,8 +817,8 @@ export const updateQuestionnaireBaseline = async (
 };
 
 // Updates the recommendation profile when a new ML emotion analysis result arrives.
-// High-confidence results update activeRecommendationCategory unless the DASS
-// baseline is Severe Support, in which case the user is flagged for review instead.
+// Applies stability rules (3 repeated confident results) before moving one level.
+// Severe baseline users are flagged for review instead of being auto-downgraded.
 export const updateMlEmotionRecommendation = async (
   userId: string,
   mlResult: {
@@ -840,8 +830,8 @@ export const updateMlEmotionRecommendation = async (
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
   const snap = await getDoc(profileRef);
   const existing = snap.data();
-  const baselineCategory: GroupCategory =
-    existing?.baselineRecommendationCategory ?? 'Wellness - Thriving';
+  const baselineCategory: GroupCategory = existing?.baselineRecommendationCategory ?? 'Wellness - Thriving';
+  const currentCategory: GroupCategory = existing?.activeRecommendationCategory ?? baselineCategory;
   const isSevereBaseline = baselineCategory === 'Severe Support';
 
   const latestMlEmotionScore = {
@@ -851,27 +841,30 @@ export const updateMlEmotionRecommendation = async (
     recordedAt: Timestamp.now(),
   };
 
-  const mlCategory = buildRecommendationCategory(
-    mlResult.prediction,
-    ML_DEFAULT_SEVERITY[mlResult.prediction] ?? 'Normal'
-  );
-
-  const update: Record<string, any> = {
-    latestMlEmotionScore,
-    lastUpdated: Timestamp.now(),
-  };
+  const update: Record<string, any> = { latestMlEmotionScore, lastUpdated: Timestamp.now() };
 
   if (mlResult.confidence >= ML_CONFIDENCE_THRESHOLD) {
     if (isSevereBaseline) {
-      // Do not auto-downgrade a DASS-severe user; flag for advisor review
       update['userStatus'] = 'under_review';
     } else {
-      update['activeRecommendationCategory'] = mlCategory;
-      update['recommendationSource'] = 'ml_analysis';
+      const rawCounter = existing?.mlStabilityCounter;
+      const counter: MlStabilityCounter | null = rawCounter
+        ? { lastPrediction: rawCounter.lastPrediction, repeatedCount: rawCounter.repeatedCount, lastUpdatedAt: rawCounter.lastUpdatedAt?.toDate() ?? new Date() }
+        : null;
+
+      const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(currentCategory, mlResult, counter);
+      update['mlStabilityCounter'] = {
+        lastPrediction: newCounter.lastPrediction,
+        repeatedCount:  newCounter.repeatedCount,
+        lastUpdatedAt:  Timestamp.now(),
+      };
+      if (changed) {
+        update['activeRecommendationCategory'] = newCategory;
+        update['recommendationSource'] = 'ml_analysis';
+      }
       update['userStatus'] = 'normal';
     }
   } else {
-    // Low confidence — revert to questionnaire baseline
     update['activeRecommendationCategory'] = baselineCategory;
     update['recommendationSource'] = 'questionnaire';
   }
@@ -931,6 +924,29 @@ export const fetchRecommendations = async (
   });
 
   return { groups, resources };
+};
+
+// Fetches groups (main + optional secondary) and resources for the given categories.
+// Use activeCategory for main recommendations, baselineCategory for secondary ones.
+// Secondary groups and resources are deduplicated by id against the primary set.
+export const fetchRecommendationsByCategory = async (
+  activeCategory: GroupCategory,
+  baselineCategory?: GroupCategory
+): Promise<RecommendationResult> => {
+  const [primaryResult, resources] = await Promise.all([
+    fetchRecommendations(activeCategory),
+    fetchResourcesByCategory(activeCategory, baselineCategory),
+  ]);
+
+  if (!baselineCategory || baselineCategory === activeCategory) {
+    return { groups: primaryResult.groups, resources };
+  }
+
+  const secondaryResult = await fetchRecommendations(baselineCategory);
+  const primaryIds = new Set(primaryResult.groups.map(g => g.id));
+  const secondaryGroups = secondaryResult.groups.filter(g => !primaryIds.has(g.id));
+
+  return { groups: [...primaryResult.groups, ...secondaryGroups], resources };
 };
 
 // ─── Public Recommendation API ────────────────────────────────────────────────
@@ -998,19 +1014,10 @@ export const updateQuestionnaireProfile = async (
   }, { merge: true });
 };
 
-// ML prediction → GroupCategory for recommendation updates.
-// depression/anxiety both map to Moderate Support (ML has no severity signal).
-// normal maps to Wellness - Thriving.
-const ML_EMOTION_TO_CATEGORY: Record<string, GroupCategory> = {
-  depression: 'Moderate Support',
-  anxiety:    'Moderate Support',
-  normal:     'Wellness - Thriving',
-};
-
 // Updates the recommendation profile when a new ML result arrives.
 // Requires questionnaire to have been completed first (no-ops otherwise).
-// High-confidence results update activeRecommendationCategory; severe baseline
-// users are flagged for review instead of being auto-downgraded.
+// Applies stability rules (3 repeated confident results, one level at a time).
+// Severe baseline users are flagged for review instead of being auto-downgraded.
 export const updateMlEmotionProfile = async (
   userId: string,
   mlResult: {
@@ -1025,6 +1032,7 @@ export const updateMlEmotionProfile = async (
 
   const existing = snap.data();
   const baselineCategory: GroupCategory = existing?.baselineRecommendationCategory ?? 'Wellness - Thriving';
+  const currentCategory: GroupCategory = existing?.activeRecommendationCategory ?? baselineCategory;
   const isSevereBaseline = baselineCategory === 'Severe Support';
 
   const latestMlEmotionScore = {
@@ -1040,8 +1048,21 @@ export const updateMlEmotionProfile = async (
     if (isSevereBaseline) {
       update['userStatus'] = 'under_review';
     } else {
-      update['activeRecommendationCategory'] = ML_EMOTION_TO_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving';
-      update['recommendationSource'] = 'ml_analysis';
+      const rawCounter = existing?.mlStabilityCounter;
+      const counter: MlStabilityCounter | null = rawCounter
+        ? { lastPrediction: rawCounter.lastPrediction, repeatedCount: rawCounter.repeatedCount, lastUpdatedAt: rawCounter.lastUpdatedAt?.toDate() ?? new Date() }
+        : null;
+
+      const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(currentCategory, mlResult, counter);
+      update['mlStabilityCounter'] = {
+        lastPrediction: newCounter.lastPrediction,
+        repeatedCount:  newCounter.repeatedCount,
+        lastUpdatedAt:  Timestamp.now(),
+      };
+      if (changed) {
+        update['activeRecommendationCategory'] = newCategory;
+        update['recommendationSource'] = 'ml_analysis';
+      }
       update['userStatus'] = 'normal';
     }
   } else {
@@ -1107,19 +1128,61 @@ export const listenToMentalHealthProfile = (
   callback: (profile: MentalHealthRecommendationProfile | null) => void
 ): (() => void) => subscribeToRecommendationProfile(userId, callback);
 
-// ─── ML Recommendation Order & Wellness Score ─────────────────────────────────
+// ─── Canonical Category Order & Level Helpers ─────────────────────────────────
 
-// Ordered from lowest risk (best) to highest risk (worst).
-// Severe Support is intentionally excluded — it is only set by questionnaire baseline
-// and cannot be auto-assigned or transitioned into via ML analysis.
+// Single source of truth for recommendation category ordering.
+// Index 0 = lowest support need (best wellness), index 5 = highest support need.
+// 'Severe Support' is excluded — set only by the questionnaire baseline and never
+// auto-assigned or transitioned into via ML. All recommendation logic that moves
+// or compares categories must reference this array, not a local copy.
 export const ML_RECOMMENDATION_ORDER: GroupCategory[] = [
-  'Wellness - Thriving',
-  'Wellness - Stress Aware',
-  'Wellness - Emotionally Aware',
-  'Recovery & Improvement',
-  'Mild Support',
-  'Moderate Support',
+  'Wellness - Thriving',          // 0 — lowest support need
+  'Wellness - Stress Aware',      // 1
+  'Wellness - Emotionally Aware', // 2
+  'Recovery & Improvement',       // 3
+  'Mild Support',                 // 4
+  'Moderate Support',             // 5 — highest support need (ML ceiling)
 ];
+
+// Returns the ordered support level (0–5). Returns -1 for 'Severe Support'.
+export const getCategoryLevel = (category: GroupCategory): number =>
+  ML_RECOMMENDATION_ORDER.indexOf(category);
+
+// Moves one step toward higher support need (signals worsening).
+// Capped at 'Moderate Support'. Returns input unchanged for 'Severe Support'.
+export const moveCategoryUp = (category: GroupCategory): GroupCategory => {
+  const idx = ML_RECOMMENDATION_ORDER.indexOf(category);
+  if (idx === -1) return category;
+  return ML_RECOMMENDATION_ORDER[Math.min(ML_RECOMMENDATION_ORDER.length - 1, idx + 1)];
+};
+
+// Moves one step toward wellness (signals improvement).
+// Capped at 'Wellness - Thriving'. Returns input unchanged for 'Severe Support'.
+export const moveCategoryDown = (category: GroupCategory): GroupCategory => {
+  const idx = ML_RECOMMENDATION_ORDER.indexOf(category);
+  if (idx === -1) return category;
+  return ML_RECOMMENDATION_ORDER[Math.max(0, idx - 1)];
+};
+
+// Moves at most one level toward mlSuggestedCategory, only when repeatedCount >= 3.
+// Never jumps more than one step regardless of how far apart the categories are.
+// Returns currentCategory unchanged for Severe Support, unknown categories, same
+// level, or when the count threshold has not been reached.
+export const updateCategorySafely = (
+  currentCategory: GroupCategory,
+  mlSuggestedCategory: GroupCategory,
+  repeatedCount: number
+): GroupCategory => {
+  if (repeatedCount < 3) return currentCategory;
+  const currentLevel = getCategoryLevel(currentCategory);
+  const suggestedLevel = getCategoryLevel(mlSuggestedCategory);
+  if (currentLevel === -1 || suggestedLevel === -1 || suggestedLevel === currentLevel) {
+    return currentCategory;
+  }
+  return suggestedLevel > currentLevel
+    ? moveCategoryUp(currentCategory)
+    : moveCategoryDown(currentCategory);
+};
 
 const WELLNESS_SCORE_MAP: Record<GroupCategory, number> = {
   'Wellness - Thriving':          100,
@@ -1136,12 +1199,13 @@ export const calculateWellnessScore = (category: GroupCategory): number =>
 
 // ─── Stability-based Category Transition ─────────────────────────────────────
 
-// normal prediction → improving (move toward lower risk)
-// depression/anxiety prediction → worsening (move toward higher risk)
-const ML_PREDICTION_DIRECTION: Record<string, 'improve' | 'worsen'> = {
-  normal:     'improve',
-  depression: 'worsen',
-  anxiety:    'worsen',
+// Target category for each ML prediction label, used to determine movement direction.
+// normal → wants to reach wellness; depression/anxiety → wants to reach high support.
+// The actual move is always one step via updateCategorySafely — never a direct jump.
+const ML_SUGGESTED_CATEGORY: Record<string, GroupCategory> = {
+  normal:     'Wellness - Thriving',
+  depression: 'Moderate Support',
+  anxiety:    'Moderate Support',
 };
 
 export const updateCategoryWithStabilityRules = (
@@ -1167,23 +1231,8 @@ export const updateCategoryWithStabilityRules = (
     lastUpdatedAt: now,
   };
 
-  // Category only changes after 3 consecutive confident same-direction predictions
-  if (repeatedCount < 3) {
-    return { newCategory: currentCategory, newCounter, changed: false };
-  }
-
-  const currentIndex = ML_RECOMMENDATION_ORDER.indexOf(currentCategory);
-  if (currentIndex === -1) {
-    // Severe Support or unknown — do not auto-transition
-    return { newCategory: currentCategory, newCounter, changed: false };
-  }
-
-  const direction = ML_PREDICTION_DIRECTION[mlResult.prediction] ?? 'improve';
-  const newIndex = direction === 'improve'
-    ? Math.max(0, currentIndex - 1)
-    : Math.min(ML_RECOMMENDATION_ORDER.length - 1, currentIndex + 1);
-
-  const newCategory = ML_RECOMMENDATION_ORDER[newIndex];
+  const mlSuggestedCategory = ML_SUGGESTED_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving';
+  const newCategory = updateCategorySafely(currentCategory, mlSuggestedCategory, repeatedCount);
   const changed = newCategory !== currentCategory;
 
   if (changed) newCounter.repeatedCount = 0;
@@ -1194,18 +1243,29 @@ export const updateCategoryWithStabilityRules = (
 // ─── ML Text Collection Functions ─────────────────────────────────────────────
 
 export const fetchUserJournalTexts = async (userId: string): Promise<string[]> => {
+  console.log('[ML] Fetching journal texts...');
   const q = query(
     collection(db, 'users', userId, 'journal_entries'),
     orderBy('date', 'desc'),
     limit(5)
   );
   const snap = await getDocs(q);
-  return snap.docs
-    .map(d => d.data().content as string)
-    .filter(text => text && text.trim().length > 10);
+  const texts = snap.docs
+    .map(d => {
+      const data = d.data();
+      // Combine title + content so short entries still contribute signal.
+      return [data.title, data.content, data.text]
+        .filter((v): v is string => typeof v === 'string' && v.trim().length >= 3)
+        .join(' ')
+        .trim();
+    })
+    .filter(t => t.length >= 3);
+  console.log('[ML] Journal entries found:', texts.length);
+  return texts;
 };
 
 export const fetchUserGroupChatTexts = async (userId: string): Promise<string[]> => {
+  console.log('[ML] Fetching group chat texts...');
   const memberSnap = await getDocs(
     query(collection(db, 'groupMembers'), where('userId', '==', userId))
   );
@@ -1223,23 +1283,30 @@ export const fetchUserGroupChatTexts = async (userId: string): Promise<string[]>
     )
   );
 
-  return results.flatMap(snap =>
+  const texts = results.flatMap(snap =>
     snap.docs
-      .map(d => d.data().text as string)
-      .filter(text => text && text.trim().length > 10)
+      .map(d => (d.data().text as string | undefined)?.trim() ?? '')
+      .filter(t => t.length >= 3)
   );
+  console.log('[ML] Group messages found:', texts.length);
+  return texts;
 };
 
 export const fetchUserAiChatTexts = async (userId: string): Promise<string[]> => {
+  console.log('[ML] Fetching AI chat texts...');
   const q = query(
     collection(db, 'users', userId, 'aiChatMessages'),
     orderBy('timestamp', 'desc'),
     limit(10)
   );
   const snap = await getDocs(q);
-  return snap.docs
-    .map(d => d.data().text as string)
-    .filter(text => text && text.trim().length > 10);
+  // Only analyze the user's own messages — not the AI bot's responses.
+  const texts = snap.docs
+    .filter(d => d.data().sender === 'user')
+    .map(d => (d.data().text as string | undefined)?.trim() ?? '')
+    .filter(t => t.length >= 3);
+  console.log('[ML] AI messages found:', texts.length);
+  return texts;
 };
 
 export const saveAiChatMessage = async (userId: string, text: string): Promise<void> => {
@@ -1264,7 +1331,7 @@ export const collectUserMlTextBatch = async (
   if (groupTexts.length > 0) sources.push('group_chat');
   if (aiTexts.length > 0) sources.push('ai_chat');
 
-  const texts = [...journalTexts, ...groupTexts, ...aiTexts].filter(t => t.trim().length > 10);
+  const texts = [...journalTexts, ...groupTexts, ...aiTexts].filter(t => t.trim().length >= 3);
   return { texts, sources };
 };
 
@@ -1290,71 +1357,107 @@ export const updateMentalHealthProfileFromMl = async (
 ): Promise<void> => {
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
   const snap = await getDoc(profileRef);
-  if (!snap.exists() || !snap.data()?.initialQuestionnaireScore) return;
+  const existing = snap.exists() ? snap.data() : null;
 
-  const existing = snap.data();
-  const baselineCategory: GroupCategory = existing.baselineRecommendationCategory ?? 'Wellness - Thriving';
-  const isSevereBaseline = baselineCategory === 'Severe Support';
-  const currentCategory: GroupCategory = existing.activeRecommendationCategory ?? baselineCategory;
-
-  const rawCounter = existing.mlStabilityCounter;
-  const counter: MlStabilityCounter | null = rawCounter
-    ? {
-        lastPrediction: rawCounter.lastPrediction,
-        repeatedCount:  rawCounter.repeatedCount,
-        lastUpdatedAt:  rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
-      }
-    : null;
-
-  const latestMlEmotionScore = {
-    prediction:      mlResult.prediction,
-    confidence:      mlResult.confidence,
-    probabilities:   mlResult.probabilities,
-    recordedAt:      Timestamp.now(),
-    analyzedAt:      Timestamp.now(),
-    sourceTextsUsed,
-  };
-
+  // Always persist the latest ML emotion score regardless of questionnaire state.
   const update: Record<string, any> = {
-    latestMlEmotionScore,
+    latestMlEmotionScore: {
+      prediction:      mlResult.prediction,
+      confidence:      mlResult.confidence,
+      probabilities:   mlResult.probabilities,
+      recordedAt:      Timestamp.now(),
+      analyzedAt:      Timestamp.now(),
+      sourceTextsUsed,
+    },
     lastUpdated: Timestamp.now(),
   };
 
-  if (isSevereBaseline) {
-    update['userStatus'] = 'under_review';
-    const isSame = counter?.lastPrediction === mlResult.prediction;
-    update['mlStabilityCounter'] = {
-      lastPrediction: mlResult.prediction,
-      repeatedCount:  isSame ? (counter!.repeatedCount + 1) : 1,
-      lastUpdatedAt:  Timestamp.now(),
-    };
-  } else {
-    const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(
-      currentCategory, mlResult, counter
-    );
+  // Category transitions and stability rules only apply once the questionnaire
+  // baseline exists — without it there is no reference point to move from.
+  if (existing?.initialQuestionnaireScore) {
+    const baselineCategory: GroupCategory = existing.baselineRecommendationCategory ?? 'Wellness - Thriving';
+    const isSevereBaseline = baselineCategory === 'Severe Support';
+    const currentCategory: GroupCategory = existing.activeRecommendationCategory ?? baselineCategory;
 
-    update['mlStabilityCounter'] = {
-      lastPrediction: newCounter.lastPrediction,
-      repeatedCount:  newCounter.repeatedCount,
-      lastUpdatedAt:  Timestamp.now(),
-    };
+    const rawCounter = existing.mlStabilityCounter;
+    const counter: MlStabilityCounter | null = rawCounter
+      ? {
+          lastPrediction: rawCounter.lastPrediction,
+          repeatedCount:  rawCounter.repeatedCount,
+          lastUpdatedAt:  rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
+        }
+      : null;
 
-    if (changed) {
-      update['activeRecommendationCategory'] = newCategory;
-      update['recommendationSource'] = 'ml_analysis';
+    if (isSevereBaseline) {
+      update['userStatus'] = 'under_review';
+      const isSame = counter?.lastPrediction === mlResult.prediction;
+      update['mlStabilityCounter'] = {
+        lastPrediction: mlResult.prediction,
+        repeatedCount:  isSame ? (counter!.repeatedCount + 1) : 1,
+        lastUpdatedAt:  Timestamp.now(),
+      };
+    } else {
+      const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(
+        currentCategory, mlResult, counter
+      );
+      update['mlStabilityCounter'] = {
+        lastPrediction: newCounter.lastPrediction,
+        repeatedCount:  newCounter.repeatedCount,
+        lastUpdatedAt:  Timestamp.now(),
+      };
+      if (changed) {
+        update['activeRecommendationCategory'] = newCategory;
+        update['recommendationSource'] = 'ml_analysis';
+      }
+      update['userStatus'] = 'normal';
     }
-    update['userStatus'] = 'normal';
   }
 
-  await updateDoc(profileRef, update);
-};
-
-// ─── Trigger Full Batch ML Analysis ───────────────────────────────────────────
-
-export const triggerBatchMlAnalysis = async (userId: string): Promise<void> => {
-  const { texts, sources } = await collectUserMlTextBatch(userId);
-  const mlResult = await runMlAnalysis(texts);
-  if (mlResult) {
-    await updateMentalHealthProfileFromMl(userId, mlResult, sources);
+  // Create the profile doc if it doesn't exist yet (questionnaire not done).
+  if (snap.exists()) {
+    await updateDoc(profileRef, update);
+  } else {
+    await setDoc(profileRef, update, { merge: true });
   }
 };
+
+// ─── Shared ML Analysis Entry Point ───────────────────────────────────────────
+
+// Single function called after every user-generated text event (journal save,
+// group chat send, AI chat send). Collects text from all three sources, sends
+// the combined batch to BERT, and writes latestMlEmotionScore to Firestore.
+export const runUserTextMlAnalysis = async (userId: string): Promise<void> => {
+  const [journalTexts, aiTexts, groupTexts] = await Promise.all([
+    fetchUserJournalTexts(userId),
+    fetchUserAiChatTexts(userId),
+    fetchUserGroupChatTexts(userId),
+  ]);
+
+  const sources: string[] = [];
+  if (journalTexts.length > 0) sources.push('journal');
+  if (aiTexts.length > 0) sources.push('ai_chat');
+  if (groupTexts.length > 0) sources.push('group_chat');
+
+  const allTexts = [...journalTexts, ...aiTexts, ...groupTexts].filter(t => t.trim().length >= 3);
+  const combined = allTexts.join(' ').trim();
+
+  console.log('[ML] Combined ML text batch:', combined.length > 120 ? combined.slice(0, 120) + '…' : combined);
+
+  if (combined.length < 3) {
+    console.log('[ML] Not enough text to analyze — skipping.');
+    return;
+  }
+
+  try {
+    const result = await predictText(combined);
+    console.log('[ML] ML prediction result:', JSON.stringify(result));
+    await updateMentalHealthProfileFromMl(userId, result, sources);
+    console.log('[ML] latestMlEmotionScore updated successfully');
+  } catch (err) {
+    console.error('[ML] ML analysis failed:', err);
+  }
+};
+
+// Legacy alias — kept for any callers outside AppContext.
+export const triggerBatchMlAnalysis = async (userId: string): Promise<void> =>
+  runUserTextMlAnalysis(userId);
