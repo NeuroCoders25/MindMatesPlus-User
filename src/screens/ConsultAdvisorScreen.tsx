@@ -7,12 +7,24 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
+  Alert,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
-import { COLORS, fetchAdvisors } from '../services/dataService';
+import {
+  COLORS,
+  fetchAdvisors,
+  connectToAdvisor,
+  listenToUserAdvisorConnections,
+  getAdvisorButtonStatus,
+  AdvisorConnectionStatusValue,
+  listenToMentalHealthProfile,
+  continueAfterAdvisorApproval,
+} from '../services/dataService';
 import { Advisor } from '../types';
+import { useApp } from '../context/AppContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ConsultAdvisor'>;
 
@@ -22,29 +34,155 @@ const AvatarPlaceholder = () => (
   </View>
 );
 
+// ─── Button config per connection status ──────────────────────────────────────
+
+type BtnConfig = { label: string; style: 'default' | 'muted' | 'green'; disabled: boolean };
+
+const getBtnConfig = (
+  advisorId: string,
+  connections: Record<string, AdvisorConnectionStatusValue>,
+  connecting: Set<string>
+): BtnConfig => {
+  if (connecting.has(advisorId)) return { label: 'Sending…', style: 'muted', disabled: true };
+  const status = getAdvisorButtonStatus(advisorId, connections);
+  switch (status) {
+    case 'pending':   return { label: 'Pending',   style: 'muted',    disabled: true };
+    case 'accepted':  return { label: 'Connected', style: 'muted',    disabled: true };
+    case 'approved':  return { label: 'Approved',  style: 'green',    disabled: false };
+    case 'reviewed':  return { label: 'Reviewed',  style: 'muted',    disabled: true };
+    default:          return { label: 'Connect',   style: 'default',  disabled: false };
+  }
+};
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
+
 export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
+  const { user } = useApp();
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
   const [loading, setLoading] = useState(true);
-  const [connectedAdvisors, setConnectedAdvisors] = useState<Set<string>>(new Set());
+  const [connections, setConnections] = useState<Record<string, AdvisorConnectionStatusValue>>({});
+  const [connecting, setConnecting] = useState<Set<string>>(new Set());
 
+  // Approval modal state
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvedCategory, setApprovedCategory] = useState<string>('');
+
+  // Load advisors once
   useEffect(() => {
     fetchAdvisors()
       .then(data => setAdvisors(data))
-      .catch(err => console.error('Error fetching advisors:', err))
+      .catch(err => console.error('[ConsultAdvisor] Error fetching advisors:', err))
       .finally(() => setLoading(false));
   }, []);
 
-  const handleConnect = (advisor: Advisor) => {
-    setConnectedAdvisors(prev => {
-      const next = new Set(prev);
-      next.add(advisor.id);
-      return next;
+  // Real-time listener for all advisor connections for this user
+  useEffect(() => {
+    if (!user) return;
+    const unsub = listenToUserAdvisorConnections(user.id, incoming => {
+      setConnections(incoming);
     });
-    navigation.navigate('AdvisorDetails', { advisor });
+    return unsub;
+  }, [user]);
+
+  // Real-time listener for advisor approval on the mental health profile
+  useEffect(() => {
+    if (!user) return;
+    const unsub = listenToMentalHealthProfile(user.id, profile => {
+      if (
+        profile?.userStatus === 'normal' &&
+        profile?.advisorConnectionStatus === 'approved' &&
+        profile?.recommendationSource === 'advisor_approval' &&
+        profile?.approvalMessageSeen !== true
+      ) {
+        console.log('[AdvisorApproval] Profile approval detected');
+        setApprovedCategory(profile.approvedCategory ?? profile.activeRecommendationCategory ?? 'General Wellbeing');
+        setShowApprovalModal(true);
+        console.log('[AdvisorApproval] Showing approval modal');
+      }
+    });
+    return unsub;
+  }, [user]);
+
+  const handleConnect = async (advisor: Advisor) => {
+    if (!user) return;
+    const status = getAdvisorButtonStatus(advisor.id, connections);
+
+    // Approved → open chat directly
+    if (status === 'approved') {
+      navigation.navigate('AdvisorDetails', { advisor });
+      return;
+    }
+    // Already pending/connected/reviewed → navigate to details
+    if (status && status !== null) {
+      navigation.navigate('AdvisorDetails', { advisor });
+      return;
+    }
+
+    setConnecting(prev => new Set(prev).add(advisor.id));
+    try {
+      await connectToAdvisor(user.id, user.name, user.email, advisor);
+      // Real-time listener will update connections automatically
+      Alert.alert(
+        'Request Sent',
+        `Your connection request has been sent to ${advisor.name}. You will be notified once they accept.`,
+        [{ text: 'OK' }]
+      );
+    } catch (err) {
+      console.error('[ConsultAdvisor] Error connecting to advisor:', err);
+      Alert.alert('Error', 'Failed to send connection request. Please try again.');
+    } finally {
+      setConnecting(prev => {
+        const next = new Set(prev);
+        next.delete(advisor.id);
+        return next;
+      });
+    }
+  };
+
+  const handleContinueAfterApproval = async () => {
+    console.log('[AdvisorApproval] Continue clicked');
+    setShowApprovalModal(false);
+    if (user) {
+      await continueAfterAdvisorApproval(user.id).catch(err =>
+        console.error('[AdvisorApproval] Failed to mark approval seen:', err)
+      );
+    }
+    navigation.navigate('Main');
   };
 
   return (
     <View style={styles.container}>
+      {/* Advisor Approval Modal */}
+      <Modal visible={showApprovalModal} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={styles.approvalOverlay}>
+          <View style={styles.approvalCard}>
+            <View style={styles.approvalIconWrapper}>
+              <Ionicons name="checkmark-circle" size={52} color="#22C55E" />
+            </View>
+            <Text style={styles.approvalTitle}>You're Approved!</Text>
+            <Text style={styles.approvalMessage}>
+              Your advisor has approved you to continue using MindMates+.
+            </Text>
+            <View style={styles.approvalCategoryBox}>
+              <Text style={styles.approvalCategoryLabel}>Recommended category</Text>
+              <Text style={styles.approvalCategoryValue}>{approvedCategory}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.approvalBtn}
+              onPress={handleContinueAfterApproval}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="arrow-forward-circle-outline" size={20} color="white" />
+              <Text style={styles.approvalBtnText}>Continue to App</Text>
+            </TouchableOpacity>
+            <Text style={styles.approvalDisclaimer}>
+              AI suggestion only — not professional advice
+            </Text>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
@@ -52,65 +190,88 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
         <Text style={styles.headerTitle}>Consult Advisor</Text>
         <View style={styles.headerSpacer} />
       </View>
+
       <Text style={styles.description}>
         Please select a professional advisor to help you navigate through this difficult time.
       </Text>
+
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContainer}>
         {loading ? (
           <ActivityIndicator size="large" color={COLORS.primary} style={styles.loader} />
         ) : advisors.length === 0 ? (
           <Text style={styles.emptyText}>No advisors available at the moment.</Text>
         ) : (
-          advisors.map(advisor => (
-            <TouchableOpacity
-              key={advisor.id}
-              style={styles.card}
-              activeOpacity={0.7}
-              onPress={() => navigation.navigate('AdvisorDetails', { advisor })}
-            >
-              {advisor.imageUrl
-                ? <Image source={{ uri: advisor.imageUrl }} style={styles.avatar} />
-                : <AvatarPlaceholder />}
-              <View style={styles.details}>
-                <View style={styles.nameRow}>
-                  <Text style={styles.name}>{advisor.name ?? ''}</Text>
-                  <View style={styles.ratingBox}>
-                    <Ionicons name="star" size={12} color="#FACC15" />
-                    <Text style={styles.ratingText}>{advisor.rating ?? '5.0'}</Text>
-                  </View>
-                </View>
-                
-                {!!advisor.specialty && (
-                  <View style={styles.specialtyBadge}>
-                    <Text style={styles.specialtyText}>{advisor.specialty}</Text>
-                  </View>
-                )}
+          advisors.map(advisor => {
+            const { label, style: btnStyle, disabled } = getBtnConfig(advisor.id, connections, connecting);
+            const isApproved = getAdvisorButtonStatus(advisor.id, connections) === 'approved';
 
-                <View style={styles.cardFooter}>
-                  <View style={styles.availabilityRow}>
-                    <View style={styles.onlineDot} />
-                    <Text style={styles.availabilityText}>Available</Text>
+            return (
+              <TouchableOpacity
+                key={advisor.id}
+                style={styles.card}
+                activeOpacity={0.7}
+                onPress={() => navigation.navigate('AdvisorDetails', { advisor })}
+              >
+                {advisor.imageUrl
+                  ? <Image source={{ uri: advisor.imageUrl }} style={styles.avatar} />
+                  : <AvatarPlaceholder />}
+
+                <View style={styles.details}>
+                  <View style={styles.nameRow}>
+                    <Text style={styles.name}>{advisor.name ?? ''}</Text>
+                    <View style={styles.ratingBox}>
+                      <Ionicons name="star" size={12} color="#FACC15" />
+                      <Text style={styles.ratingText}>{advisor.rating ?? '5.0'}</Text>
+                    </View>
                   </View>
-                  
-                  <TouchableOpacity 
-                    style={[
-                      styles.connectBtn,
-                      connectedAdvisors.has(advisor.id) && styles.connectedBtn
-                    ]}
-                    onPress={() => handleConnect(advisor)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[
-                      styles.connectBtnText,
-                      connectedAdvisors.has(advisor.id) && styles.connectedBtnText
-                    ]}>
-                      {connectedAdvisors.has(advisor.id) ? 'Connected' : 'Connect'}
-                    </Text>
-                  </TouchableOpacity>
+
+                  {!!advisor.specialty && (
+                    <View style={styles.specialtyBadge}>
+                      <Text style={styles.specialtyText}>{advisor.specialty}</Text>
+                    </View>
+                  )}
+
+                  {/* Approved status banner */}
+                  {isApproved && (
+                    <View style={styles.approvedBanner}>
+                      <Ionicons name="shield-checkmark-outline" size={12} color="#15803D" />
+                      <Text style={styles.approvedBannerText}>Advisor approved your case</Text>
+                    </View>
+                  )}
+
+                  <View style={styles.cardFooter}>
+                    <View style={styles.availabilityRow}>
+                      <View style={styles.onlineDot} />
+                      <Text style={styles.availabilityText}>Available</Text>
+                    </View>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.connectBtn,
+                        btnStyle === 'muted' && styles.connectBtnMuted,
+                        btnStyle === 'green' && styles.connectBtnGreen,
+                      ]}
+                      onPress={() => handleConnect(advisor)}
+                      disabled={disabled}
+                      activeOpacity={0.8}
+                    >
+                      {connecting.has(advisor.id) ? (
+                        <ActivityIndicator size="small" color="#6366F1" />
+                      ) : (
+                        <Text style={[
+                          styles.connectBtnText,
+                          btnStyle === 'muted' && styles.connectBtnTextMuted,
+                          btnStyle === 'green' && styles.connectBtnTextGreen,
+                        ]}>
+                          {label}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            </TouchableOpacity>
-          ))
+              </TouchableOpacity>
+            );
+          })
         )}
       </ScrollView>
     </View>
@@ -118,10 +279,7 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
+  container: { flex: 1, backgroundColor: COLORS.background },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -131,11 +289,7 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   backButton: { padding: 4 },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: COLORS.text,
-  },
+  headerTitle: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },
   headerSpacer: { width: 24 },
   description: {
     fontSize: 14,
@@ -144,17 +298,10 @@ const styles = StyleSheet.create({
     marginBottom: 24,
     lineHeight: 22,
   },
-  listContainer: {
-    paddingHorizontal: 24,
-    paddingBottom: 40,
-    gap: 16,
-  },
+  listContainer: { paddingHorizontal: 24, paddingBottom: 40, gap: 16 },
   loader: { marginTop: 40 },
-  emptyText: {
-    textAlign: 'center',
-    color: COLORS.muted,
-    marginTop: 40,
-  },
+  emptyText: { textAlign: 'center', color: COLORS.muted, marginTop: 40 },
+
   card: {
     flexDirection: 'row',
     backgroundColor: COLORS.white,
@@ -162,7 +309,6 @@ const styles = StyleSheet.create({
     padding: 16,
     alignItems: 'center',
     marginBottom: 4,
-    // Modern shadow
     shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
@@ -196,11 +342,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 6,
   },
-  name: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: COLORS.text,
-  },
+  name: { fontSize: 17, fontWeight: '700', color: COLORS.text },
   ratingBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -210,76 +352,147 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     gap: 4,
   },
-  ratingText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#D97706',
-  },
+  ratingText: { fontSize: 11, fontWeight: '800', color: '#D97706' },
   specialtyBadge: {
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(37, 99, 235, 0.08)',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
-    marginBottom: 12,
+    marginBottom: 8,
   },
-  specialtyText: {
-    fontSize: 11,
-    color: COLORS.primary,
-    fontWeight: '600',
+  specialtyText: { fontSize: 11, color: COLORS.primary, fontWeight: '600' },
+
+  approvedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F0FDF4',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
   },
+  approvedBannerText: { fontSize: 10, color: '#15803D', fontWeight: '600' },
+
   cardFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  availabilityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  onlineDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#10B981',
-  },
-  availabilityText: {
-    fontSize: 12,
-    color: COLORS.muted,
-    fontWeight: '500',
-  },
+  availabilityRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' },
+  availabilityText: { fontSize: 12, color: COLORS.muted, fontWeight: '500' },
+
   connectBtn: {
-    backgroundColor: '#6366F1', // Indigo from image
+    backgroundColor: '#6366F1',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 12,
+    minWidth: 82,
+    alignItems: 'center',
     shadowColor: '#6366F1',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 2,
   },
-  connectedBtn: {
-    backgroundColor: 'rgba(156, 163, 175, 0.1)', // Transparent gray
+  connectBtnMuted: {
+    backgroundColor: 'rgba(156, 163, 175, 0.1)',
     shadowOpacity: 0,
     elevation: 0,
     borderWidth: 1,
     borderColor: '#E5E7EB',
   },
-  connectBtnText: {
-    color: 'white',
-    fontSize: 12,
+  connectBtnGreen: {
+    backgroundColor: '#22C55E',
+    shadowColor: '#22C55E',
+  },
+  connectBtnText: { color: 'white', fontSize: 12, fontWeight: '700' },
+  connectBtnTextMuted: { color: '#9CA3AF' },
+  connectBtnTextGreen: { color: 'white' },
+
+  // ─── Approval Modal ────────────────────────────────────────────────────────
+  approvalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  approvalCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    padding: 28,
+    width: '100%',
+    maxWidth: 380,
+    alignItems: 'center',
+    gap: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  approvalIconWrapper: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  approvalTitle: { fontSize: 24, fontWeight: 'bold', color: COLORS.text, textAlign: 'center' },
+  approvalMessage: {
+    fontSize: 14,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  approvalCategoryBox: {
+    width: '100%',
+    backgroundColor: '#F0FDF4',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    gap: 4,
+  },
+  approvalCategoryLabel: {
+    fontSize: 10,
     fontWeight: '700',
+    color: '#16A34A',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
-  connectedBtn: {
-    backgroundColor: 'rgba(156, 163, 175, 0.1)', // Transparent gray
-    shadowOpacity: 0,
-    elevation: 0,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+  approvalCategoryValue: { fontSize: 16, fontWeight: 'bold', color: '#15803D', textAlign: 'center' },
+  approvalBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+    backgroundColor: '#22C55E',
+    borderRadius: 16,
+    paddingVertical: 16,
+    marginTop: 4,
+    shadowColor: '#22C55E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  connectedBtnText: {
-    color: '#9CA3AF', // Gray text
+  approvalBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
+  approvalDisclaimer: {
+    fontSize: 10,
+    color: COLORS.muted,
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
 });

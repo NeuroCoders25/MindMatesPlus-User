@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -21,6 +22,7 @@ import {
   listenToMentalHealthProfile,
   getGroupsByMlPrediction,
   calculateWellnessScore,
+  continueAfterAdvisorApproval,
 } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
@@ -60,6 +62,9 @@ export const HomeScreen = () => {
   // Resource Tab State
   const [activeResourceTab, setActiveResourceTab] = useState<TabType>('image');
 
+  // Advisor approval modal
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+
 
   useEffect(() => {
     if (!user) return;
@@ -78,6 +83,28 @@ export const HomeScreen = () => {
     });
     return unsub;
   }, [user?.id]);
+
+  // Show approval modal once when advisor approves the user
+  useEffect(() => {
+    const p = recommendationProfile;
+    if (
+      p?.userStatus === 'normal' &&
+      p?.advisorConnectionStatus === 'approved' &&
+      p?.recommendationSource === 'advisor_approval' &&
+      p?.approvalMessageSeen !== true
+    ) {
+      setShowApprovalModal(true);
+    }
+  }, [recommendationProfile]);
+
+  const handleContinueAfterApproval = async () => {
+    setShowApprovalModal(false);
+    if (user) {
+      await continueAfterAdvisorApproval(user.id).catch(err =>
+        console.error('[Approval] Failed to mark approval seen:', err)
+      );
+    }
+  };
 
   // Advisor redirect when DASS result is severe
   const isAdvisorRequired = recommendationProfile?.userStatus === 'under_review';
@@ -155,7 +182,50 @@ export const HomeScreen = () => {
     }
   };
 
+  const approvedCategoryLabel =
+    recommendationProfile?.approvedCategory ??
+    recommendationProfile?.activeRecommendationCategory ??
+    'General Wellbeing';
+
   return (
+    <>
+    <Modal
+      visible={showApprovalModal}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {}}
+    >
+      <View style={styles.approvalOverlay}>
+        <View style={styles.approvalCard}>
+          <View style={styles.approvalIconWrapper}>
+            <Ionicons name="checkmark-circle" size={52} color="#22C55E" />
+          </View>
+          <Text style={styles.approvalTitle}>You're Approved!</Text>
+          <Text style={styles.approvalMessage}>
+            Your advisor has reviewed your case and approved you to continue using MindMates+.
+          </Text>
+          <View style={styles.approvalCategoryBox}>
+            <Text style={styles.approvalCategoryLabel}>Your recommended category</Text>
+            <Text style={styles.approvalCategoryValue}>{approvedCategoryLabel}</Text>
+          </View>
+          <Text style={styles.approvalDisclaimer}>
+            Your dashboard, peer groups, and resources will now reflect your advisor-approved support level.
+          </Text>
+          <TouchableOpacity
+            style={styles.approvalBtn}
+            onPress={handleContinueAfterApproval}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="arrow-forward-circle-outline" size={20} color="white" />
+            <Text style={styles.approvalBtnText}>Continue to App</Text>
+          </TouchableOpacity>
+          <Text style={styles.approvalSubDisclaimer}>
+            AI suggestion only — not professional advice
+          </Text>
+        </View>
+      </View>
+    </Modal>
+
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -435,6 +505,7 @@ export const HomeScreen = () => {
       })()}
 
     </ScrollView>
+    </>
   );
 };
 
@@ -738,6 +809,107 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   insightDisclaimer: {
+    fontSize: 10,
+    color: COLORS.muted,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
+
+  // ─── Advisor Approval Modal ────────────────────────────────────────────────
+  approvalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  approvalCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    padding: 28,
+    width: '100%',
+    maxWidth: 380,
+    alignItems: 'center',
+    gap: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  approvalIconWrapper: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  approvalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  approvalMessage: {
+    fontSize: 14,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  approvalCategoryBox: {
+    width: '100%',
+    backgroundColor: '#F0FDF4',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    gap: 4,
+  },
+  approvalCategoryLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#16A34A',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  approvalCategoryValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#15803D',
+    textAlign: 'center',
+  },
+  approvalDisclaimer: {
+    fontSize: 12,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  approvalBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
+    backgroundColor: '#22C55E',
+    borderRadius: 16,
+    paddingVertical: 16,
+    marginTop: 4,
+    shadowColor: '#22C55E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  approvalBtnText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  approvalSubDisclaimer: {
     fontSize: 10,
     color: COLORS.muted,
     textAlign: 'center',

@@ -162,9 +162,15 @@ export interface MentalHealthRecommendationProfile {
   latestMlEmotionScore: MlEmotionScore | null;
   baselineRecommendationCategory: GroupCategory;
   activeRecommendationCategory: GroupCategory;
-  recommendationSource: 'questionnaire' | 'ml_analysis';
+  recommendationSource: 'questionnaire' | 'ml_analysis' | 'advisor_approval';
   userStatus: 'normal' | 'under_review';
   mlStabilityCounter: MlStabilityCounter | null;
+  // Advisor approval fields — populated by the advisor portal on approval
+  advisorConnectionStatus?: string;
+  approvedCategory?: GroupCategory;
+  approvalMessageSeen?: boolean;
+  peerGroupRecommendationCategory?: GroupCategory;
+  resourceRecommendationCategory?: GroupCategory;
 }
 
 export interface RecommendationResult {

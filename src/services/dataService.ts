@@ -3,7 +3,7 @@ import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
-  setDoc, updateDoc, increment, getDoc, onSnapshot, limit,
+  setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp,
 } from 'firebase/firestore';
 import { predictText, MlPredictResponse } from './mlApiService';
 
@@ -556,6 +556,239 @@ export const fetchAdvisors = async (): Promise<Advisor[]> => {
     about: d.data().about as string | undefined,
   }));
 };
+
+// ─── Advisor Connection Real-time Functions ───────────────────────────────────
+
+export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed';
+
+// Streams all advisor connections for a user as a map of advisorId → status.
+// Fires immediately with current data, then on every Firestore change.
+export const listenToUserAdvisorConnections = (
+  userId: string,
+  callback: (connections: Record<string, AdvisorConnectionStatusValue>) => void
+): (() => void) => {
+  console.log('[AdvisorStatus] Listening user advisor connections');
+  const q = query(collection(db, 'advisorConnections'), where('userId', '==', userId));
+  return onSnapshot(q, snapshot => {
+    const connections: Record<string, AdvisorConnectionStatusValue> = {};
+    snapshot.docs.forEach(d => {
+      const data = d.data();
+      if (data.advisorId && data.status) {
+        connections[data.advisorId] = data.status as AdvisorConnectionStatusValue;
+        console.log('[AdvisorStatus] Connection status changed:', data.advisorId, '->', data.status);
+      }
+    });
+    callback(connections);
+  });
+};
+
+export const getAdvisorButtonStatus = (
+  advisorId: string,
+  connections: Record<string, AdvisorConnectionStatusValue>
+): AdvisorConnectionStatusValue | null => connections[advisorId] ?? null;
+
+// ─── Advisor Connection Functions ────────────────────────────────────────────
+
+export const checkExistingAdvisorConnection = async (
+  userId: string,
+  advisorId: string
+): Promise<'pending' | 'accepted' | null> => {
+  const q = query(
+    collection(db, 'advisorConnections'),
+    where('userId', '==', userId),
+    where('advisorId', '==', advisorId),
+    where('status', 'in', ['pending', 'accepted'])
+  );
+  const snap = await getDocs(q);
+  if (snap.empty) return null;
+  return snap.docs[0].data().status as 'pending' | 'accepted';
+};
+
+export const connectToAdvisor = async (
+  userId: string,
+  userName: string,
+  userEmail: string,
+  advisor: Advisor
+): Promise<string> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const profileSnap = await getDoc(profileRef);
+  const profileData = profileSnap.exists() ? profileSnap.data() : null;
+  const userMentalHealthCategory =
+    profileData?.userStatus ?? profileData?.activeRecommendationCategory ?? 'General Wellbeing';
+
+  const ref = collection(db, 'advisorConnections');
+  const docRef = await addDoc(ref, {
+    userId,
+    userName,
+    userEmail,
+    advisorId: advisor.id,
+    advisorName: advisor.name,
+    status: 'pending',
+    caseType: 'critical_case',
+    reason: 'User requested advisor support',
+    userMentalHealthCategory,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  await setDoc(profileRef, {
+    connectedAdvisorId: advisor.id,
+    advisorConnectionId: docRef.id,
+    advisorConnectionStatus: 'pending',
+    userStatus: 'under_review',
+  }, { merge: true });
+
+  return docRef.id;
+};
+
+export const updateUserAdvisorStatus = async (
+  userId: string,
+  advisorId: string,
+  status: string
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  await setDoc(profileRef, {
+    connectedAdvisorId: advisorId,
+    advisorConnectionStatus: status,
+    userStatus: 'under_review',
+  }, { merge: true });
+};
+
+// ─── Advisor Chat Functions ───────────────────────────────────────────────────
+
+export interface AdvisorMessage {
+  id: string;
+  senderId: string;
+  senderRole: 'user' | 'advisor';
+  receiverId: string;
+  messageText: string;
+  messageType: string;
+  createdAt: Date;
+  isRead: boolean;
+}
+
+export interface AdvisorConnection {
+  connectionId: string;
+  advisorId: string;
+  advisorName: string;
+  userId: string;
+  userName: string;
+  status: 'pending' | 'accepted' | 'reviewed';
+}
+
+// Queries advisorConnections directly — does not rely on the user profile field.
+// Matches any active (pending or accepted) connection for the given userId + advisorId pair.
+export const findAdvisorConnection = async (
+  userId: string,
+  advisorId: string
+): Promise<AdvisorConnection | null> => {
+  const q = query(
+    collection(db, 'advisorConnections'),
+    where('userId', '==', userId),
+    where('advisorId', '==', advisorId),
+    where('status', 'in', ['pending', 'accepted'])
+  );
+  const snap = await getDocs(q);
+  if (snap.empty) {
+    console.log('[AdvisorChat] No connection found for userId:', userId, 'advisorId:', advisorId);
+    return null;
+  }
+  const d = snap.docs[0];
+  const data = d.data();
+  console.log('[AdvisorChat] Found connection:', d.id, 'status:', data.status);
+  return {
+    connectionId: d.id,
+    advisorId: data.advisorId as string,
+    advisorName: data.advisorName as string,
+    userId: data.userId as string,
+    userName: data.userName as string,
+    status: data.status as 'pending' | 'accepted' | 'reviewed',
+  };
+};
+
+export const listenToAdvisorConnectionMessages = (
+  connectionId: string,
+  callback: (messages: AdvisorMessage[]) => void
+): (() => void) => {
+  console.log('[AdvisorChat] Listening to messages:', `advisorConnections/${connectionId}/messages`);
+  const q = query(
+    collection(db, 'advisorConnections', connectionId, 'messages'),
+    orderBy('createdAt', 'asc')
+  );
+  return onSnapshot(q, snapshot => {
+    callback(
+      snapshot.docs.map(d => {
+        const data = d.data();
+        return {
+          id: d.id,
+          senderId: data.senderId as string,
+          senderRole: data.senderRole as 'user' | 'advisor',
+          receiverId: data.receiverId as string,
+          messageText: data.messageText as string,
+          messageType: data.messageType ?? 'text',
+          createdAt: data.createdAt?.toDate() ?? new Date(),
+          isRead: data.isRead ?? false,
+        };
+      })
+    );
+  });
+};
+
+export const updateAdvisorConnectionLastMessage = async (
+  connectionId: string,
+  text: string,
+  senderId: string
+): Promise<void> => {
+  await updateDoc(doc(db, 'advisorConnections', connectionId), {
+    lastMessage: text,
+    lastMessageSenderId: senderId,
+    lastMessageAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+};
+
+export const sendUserAdvisorMessage = async (
+  connectionId: string,
+  userId: string,
+  advisorId: string,
+  text: string
+): Promise<void> => {
+  await addDoc(collection(db, 'advisorConnections', connectionId, 'messages'), {
+    senderId: userId,
+    senderRole: 'user',
+    receiverId: advisorId,
+    messageText: text,
+    messageType: 'text',
+    createdAt: serverTimestamp(),
+    isRead: false,
+  });
+  console.log('[AdvisorChat] Message sent:', text);
+  await updateAdvisorConnectionLastMessage(connectionId, text, userId);
+};
+
+export const sendAdvisorUserMessage = async (
+  connectionId: string,
+  advisorId: string,
+  userId: string,
+  text: string
+): Promise<void> => {
+  await addDoc(collection(db, 'advisorConnections', connectionId, 'messages'), {
+    senderId: advisorId,
+    senderRole: 'advisor',
+    receiverId: userId,
+    messageText: text,
+    messageType: 'text',
+    createdAt: serverTimestamp(),
+    isRead: false,
+  });
+  console.log('[AdvisorChat] Message sent:', text);
+  await updateAdvisorConnectionLastMessage(connectionId, text, advisorId);
+};
+
+// Legacy aliases — kept so any existing callers outside this screen still compile.
+export const getUserAdvisorConnection = findAdvisorConnection;
+export const listenToAdvisorMessages = listenToAdvisorConnectionMessages;
+export const updateConnectionLastMessage = updateAdvisorConnectionLastMessage;
 
 // ─── Resources Firestore Functions ───────────────────────────────────────────
 
@@ -1135,6 +1368,11 @@ export const subscribeToRecommendationProfile = (
           lastUpdatedAt: rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
         }
         : null,
+      advisorConnectionStatus: raw.advisorConnectionStatus as string | undefined,
+      approvedCategory: raw.approvedCategory as GroupCategory | undefined,
+      approvalMessageSeen: raw.approvalMessageSeen as boolean | undefined,
+      peerGroupRecommendationCategory: raw.peerGroupRecommendationCategory as GroupCategory | undefined,
+      resourceRecommendationCategory: raw.resourceRecommendationCategory as GroupCategory | undefined,
     });
   });
 };
@@ -1144,6 +1382,16 @@ export const listenToMentalHealthProfile = (
   userId: string,
   callback: (profile: MentalHealthRecommendationProfile | null) => void
 ): (() => void) => subscribeToRecommendationProfile(userId, callback);
+
+// Marks the advisor approval message as seen so it is not shown again.
+// Called when the user taps "Continue to App" on the approval modal.
+export const continueAfterAdvisorApproval = async (userId: string): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  await setDoc(profileRef, {
+    approvalMessageSeen: true,
+    approvalMessageSeenAt: serverTimestamp(),
+  }, { merge: true });
+};
 
 // ─── Canonical Category Order & Level Helpers ─────────────────────────────────
 
