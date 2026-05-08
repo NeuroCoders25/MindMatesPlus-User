@@ -50,7 +50,7 @@ export const ProfileScreen = () => {
         <View style={styles.avatar}>
           <Ionicons name="person" size={48} color="white" />
         </View>
-        <Text style={styles.userName}>{user?.name}</Text>
+        <Text style={styles.userName}>{user?.name} {user?.nickname ? `(${user.nickname})` : ''}</Text>
         <Text style={styles.userEmail}>{user?.email}</Text>
         <View style={styles.riskBadge}>
           <Text style={styles.riskText}>

@@ -164,7 +164,7 @@ export const HomeScreen = () => {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.greeting}>Hello, {user?.name} 👋</Text>
+          <Text style={styles.greeting}>Hello, {user?.name} {user?.nickname ? `(${user.nickname}) ` : ''}👋</Text>
           <Text style={styles.subGreeting}>How are you feeling today?</Text>
         </View>
         <Image

@@ -1,6 +1,7 @@
 export interface User {
   id: string;
   name: string;
+  nickname?: string;
   email: string;
   age?: number;
   riskLevel?: 'low' | 'moderate' | 'severe';

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { View, ActivityIndicator } from 'react-native';
+import { doc, getDoc } from 'firebase/firestore';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -8,7 +9,7 @@ import {
   updateProfile,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { auth } from '../services/firebaseConfig';
+import { auth, db } from '../services/firebaseConfig';
 import {
   saveJournalEntry, fetchJournalEntries, deleteJournalEntry, saveFeedback,
   fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup, leavePeerGroup,
@@ -110,9 +111,10 @@ const getRuleBasedReply = (text: string, result: Dass21Result | null): string =>
   return "I understand. It's important to acknowledge those feelings. Would you like to try a quick breathing exercise?";
 };
 
-const mapFirebaseUser = (fbUser: FirebaseUser): User => ({
+const mapFirebaseUser = (fbUser: FirebaseUser, nickname?: string): User => ({
   id: fbUser.uid,
   name: decryptName(fbUser.displayName || '') || fbUser.email?.split('@')[0] || 'User',
+  nickname: nickname,
   email: fbUser.email || '',
 });
 
@@ -142,14 +144,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
-        setUser(mapFirebaseUser(fbUser));
         setGroupsLoading(true);
-        const [entries, groups, joinedIds, profile] = await Promise.all([
+        const [entries, groups, joinedIds, profile, userSnap] = await Promise.all([
           fetchJournalEntries(fbUser.uid),
           fetchPeerGroups(),
           fetchUserJoinedGroupIds(fbUser.uid),
           fetchMentalHealthProfile(fbUser.uid),
+          getDoc(doc(db, 'users', fbUser.uid)),
         ]);
+        const nickname = userSnap.exists() ? userSnap.data()?.nickname : undefined;
+        setUser(mapFirebaseUser(fbUser, nickname));
         setJournalEntries(entries);
         setPeerGroups(groups);
         setJoinedGroupIds(joinedIds);
@@ -178,6 +182,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const { user: fbUser } = await createUserWithEmailAndPassword(auth, email, password);
     const encryptedName = encryptName(name);
     await updateProfile(fbUser, { displayName: encryptedName });
+    // Note: nickname will be picked up by the onAuthStateChanged listener or set manually here
     setUser(mapFirebaseUser({ ...fbUser, displayName: encryptedName }));
   };
 
