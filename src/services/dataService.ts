@@ -1353,22 +1353,27 @@ export const runMlAnalysis = async (textBatch: string[]): Promise<MlPredictRespo
 export const updateMentalHealthProfileFromMl = async (
   userId: string,
   mlResult: MlPredictResponse,
-  sourceTextsUsed: string[] = []
+  sourceTextsUsed: string[] = [],
+  analyzedTextPreview?: string
 ): Promise<void> => {
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
   const snap = await getDoc(profileRef);
   const existing = snap.exists() ? snap.data() : null;
 
   // Always persist the latest ML emotion score regardless of questionnaire state.
+  const scorePayload: Record<string, any> = {
+    prediction:      mlResult.prediction,
+    confidence:      mlResult.confidence,
+    probabilities:   mlResult.probabilities,
+    recordedAt:      Timestamp.now(),
+    analyzedAt:      Timestamp.now(),
+    sourceTextsUsed,
+  };
+  if (analyzedTextPreview !== undefined) {
+    scorePayload['analyzedTextPreview'] = analyzedTextPreview;
+  }
   const update: Record<string, any> = {
-    latestMlEmotionScore: {
-      prediction: mlResult.prediction,
-      confidence: mlResult.confidence,
-      probabilities: mlResult.probabilities,
-      recordedAt: Timestamp.now(),
-      analyzedAt: Timestamp.now(),
-      sourceTextsUsed,
-    },
+    latestMlEmotionScore: scorePayload,
     lastUpdated: Timestamp.now(),
   };
 
@@ -1461,3 +1466,34 @@ export const runUserTextMlAnalysis = async (userId: string): Promise<void> => {
 // Legacy alias — kept for any callers outside AppContext.
 export const triggerBatchMlAnalysis = async (userId: string): Promise<void> =>
   runUserTextMlAnalysis(userId);
+
+// ─── Per-Event ML Analysis ────────────────────────────────────────────────────
+
+// Analyzes only the single text that triggered the update (no historical fetch).
+// source must be 'journal' | 'group_chat' | 'ai_chat'.
+// Saves latestMlEmotionScore including an 80-char preview of the analyzed text.
+export const runMlAnalysisForText = async (
+  userId: string,
+  text: string,
+  source: 'journal' | 'group_chat' | 'ai_chat'
+): Promise<void> => {
+  const trimmed = text.trim();
+  if (trimmed.length < 3) return;
+
+  console.log(`[ML] Source: ${source}`);
+  console.log('[ML] Text analyzed:', trimmed.length > 80 ? trimmed.slice(0, 80) + '…' : trimmed);
+
+  try {
+    const result = await predictText(trimmed);
+    console.log('[ML] ML prediction result:', JSON.stringify(result));
+    await updateMentalHealthProfileFromMl(
+      userId,
+      result,
+      [source],
+      trimmed.slice(0, 80)
+    );
+    console.log('[ML] latestMlEmotionScore updated successfully');
+  } catch (err) {
+    console.error(`[ML] ML analysis failed for source "${source}":`, err);
+  }
+};

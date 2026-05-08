@@ -14,7 +14,7 @@ import {
   fetchPeerGroups, fetchUserJoinedGroupIds, joinPeerGroup, leavePeerGroup,
   fetchMentalHealthProfile, MentalHealthProfile,
   updateMlMentalHealthProfile, saveAiChatMessage,
-  saveChatMessage, runUserTextMlAnalysis,
+  saveChatMessage, runMlAnalysisForText, updateMentalHealthProfileFromMl,
 } from '../services/dataService';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
@@ -199,7 +199,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateMlMentalHealthProfile(user.id, updatedEntries)
         .then(profile => setMlMentalHealthProfile(profile))
         .catch(err => console.error('[ML] journal profile update failed:', err));
-      runUserTextMlAnalysis(user.id)
+      // mlAnalysis is already the BERT result computed in JournalScreen — reuse it
+      // directly instead of making a redundant second API call.
+      const journalPreview = [title, content].filter(Boolean).join(' ').slice(0, 80);
+      console.log('[ML] Source: journal');
+      console.log('[ML] Text analyzed:', journalPreview);
+      updateMentalHealthProfileFromMl(user.id, mlAnalysis, ['journal'], journalPreview)
+        .then(() => console.log('[ML] latestMlEmotionScore updated successfully'))
         .catch(err => console.error('[ML] journal ML analysis failed:', err));
     }
 
@@ -254,8 +260,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const sendGroupMessage = async (groupId: string, text: string) => {
     if (!user) return;
     await saveChatMessage(groupId, user.id, user.name, text);
-    // Fire-and-forget: collect all sources and update latestMlEmotionScore.
-    runUserTextMlAnalysis(user.id).catch(() => {});
+    runMlAnalysisForText(user.id, text, 'group_chat').catch(() => {});
   };
 
   const sendAiMessage = async (text: string) => {
@@ -269,10 +274,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (user) {
       const uid = user.id;
-      // Save first so the new message is included when runUserTextMlAnalysis fetches.
-      saveAiChatMessage(uid, text)
-        .then(() => runUserTextMlAnalysis(uid))
-        .catch(() => {});
+      saveAiChatMessage(uid, text).catch(() => {});
+      runMlAnalysisForText(uid, text, 'ai_chat').catch(() => {});
     }
 
     const result = dass21Result;

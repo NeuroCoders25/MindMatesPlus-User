@@ -257,12 +257,13 @@ export const ChatScreen = () => {
             </View>
           )}
           <View style={styles.inputBar}>
-            <Input
-              placeholder={isAI ? 'Talk to Mindy...' : 'Type a message...'}
-              value={inputText}
-              onChangeText={t => { setInputText(t); if (moderationError) setModerationError(null); }}
-              style={styles.inputField}
-            />
+            <View style={styles.inputField}>
+              <Input
+                placeholder={isAI ? 'Talk to Mindy...' : 'Type a message...'}
+                value={inputText}
+                onChangeText={t => { setInputText(t); if (moderationError) setModerationError(null); }}
+              />
+            </View>
             <TouchableOpacity
               onPress={handleSend}
               style={[styles.sendBtn, sending && styles.sendBtnDisabled]}
