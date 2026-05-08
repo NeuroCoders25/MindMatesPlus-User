@@ -17,10 +17,11 @@ import { RootStackParamList } from '../navigation';
 import { Group } from '../types';
 
 export const GroupsScreen = () => {
-  const { peerGroups, joinedGroupIds, setSelectedGroup } = useApp();
+  const { peerGroups, joinedGroupIds, setSelectedGroup, visitedGroupIds } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const myGroups = peerGroups.filter(g => joinedGroupIds.includes(g.id));
+  const unvisitedGroupsCount = myGroups.filter(g => !visitedGroupIds.includes(g.id)).length;
 
   const handleOpen = (group: Group) => {
     setSelectedGroup(group);
@@ -71,9 +72,11 @@ export const GroupsScreen = () => {
     >
       <View style={styles.header}>
         <Text style={styles.title}>My Groups</Text>
-        <View style={styles.countBadge}>
-          <Text style={styles.countText}>{myGroups.length}</Text>
-        </View>
+        {unvisitedGroupsCount > 0 && (
+          <View style={styles.countBadge}>
+            <Text style={styles.countText}>{unvisitedGroupsCount}</Text>
+          </View>
+        )}
       </View>
 
       {myGroups.length === 0 ? (

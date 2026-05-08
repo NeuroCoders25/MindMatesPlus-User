@@ -26,7 +26,7 @@ import { Message } from '../types';
 export const ChatScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup } = useApp();
+  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
@@ -82,6 +82,12 @@ export const ChatScreen = () => {
     });
     return unsubscribe;
   }, [groupId, isAI, user?.id]);
+
+  useEffect(() => {
+    if (!isAI && groupId) {
+      markGroupAsVisited(groupId);
+    }
+  }, [groupId, isAI, markGroupAsVisited]);
 
   useEffect(() => {
     if (messages.length > 0) {

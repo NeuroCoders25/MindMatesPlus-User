@@ -52,6 +52,8 @@ interface AppContextType {
   sendGroupMessage: (groupId: string, text: string) => Promise<void>;
   showCrisisAlert: boolean;
   setShowCrisisAlert: (show: boolean) => void;
+  visitedGroupIds: string[];
+  markGroupAsVisited: (groupId: string) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -135,6 +137,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     },
   ]);
   const [showCrisisAlert, setShowCrisisAlert] = useState(false);
+  const [visitedGroupIds, setVisitedGroupIds] = useState<string[]>([]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
@@ -159,6 +162,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setMentalHealthProfile(null);
         setMlMentalHealthProfile(null);
         setJoinedGroupIds([]);
+        setVisitedGroupIds([]);
         setGroupsLoading(false);
       }
       setAuthLoading(false);
@@ -240,6 +244,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map(g => g.id === groupId ? { ...g, members: Math.max(0, g.members - 1) } : g)
     );
   };
+  
+  const markGroupAsVisited = (groupId: string) => {
+    setVisitedGroupIds(prev => (prev.includes(groupId) ? prev : [...prev, groupId]));
+  };
 
   const submitFeedback = async (rating: number, peerComment: string, appComment: string) => {
     if (!user) return;
@@ -320,6 +328,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         submitFeedback,
         aiMessages, sendAiMessage, sendGroupMessage,
         showCrisisAlert, setShowCrisisAlert,
+        visitedGroupIds, markGroupAsVisited,
       }}
     >
       {children}
