@@ -8,10 +8,10 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  ScrollView,
   Modal,
   FlatList,
 } from 'react-native';
+import { ScrollView } from 'react-native-gesture-handler';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -61,43 +61,63 @@ const DropdownPicker: React.FC<DropdownPickerProps> = ({ placeholder, options, v
   const selected = options.find(o => o.value === value);
 
   return (
-    <>
-      <TouchableOpacity style={dpStyles.trigger} onPress={() => setOpen(true)} activeOpacity={0.7}>
-        <Text style={[dpStyles.triggerText, !selected && dpStyles.placeholder]}>
+    <View style={dpStyles.container}>
+      <TouchableOpacity
+        style={[dpStyles.trigger, open && dpStyles.triggerOpen]}
+        onPress={() => setOpen(!open)}
+        activeOpacity={0.7}
+      >
+        <Text style={[dpStyles.triggerText, !selected && dpStyles.placeholder]} numberOfLines={1}>
           {selected ? selected.label : placeholder}
         </Text>
-        <Ionicons name="chevron-down" size={16} color={COLORS.muted} />
+        <Ionicons name={open ? "chevron-up" : "chevron-down"} size={14} color={COLORS.muted} />
       </TouchableOpacity>
 
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <TouchableOpacity style={dpStyles.backdrop} activeOpacity={1} onPress={() => setOpen(false)}>
-          <View style={dpStyles.sheet}>
-            <Text style={dpStyles.sheetTitle}>{placeholder}</Text>
-            <FlatList
-              data={options}
-              keyExtractor={item => String(item.value)}
-              renderItem={({ item }) => (
+      {open && (
+        <>
+          <TouchableOpacity
+            style={dpStyles.overlay}
+            activeOpacity={1}
+            onPress={() => setOpen(false)}
+          />
+          <View style={dpStyles.dropdown}>
+            <ScrollView
+              style={{ maxHeight: 200 }}
+              nestedScrollEnabled={true}
+              keyboardShouldPersistTaps="handled"
+              persistentScrollbar={true}
+              contentContainerStyle={{ paddingBottom: 10 }}
+            >
+              {options.map((item) => (
                 <TouchableOpacity
+                  key={item.value}
                   style={[dpStyles.option, item.value === value && dpStyles.optionSelected]}
-                  onPress={() => { onChange(item.value); setOpen(false); }}
+                  onPress={() => {
+                    onChange(item.value);
+                    setOpen(false);
+                  }}
                 >
                   <Text style={[dpStyles.optionText, item.value === value && dpStyles.optionTextSelected]}>
                     {item.label}
                   </Text>
                   {item.value === value && (
-                    <Ionicons name="checkmark" size={16} color={COLORS.primary} />
+                    <Ionicons name="checkmark" size={14} color={COLORS.primary} />
                   )}
                 </TouchableOpacity>
-              )}
-            />
+              ))}
+            </ScrollView>
           </View>
-        </TouchableOpacity>
-      </Modal>
-    </>
+        </>
+      )}
+    </View>
   );
 };
 
 const dpStyles = StyleSheet.create({
+  container: {
+    position: 'relative',
+    width: '100%',
+  },
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -105,37 +125,61 @@ const dpStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
     backgroundColor: '#fff',
   },
-  triggerText: { fontSize: 15, color: COLORS.text },
+  triggerOpen: {
+    borderColor: COLORS.primary,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+  },
+  triggerText: {
+    fontSize: 13,
+    color: COLORS.text,
+    flex: 1,
+    marginRight: 4,
+  },
   placeholder: { color: COLORS.muted },
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: 360,
-    paddingTop: 16,
-    paddingBottom: 32,
+  overlay: {
+    position: 'absolute',
+    top: -500,
+    left: -500,
+    right: -500,
+    bottom: -500,
+    zIndex: 998,
+    backgroundColor: 'transparent',
   },
-  sheetTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.muted,
-    textAlign: 'center',
-    marginBottom: 8,
+  dropdown: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    backgroundColor: '#fff',
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    borderWidth: 1,
+    borderTopWidth: 0,
+    borderColor: COLORS.primary,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 5,
+    zIndex: 999,
+    overflow: 'hidden',
   },
   option: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingVertical: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#F3F4F6',
   },
   optionSelected: { backgroundColor: '#F0F4FF' },
-  optionText: { fontSize: 15, color: COLORS.text },
+  optionText: { fontSize: 13, color: COLORS.text },
   optionTextSelected: { color: COLORS.primary, fontWeight: '600' },
 });
 
@@ -321,7 +365,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                 </View>
 
                 {/* Date of Birth */}
-                <View style={styles.fieldGroup}>
+                <View style={[styles.fieldGroup, { zIndex: 1000 }]}>
                   <Text style={styles.fieldLabel}>Date of Birth</Text>
                   <View style={styles.dobRow}>
                     <View style={styles.dobYear}>
@@ -487,8 +531,8 @@ const styles = StyleSheet.create({
   radioLabel: { fontSize: 14, color: COLORS.text },
   radioLabelSelected: { color: COLORS.primary, fontWeight: '600' },
 
-  dobRow: { flexDirection: 'row', gap: 8 },
-  dobYear: { flex: 2.2 },
-  dobMonth: { flex: 3 },
-  dobDay: { flex: 1.5 },
+  dobRow: { flexDirection: 'row', gap: 8, zIndex: 1000 },
+  dobYear: { flex: 2.2, zIndex: 3000 },
+  dobMonth: { flex: 3, zIndex: 2000 },
+  dobDay: { flex: 1.5, zIndex: 1000 },
 });
