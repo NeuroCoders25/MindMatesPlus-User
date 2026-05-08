@@ -72,13 +72,13 @@ export const GROUP_CATEGORIES: GroupCategory[] = [
 ];
 
 export const GROUP_IMAGE_MAP: Record<string, any> = {
-  'Severe Support':               require('../assets/group_image4.jpeg'),
-  'Moderate Support':             require('../assets/group_image1.jpg'),
-  'Mild Support':                 require('../assets/group_image5.png'),
-  'Wellness - Thriving':          require('../assets/group_image3.png'),
-  'Wellness - Stress Aware':      require('../assets/group_image5.png'),
+  'Severe Support': require('../assets/group_image4.jpeg'),
+  'Moderate Support': require('../assets/group_image1.jpg'),
+  'Mild Support': require('../assets/group_image5.png'),
+  'Wellness - Thriving': require('../assets/group_image3.png'),
+  'Wellness - Stress Aware': require('../assets/group_image5.png'),
   'Wellness - Emotionally Aware': require('../assets/group_image1.jpg'),
-  'Recovery & Improvement':       require('../assets/group_image3.png'),
+  'Recovery & Improvement': require('../assets/group_image3.png'),
 };
 
 export const fetchPeerGroups = async (): Promise<Group[]> => {
@@ -126,7 +126,7 @@ export const leavePeerGroup = async (userId: string, groupId: string): Promise<v
   await Promise.all([
     deleteDoc(memberRef),
     deleteDoc(doc(db, 'users', userId, 'group_memberships', groupId)),
-    updateDoc(doc(db, 'peer_groups', groupId), { memberCount: increment(-1) }).catch(() => {}),
+    updateDoc(doc(db, 'peer_groups', groupId), { memberCount: increment(-1) }).catch(() => { }),
   ]);
 };
 
@@ -215,11 +215,11 @@ export const fetchMentalHealthProfile = async (
     const qs = data.initialQuestionnaireScore;
     const activeCategory: GroupCategory = data.activeRecommendationCategory ?? 'Wellness - Thriving';
     return {
-      depressionScore:     qs.depressionScore ?? 0,
-      anxietyScore:        qs.anxietyScore ?? 0,
-      stressScore:         qs.stressScore ?? 0,
+      depressionScore: qs.depressionScore ?? 0,
+      anxietyScore: qs.anxietyScore ?? 0,
+      stressScore: qs.stressScore ?? 0,
       classificationLevel: classificationFromCategory(activeCategory),
-      groupCategory:       activeCategory,
+      groupCategory: activeCategory,
     };
   }
 
@@ -231,13 +231,13 @@ export const fetchMentalHealthProfile = async (
 
 // Fallback categories when no exact-match groups exist, using adjacent ordered levels.
 const RELATED_CATEGORIES: Record<GroupCategory, GroupCategory[]> = {
-  'Severe Support':               ['Moderate Support'],
-  'Moderate Support':             ['Mild Support'],
-  'Mild Support':                 ['Recovery & Improvement', 'Moderate Support'],
-  'Recovery & Improvement':       ['Wellness - Emotionally Aware', 'Mild Support'],
+  'Severe Support': ['Moderate Support'],
+  'Moderate Support': ['Mild Support'],
+  'Mild Support': ['Recovery & Improvement', 'Moderate Support'],
+  'Recovery & Improvement': ['Wellness - Emotionally Aware', 'Mild Support'],
   'Wellness - Emotionally Aware': ['Wellness - Stress Aware', 'Recovery & Improvement'],
-  'Wellness - Stress Aware':      ['Wellness - Thriving', 'Wellness - Emotionally Aware'],
-  'Wellness - Thriving':          ['Wellness - Stress Aware'],
+  'Wellness - Stress Aware': ['Wellness - Thriving', 'Wellness - Emotionally Aware'],
+  'Wellness - Thriving': ['Wellness - Stress Aware'],
 };
 
 export const getRecommendedGroups = (
@@ -338,15 +338,15 @@ export interface DassQuestion {
 }
 
 export const DASS_QUESTIONS: DassQuestion[] = [
-  { id: 1,  text: 'I found it hard to wind down', subscale: 'stress' },
-  { id: 2,  text: 'I was aware of dryness of my mouth', subscale: 'anxiety' },
-  { id: 3,  text: "I couldn't seem to experience any positive feeling at all", subscale: 'depression' },
-  { id: 4,  text: 'I experienced breathing difficulty (rapid breathing, breathlessness)', subscale: 'anxiety' },
-  { id: 5,  text: 'I found it difficult to work up the initiative to do things', subscale: 'depression' },
-  { id: 6,  text: 'I tended to over-react to situations', subscale: 'stress' },
-  { id: 7,  text: 'I experienced trembling (e.g., in the hands)', subscale: 'anxiety' },
-  { id: 8,  text: 'I felt that I was using a lot of nervous energy', subscale: 'stress' },
-  { id: 9,  text: 'I was worried about situations in which I might panic and make a fool of myself', subscale: 'anxiety' },
+  { id: 1, text: 'I found it hard to wind down', subscale: 'stress' },
+  { id: 2, text: 'I was aware of dryness of my mouth', subscale: 'anxiety' },
+  { id: 3, text: "I couldn't seem to experience any positive feeling at all", subscale: 'depression' },
+  { id: 4, text: 'I experienced breathing difficulty (rapid breathing, breathlessness)', subscale: 'anxiety' },
+  { id: 5, text: 'I found it difficult to work up the initiative to do things', subscale: 'depression' },
+  { id: 6, text: 'I tended to over-react to situations', subscale: 'stress' },
+  { id: 7, text: 'I experienced trembling (e.g., in the hands)', subscale: 'anxiety' },
+  { id: 8, text: 'I felt that I was using a lot of nervous energy', subscale: 'stress' },
+  { id: 9, text: 'I was worried about situations in which I might panic and make a fool of myself', subscale: 'anxiety' },
   { id: 10, text: 'I felt that I had nothing to look forward to', subscale: 'depression' },
   { id: 11, text: 'I found myself getting agitated', subscale: 'stress' },
   { id: 12, text: 'I found it difficult to relax', subscale: 'stress' },
@@ -375,27 +375,27 @@ const ANX_Q = [2, 4, 7, 9, 15, 19, 20];
 const STR_Q = [1, 6, 8, 11, 12, 14, 18];
 
 function depSev(score: number): { severity: string; color: string } {
-  if (score <= 9)  return { severity: 'Normal',           color: '#43A047' };
-  if (score <= 13) return { severity: 'Mild',             color: '#F9A825' };
-  if (score <= 20) return { severity: 'Moderate',         color: '#FB8C00' };
-  if (score <= 27) return { severity: 'Severe',           color: '#E53935' };
-  return               { severity: 'Extremely Severe', color: '#B71C1C' };
+  if (score <= 9) return { severity: 'Normal', color: '#43A047' };
+  if (score <= 13) return { severity: 'Mild', color: '#F9A825' };
+  if (score <= 20) return { severity: 'Moderate', color: '#FB8C00' };
+  if (score <= 27) return { severity: 'Severe', color: '#E53935' };
+  return { severity: 'Extremely Severe', color: '#B71C1C' };
 }
 
 function anxSev(score: number): { severity: string; color: string } {
-  if (score <= 7)  return { severity: 'Normal',           color: '#43A047' };
-  if (score <= 9)  return { severity: 'Mild',             color: '#F9A825' };
-  if (score <= 14) return { severity: 'Moderate',         color: '#FB8C00' };
-  if (score <= 19) return { severity: 'Severe',           color: '#E53935' };
-  return               { severity: 'Extremely Severe', color: '#B71C1C' };
+  if (score <= 7) return { severity: 'Normal', color: '#43A047' };
+  if (score <= 9) return { severity: 'Mild', color: '#F9A825' };
+  if (score <= 14) return { severity: 'Moderate', color: '#FB8C00' };
+  if (score <= 19) return { severity: 'Severe', color: '#E53935' };
+  return { severity: 'Extremely Severe', color: '#B71C1C' };
 }
 
 function strSev(score: number): { severity: string; color: string } {
-  if (score <= 14) return { severity: 'Normal',           color: '#43A047' };
-  if (score <= 18) return { severity: 'Mild',             color: '#F9A825' };
-  if (score <= 25) return { severity: 'Moderate',         color: '#FB8C00' };
-  if (score <= 33) return { severity: 'Severe',           color: '#E53935' };
-  return               { severity: 'Extremely Severe', color: '#B71C1C' };
+  if (score <= 14) return { severity: 'Normal', color: '#43A047' };
+  if (score <= 18) return { severity: 'Mild', color: '#F9A825' };
+  if (score <= 25) return { severity: 'Moderate', color: '#FB8C00' };
+  if (score <= 33) return { severity: 'Severe', color: '#E53935' };
+  return { severity: 'Extremely Severe', color: '#B71C1C' };
 }
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -416,8 +416,8 @@ export function computeDass21Result(answers: Record<number, number>): Dass21Resu
   const sS = strSev(strFinal);
 
   const depression: Dass21SubscaleResult = { raw: depRaw, final: depFinal, severity: dS.severity, severityColor: dS.color };
-  const anxiety:    Dass21SubscaleResult = { raw: anxRaw, final: anxFinal, severity: aS.severity, severityColor: aS.color };
-  const stress:     Dass21SubscaleResult = { raw: strRaw, final: strFinal, severity: sS.severity, severityColor: sS.color };
+  const anxiety: Dass21SubscaleResult = { raw: anxRaw, final: anxFinal, severity: aS.severity, severityColor: aS.color };
+  const stress: Dass21SubscaleResult = { raw: strRaw, final: strFinal, severity: sS.severity, severityColor: sS.color };
 
   const ranks = [SEVERITY_RANK[dS.severity], SEVERITY_RANK[aS.severity], SEVERITY_RANK[sS.severity]];
   const maxRank = Math.max(...ranks);
@@ -526,8 +526,8 @@ export const ML_CATEGORY_MAP: Record<string, string> = {
 // normal     → general thriving/wellness groups
 export const ML_TO_PRIMARY_CATEGORY: Record<string, GroupCategory> = {
   depression: 'Moderate Support',
-  anxiety:    'Wellness - Stress Aware',
-  normal:     'Wellness - Thriving',
+  anxiety: 'Wellness - Stress Aware',
+  normal: 'Wellness - Thriving',
 };
 
 export const getGroupsByMlPrediction = (groups: Group[], prediction: string): Group[] => {
@@ -552,7 +552,7 @@ const mapResourceDoc = (d: any): Resource => {
   };
 
   const postedBy = getVal([
-    'author', 'postedBy', 'posted_by', 'advisorName', 'advisor_name', 'authorName', 'author_name', 
+    'author', 'postedBy', 'posted_by', 'advisorName', 'advisor_name', 'authorName', 'author_name',
     'posted_by_name', 'advisor_profile_name'
   ]) ?? data.advisor?.name ?? data.author?.name ?? data.posted_by_profile?.name;
 
@@ -801,17 +801,17 @@ export const updateQuestionnaireBaseline = async (
   await setDoc(profileRef, {
     initialQuestionnaireScore: {
       depressionScore: dass21Result.depression.final,
-      anxietyScore:    dass21Result.anxiety.final,
-      stressScore:     dass21Result.stress.final,
+      anxietyScore: dass21Result.anxiety.final,
+      stressScore: dass21Result.stress.final,
       totalScore,
       mainCondition,
-      category:        mainSeverity,
-      completedAt:     Timestamp.now(),
+      category: mainSeverity,
+      completedAt: Timestamp.now(),
     },
-    latestMlEmotionScore:           null,
+    latestMlEmotionScore: null,
     baselineRecommendationCategory: baselineCategory,
-    activeRecommendationCategory:   baselineCategory,
-    recommendationSource:           'questionnaire',
+    activeRecommendationCategory: baselineCategory,
+    recommendationSource: 'questionnaire',
     userStatus,
   }, { merge: true });
 };
@@ -855,8 +855,8 @@ export const updateMlEmotionRecommendation = async (
       const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(currentCategory, mlResult, counter);
       update['mlStabilityCounter'] = {
         lastPrediction: newCounter.lastPrediction,
-        repeatedCount:  newCounter.repeatedCount,
-        lastUpdatedAt:  Timestamp.now(),
+        repeatedCount: newCounter.repeatedCount,
+        lastUpdatedAt: Timestamp.now(),
       };
       if (changed) {
         update['activeRecommendationCategory'] = newCategory;
@@ -999,17 +999,17 @@ export const updateQuestionnaireProfile = async (
   await setDoc(profileRef, {
     initialQuestionnaireScore: {
       depressionScore: dass21Result.depression.final,
-      anxietyScore:    dass21Result.anxiety.final,
-      stressScore:     dass21Result.stress.final,
+      anxietyScore: dass21Result.anxiety.final,
+      stressScore: dass21Result.stress.final,
       totalScore,
       mainCondition,
-      category:        mainSeverity,
-      completedAt:     Timestamp.now(),
+      category: mainSeverity,
+      completedAt: Timestamp.now(),
     },
-    latestMlEmotionScore:           null,
+    latestMlEmotionScore: null,
     baselineRecommendationCategory: baselineCategory,
-    activeRecommendationCategory:   baselineCategory,
-    recommendationSource:           'questionnaire',
+    activeRecommendationCategory: baselineCategory,
+    recommendationSource: 'questionnaire',
     userStatus,
   }, { merge: true });
 };
@@ -1036,10 +1036,10 @@ export const updateMlEmotionProfile = async (
   const isSevereBaseline = baselineCategory === 'Severe Support';
 
   const latestMlEmotionScore = {
-    prediction:    mlResult.prediction,
-    confidence:    mlResult.confidence,
+    prediction: mlResult.prediction,
+    confidence: mlResult.confidence,
     probabilities: mlResult.probabilities,
-    recordedAt:    Timestamp.now(),
+    recordedAt: Timestamp.now(),
   };
 
   const update: Record<string, any> = { latestMlEmotionScore, lastUpdated: Timestamp.now() };
@@ -1056,8 +1056,8 @@ export const updateMlEmotionProfile = async (
       const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(currentCategory, mlResult, counter);
       update['mlStabilityCounter'] = {
         lastPrediction: newCounter.lastPrediction,
-        repeatedCount:  newCounter.repeatedCount,
-        lastUpdatedAt:  Timestamp.now(),
+        repeatedCount: newCounter.repeatedCount,
+        lastUpdatedAt: Timestamp.now(),
       };
       if (changed) {
         update['activeRecommendationCategory'] = newCategory;
@@ -1090,33 +1090,33 @@ export const subscribeToRecommendationProfile = (
     callback({
       initialQuestionnaireScore: {
         depressionScore: qs.depressionScore ?? 0,
-        anxietyScore:    qs.anxietyScore ?? 0,
-        stressScore:     qs.stressScore ?? 0,
-        totalScore:      qs.totalScore ?? 0,
-        mainCondition:   qs.mainCondition ?? '',
-        category:        qs.category ?? 'Normal',
-        completedAt:     qs.completedAt?.toDate() ?? new Date(),
+        anxietyScore: qs.anxietyScore ?? 0,
+        stressScore: qs.stressScore ?? 0,
+        totalScore: qs.totalScore ?? 0,
+        mainCondition: qs.mainCondition ?? '',
+        category: qs.category ?? 'Normal',
+        completedAt: qs.completedAt?.toDate() ?? new Date(),
       },
       latestMlEmotionScore: raw.latestMlEmotionScore
         ? {
-            prediction:       raw.latestMlEmotionScore.prediction,
-            confidence:       raw.latestMlEmotionScore.confidence,
-            probabilities:    raw.latestMlEmotionScore.probabilities,
-            recordedAt:       raw.latestMlEmotionScore.recordedAt?.toDate() ?? new Date(),
-            analyzedAt:       raw.latestMlEmotionScore.analyzedAt?.toDate(),
-            sourceTextsUsed:  raw.latestMlEmotionScore.sourceTextsUsed,
-          }
+          prediction: raw.latestMlEmotionScore.prediction,
+          confidence: raw.latestMlEmotionScore.confidence,
+          probabilities: raw.latestMlEmotionScore.probabilities,
+          recordedAt: raw.latestMlEmotionScore.recordedAt?.toDate() ?? new Date(),
+          analyzedAt: raw.latestMlEmotionScore.analyzedAt?.toDate(),
+          sourceTextsUsed: raw.latestMlEmotionScore.sourceTextsUsed,
+        }
         : null,
       baselineRecommendationCategory: raw.baselineRecommendationCategory ?? 'Wellness - Thriving',
-      activeRecommendationCategory:   raw.activeRecommendationCategory ?? 'Wellness - Thriving',
-      recommendationSource:           raw.recommendationSource ?? 'questionnaire',
-      userStatus:                     raw.userStatus ?? 'normal',
+      activeRecommendationCategory: raw.activeRecommendationCategory ?? 'Wellness - Thriving',
+      recommendationSource: raw.recommendationSource ?? 'questionnaire',
+      userStatus: raw.userStatus ?? 'normal',
       mlStabilityCounter: rawCounter
         ? {
-            lastPrediction: rawCounter.lastPrediction ?? 'normal',
-            repeatedCount:  rawCounter.repeatedCount ?? 0,
-            lastUpdatedAt:  rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
-          }
+          lastPrediction: rawCounter.lastPrediction ?? 'normal',
+          repeatedCount: rawCounter.repeatedCount ?? 0,
+          lastUpdatedAt: rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
+        }
         : null,
     });
   });
@@ -1185,13 +1185,13 @@ export const updateCategorySafely = (
 };
 
 const WELLNESS_SCORE_MAP: Record<GroupCategory, number> = {
-  'Wellness - Thriving':          100,
-  'Wellness - Stress Aware':      85,
+  'Wellness - Thriving': 100,
+  'Wellness - Stress Aware': 85,
   'Wellness - Emotionally Aware': 75,
-  'Recovery & Improvement':       65,
-  'Mild Support':                 50,
-  'Moderate Support':             35,
-  'Severe Support':               20,
+  'Recovery & Improvement': 65,
+  'Mild Support': 50,
+  'Moderate Support': 35,
+  'Severe Support': 20,
 };
 
 export const calculateWellnessScore = (category: GroupCategory): number =>
@@ -1203,9 +1203,9 @@ export const calculateWellnessScore = (category: GroupCategory): number =>
 // normal → wants to reach wellness; depression/anxiety → wants to reach high support.
 // The actual move is always one step via updateCategorySafely — never a direct jump.
 const ML_SUGGESTED_CATEGORY: Record<string, GroupCategory> = {
-  normal:     'Wellness - Thriving',
+  normal: 'Wellness - Thriving',
   depression: 'Moderate Support',
-  anxiety:    'Moderate Support',
+  anxiety: 'Moderate Support',
 };
 
 export const updateCategoryWithStabilityRules = (
@@ -1362,11 +1362,11 @@ export const updateMentalHealthProfileFromMl = async (
   // Always persist the latest ML emotion score regardless of questionnaire state.
   const update: Record<string, any> = {
     latestMlEmotionScore: {
-      prediction:      mlResult.prediction,
-      confidence:      mlResult.confidence,
-      probabilities:   mlResult.probabilities,
-      recordedAt:      Timestamp.now(),
-      analyzedAt:      Timestamp.now(),
+      prediction: mlResult.prediction,
+      confidence: mlResult.confidence,
+      probabilities: mlResult.probabilities,
+      recordedAt: Timestamp.now(),
+      analyzedAt: Timestamp.now(),
       sourceTextsUsed,
     },
     lastUpdated: Timestamp.now(),
@@ -1382,10 +1382,10 @@ export const updateMentalHealthProfileFromMl = async (
     const rawCounter = existing.mlStabilityCounter;
     const counter: MlStabilityCounter | null = rawCounter
       ? {
-          lastPrediction: rawCounter.lastPrediction,
-          repeatedCount:  rawCounter.repeatedCount,
-          lastUpdatedAt:  rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
-        }
+        lastPrediction: rawCounter.lastPrediction,
+        repeatedCount: rawCounter.repeatedCount,
+        lastUpdatedAt: rawCounter.lastUpdatedAt?.toDate() ?? new Date(),
+      }
       : null;
 
     if (isSevereBaseline) {
@@ -1393,8 +1393,8 @@ export const updateMentalHealthProfileFromMl = async (
       const isSame = counter?.lastPrediction === mlResult.prediction;
       update['mlStabilityCounter'] = {
         lastPrediction: mlResult.prediction,
-        repeatedCount:  isSame ? (counter!.repeatedCount + 1) : 1,
-        lastUpdatedAt:  Timestamp.now(),
+        repeatedCount: isSame ? (counter!.repeatedCount + 1) : 1,
+        lastUpdatedAt: Timestamp.now(),
       };
     } else {
       const { newCategory, newCounter, changed } = updateCategoryWithStabilityRules(
@@ -1402,8 +1402,8 @@ export const updateMentalHealthProfileFromMl = async (
       );
       update['mlStabilityCounter'] = {
         lastPrediction: newCounter.lastPrediction,
-        repeatedCount:  newCounter.repeatedCount,
-        lastUpdatedAt:  Timestamp.now(),
+        repeatedCount: newCounter.repeatedCount,
+        lastUpdatedAt: Timestamp.now(),
       };
       if (changed) {
         update['activeRecommendationCategory'] = newCategory;
