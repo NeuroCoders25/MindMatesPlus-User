@@ -1,18 +1,21 @@
 import React from 'react';
 import { Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { NavigationContainer, useNavigation } from '@react-navigation/native';
+import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useApp } from '../context/AppContext';
 import { COLORS } from '../services/dataService';
+import { Advisor } from '../types';
 
 import { SplashScreen } from '../screens/SplashScreen';
 import { AuthScreen } from '../screens/AuthScreen';
 import { QuestionnaireScreen } from '../screens/QuestionnaireScreen';
 import { ResultScreen } from '../screens/ResultScreen';
 import { AdvisorScreen } from '../screens/AdvisorScreen';
+import { ConsultAdvisorScreen } from '../screens/ConsultAdvisorScreen';
+import { AdvisorDetailsScreen } from '../screens/AdvisorDetailsScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { GroupsScreen } from '../screens/GroupsScreen';
 import { ChatScreen } from '../screens/ChatScreen';
@@ -32,6 +35,8 @@ export type RootStackParamList = {
   Questionnaire: undefined;
   Result: undefined;
   Advisor: undefined;
+  ConsultAdvisor: undefined;
+  AdvisorDetails: { advisor: Advisor };
   Main: undefined;
   GroupChat: { groupId: string; groupName: string };
   Feedback: undefined;
@@ -66,6 +71,7 @@ const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
 
 const MainTabs = () => {
   const { showCrisisAlert, setShowCrisisAlert } = useApp();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const initialTab = 'Home';
 
   return (
@@ -127,7 +133,10 @@ const MainTabs = () => {
           </Text>
           <TouchableOpacity
             style={crisis.primaryBtn}
-            onPress={() => setShowCrisisAlert(false)}
+            onPress={() => {
+              setShowCrisisAlert(false);
+              navigation.navigate('ConsultAdvisor');
+            }}
           >
             <Text style={crisis.primaryBtnText}>Connect with Advisor</Text>
           </TouchableOpacity>
@@ -155,6 +164,8 @@ export const Navigation = () => (
       <RootStack.Screen name="Questionnaire" component={QuestionnaireScreen} />
       <RootStack.Screen name="Result" component={ResultScreen} />
       <RootStack.Screen name="Advisor" component={AdvisorScreen} />
+      <RootStack.Screen name="ConsultAdvisor" component={ConsultAdvisorScreen} />
+      <RootStack.Screen name="AdvisorDetails" component={AdvisorDetailsScreen} />
       <RootStack.Screen name="Main" component={MainTabs} />
       <RootStack.Screen
         name="GroupChat"

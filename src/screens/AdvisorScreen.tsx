@@ -25,19 +25,11 @@ export const AdvisorScreen: React.FC<Props> = ({ navigation }) => {
 
       <View style={styles.buttons}>
         <Button
-          onPress={() => Alert.alert('Calling advisor...')}
+          onPress={() => navigation.navigate('ConsultAdvisor')}
           variant="danger"
           style={styles.btn}
         >
-          Call Advisor
-        </Button>
-
-        <Button
-          onPress={() => Alert.alert('Starting chat with advisor...')}
-          variant="outline"
-          style={styles.btn}
-        >
-          Chat with Advisor
+          Connect with Advisor
         </Button>
 
         <TouchableOpacity

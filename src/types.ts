@@ -118,3 +118,15 @@ export interface KnnInput {
   normalCount: number;
   preferredGroupCategory: string;
 }
+
+export interface Advisor {
+  id: string;
+  name: string;
+  specialty: string;
+  rating: number;
+  availability: string;
+  imageUrl?: string;
+  experience?: string;
+  sessions?: string;
+  about?: string;
+}

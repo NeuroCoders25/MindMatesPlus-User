@@ -1,4 +1,4 @@
-import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, Advisor } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
@@ -504,6 +504,23 @@ export const getGroupsByMlPrediction = (groups: Group[], prediction: string): Gr
 // Returns the single GroupCategory that corresponds to an ML dominant category string.
 export const getMlGroupCategory = (dominantCategory: string): GroupCategory =>
   ML_TO_PRIMARY_CATEGORY[dominantCategory] ?? 'Wellness - Thriving';
+
+// ─── Advisors Firestore Functions ───────────────────────────────────────────
+
+export const fetchAdvisors = async (): Promise<Advisor[]> => {
+  const snap = await getDocs(collection(db, 'advisors'));
+  return snap.docs.map(d => ({
+    id: d.id,
+    name: d.data().name as string,
+    specialty: d.data().specialty as string,
+    rating: d.data().rating as number,
+    availability: d.data().availability as string,
+    imageUrl: d.data().imageUrl as string | undefined,
+    experience: d.data().experience as string | undefined,
+    sessions: d.data().sessions as string | undefined,
+    about: d.data().about as string | undefined,
+  }));
+};
 
 // ─── Resources Firestore Functions ───────────────────────────────────────────
 
