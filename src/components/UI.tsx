@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { Ionicons } from '@expo/vector-icons';
 import {
   TouchableOpacity,
   Text,
@@ -93,20 +94,41 @@ export const Input: React.FC<InputProps> = ({
   onChangeText,
   type = 'text',
   style,
-}) => (
-  <TextInput
-    placeholder={placeholder}
-    placeholderTextColor={COLORS.muted}
-    value={value}
-    onChangeText={onChangeText}
-    secureTextEntry={type === 'password'}
-    keyboardType={type === 'email' ? 'email-address' : type === 'number' ? 'numeric' : 'default'}
-    autoCapitalize={type === 'email' ? 'none' : 'sentences'}
-    multiline={type === 'textarea'}
-    numberOfLines={type === 'textarea' ? 5 : 1}
-    style={[styles.input, type === 'textarea' && styles.textarea, style]}
-  />
-);
+}) => {
+  const [showPassword, setShowPassword] = useState(false);
+  const isPasswordType = type === 'password';
+
+  return (
+    <View style={styles.inputContainer}>
+      <TextInput
+        placeholder={placeholder}
+        placeholderTextColor={COLORS.muted}
+        value={value}
+        onChangeText={onChangeText}
+        secureTextEntry={isPasswordType && !showPassword}
+        keyboardType={type === 'email' ? 'email-address' : type === 'number' ? 'numeric' : 'default'}
+        autoCapitalize={type === 'email' ? 'none' : 'sentences'}
+        multiline={type === 'textarea'}
+        numberOfLines={type === 'textarea' ? 5 : 1}
+        style={[
+          styles.input,
+          type === 'textarea' && styles.textarea,
+          isPasswordType && { paddingRight: 50 },
+          style
+        ]}
+      />
+      {isPasswordType && (
+        <TouchableOpacity
+          style={styles.eyeIcon}
+          onPress={() => setShowPassword(!showPassword)}
+          activeOpacity={0.7}
+        >
+          <Ionicons name={showPassword ? 'eye-outline' : 'eye-off-outline'} size={20} color={COLORS.muted} />
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+};
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -142,6 +164,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.cardBorder,
   },
+  inputContainer: {
+    width: '100%',
+    position: 'relative',
+    justifyContent: 'center',
+  },
   input: {
     width: '100%',
     paddingHorizontal: 20,
@@ -152,6 +179,12 @@ const styles = StyleSheet.create({
     borderColor: '#BFDBFE',
     color: COLORS.text,
     fontSize: 15,
+  },
+  eyeIcon: {
+    position: 'absolute',
+    right: 16,
+    height: '100%',
+    justifyContent: 'center',
   },
   textarea: {
     minHeight: 120,

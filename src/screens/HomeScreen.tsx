@@ -678,7 +678,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   insightMainLeft: { flex: 1, gap: 6 },
-  insightMainRight: { gap: 6 },
+  insightMainRight: { gap: 6, alignItems: 'center' },
   insightFieldLabel: {
     fontSize: 10,
     fontWeight: '700',
@@ -696,10 +696,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  confidenceCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  confidenceValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  insightDominant: { gap: 4 },
   dominantValue: {
     fontSize: 14,
     fontWeight: '700',
-    flexShrink: 1,
   },
   countsRow: {
     flexDirection: 'row',
