@@ -23,15 +23,15 @@ import { encryptName } from '../utils/encryption';
 
 const friendlyError = (code: string): string => {
   switch (code) {
-    case 'auth/email-already-in-use':   return 'An account with this email already exists.';
-    case 'auth/invalid-email':          return 'Please enter a valid email address.';
-    case 'auth/weak-password':          return 'Password must be at least 6 characters.';
-    case 'auth/user-not-found':         return 'No account found with this email.';
-    case 'auth/wrong-password':         return 'Incorrect password. Please try again.';
-    case 'auth/invalid-credential':     return 'Incorrect email or password.';
-    case 'auth/too-many-requests':      return 'Too many attempts. Please try again later.';
+    case 'auth/email-already-in-use': return 'An account with this email already exists.';
+    case 'auth/invalid-email': return 'Please enter a valid email address.';
+    case 'auth/weak-password': return 'Password must be at least 6 characters.';
+    case 'auth/user-not-found': return 'No account found with this email.';
+    case 'auth/wrong-password': return 'Incorrect password. Please try again.';
+    case 'auth/invalid-credential': return 'Incorrect email or password.';
+    case 'auth/too-many-requests': return 'Too many attempts. Please try again later.';
     case 'auth/network-request-failed': return 'Network error. Please check your connection.';
-    default:                            return 'Something went wrong. Please try again.';
+    default: return 'Something went wrong. Please try again.';
   }
 };
 
@@ -200,6 +200,21 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
+  const [hasAttemptedRegistration, setHasAttemptedRegistration] = useState(false);
+
+  const allFieldsFilled = useMemo(() => {
+    return !!(
+      name.trim() &&
+      nickname.trim() &&
+      gender &&
+      dobYear &&
+      dobMonth &&
+      dobDay &&
+      email.trim() &&
+      password &&
+      confirmPassword
+    );
+  }, [name, nickname, gender, dobYear, dobMonth, dobDay, email, password, confirmPassword]);
 
   const currentYear = new Date().getFullYear();
 
@@ -222,12 +237,13 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
     let calculatedAge = 0;
 
     if (!isLogin) {
-      if (!acceptedPrivacy) {
-        setError('Please read and accept the privacy policy.');
+      setHasAttemptedRegistration(true);
+      if (!allFieldsFilled) {
+        setError('');
         return;
       }
-      if (!nickname.trim()) {
-        setError('Please enter a nickname.');
+      if (!acceptedPrivacy) {
+        setError('');
         return;
       }
       if (nickname.trim().toLowerCase() === name.trim().toLowerCase()) {
@@ -433,9 +449,17 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                 </Text>
               </TouchableOpacity>
             )}
-            {error !== '' && (
+            {error !== '' ? (
               <Text style={styles.errorText}>{error}</Text>
-            )}
+            ) : (!isLogin && hasAttemptedRegistration) ? (
+              (!allFieldsFilled || !acceptedPrivacy) && (
+                <Text style={styles.errorText}>
+                  {!allFieldsFilled
+                    ? 'Please fill all the fields to complete registration'
+                    : 'Please read and accept the privacy policy.'}
+                </Text>
+              )
+            ) : null}
             <Button onPress={handleAuth} disabled={loading} style={styles.authBtn}>
               {loading ? 'Please wait…' : isLogin ? 'Sign In' : 'Create Account'}
             </Button>
@@ -462,6 +486,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
               setNickname('');
               setGender('');
               setAcceptedPrivacy(false);
+              setHasAttemptedRegistration(false);
             }}
           >
             <Text style={styles.toggleText}>

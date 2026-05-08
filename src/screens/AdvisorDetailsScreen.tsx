@@ -4,7 +4,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { COLORS } from '../services/dataService';
-import { Button } from '../components/UI';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AdvisorDetails'>;
 
@@ -26,27 +25,30 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Details</Text>
-        <View style={{ width: 24 }} /> {/* Spacer */}
+        <View style={{ width: 24 }} /> 
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        {/* Profile Section */}
         <View style={styles.profileSection}>
           <View style={styles.avatarWrapper}>
-            <Image source={avatar} style={styles.avatar} />
+            {advisor.imageUrl ? (
+              <Image source={{ uri: advisor.imageUrl }} style={styles.avatar} />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Ionicons name="person" size={60} color="#9CA3AF" />
+              </View>
+            )}
             <View style={styles.onlineDot} />
           </View>
           <Text style={styles.name}>{advisor.name}</Text>
           <Text style={styles.specialty}>{advisor.specialty}</Text>
         </View>
 
-        {/* Stats Row */}
         <View style={styles.statsRow}>
           <View style={styles.statBox}>
             <Text style={styles.statLabel}>EXP.</Text>
@@ -54,7 +56,7 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
           </View>
           <View style={styles.statBox}>
             <Text style={styles.statLabel}>RATING</Text>
-            <Text style={styles.statValue}>{advisor.rating}</Text>
+            <Text style={styles.statValue}>{advisor.rating != null ? String(advisor.rating) : '-'}</Text>
           </View>
           <View style={styles.statBox}>
             <Text style={styles.statLabel}>SESSIONS</Text>
@@ -62,17 +64,15 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
           </View>
         </View>
 
-        {/* About Section */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>About</Text>
           <Text style={styles.cardText}>{aboutText}</Text>
         </View>
 
-        {/* Availability Section */}
         <View style={styles.availabilityCard}>
           <View>
             <Text style={styles.availabilityLabel}>NEXT AVAILABILITY</Text>
-            <Text style={styles.availabilityValue}>{advisor.availability}</Text>
+            <Text style={styles.availabilityValue}>{advisor.availability ?? ''}</Text>
           </View>
           <View style={styles.clockIconWrapper}>
             <Ionicons name="time-outline" size={24} color={COLORS.accentLight} />
@@ -80,18 +80,18 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
         </View>
       </ScrollView>
 
-      {/* Footer Action */}
+  
       <View style={styles.footer}>
-        <Button
+        <TouchableOpacity
           onPress={() => navigation.navigate('AdvisorChat', { advisor })}
-          variant="primary"
+          activeOpacity={0.85}
           style={styles.chatButton}
         >
           <View style={styles.buttonContent}>
             <Ionicons name="chatbubble-ellipses-outline" size={20} color="white" />
-            <Text style={styles.buttonText}>Live Chat</Text>
+            <Text style={styles.buttonText}>Chat</Text>
           </View>
-        </Button>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -143,6 +143,14 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 50,
+  },
+  avatarPlaceholder: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: '#F3F4F6',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   onlineDot: {
     position: 'absolute',
@@ -256,8 +264,11 @@ const styles = StyleSheet.create({
   chatButton: {
     width: '100%',
     paddingVertical: 16,
+    paddingHorizontal: 24,
     borderRadius: 16,
-    backgroundColor: COLORS.accent,
+    backgroundColor: '#6366F1',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   buttonContent: {
     flexDirection: 'row',

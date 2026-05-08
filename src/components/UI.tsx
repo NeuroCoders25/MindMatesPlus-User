@@ -50,10 +50,18 @@ export const Button: React.FC<ButtonProps> = ({
       activeOpacity={0.85}
       style={[styles.buttonBase, vs.container, disabled && styles.disabled, style]}
     >
-      {typeof children === 'string' ? (
+      {typeof children === 'string' || typeof children === 'number' ? (
         <Text style={[styles.buttonText, vs.text]}>{children}</Text>
       ) : (
-        <View style={styles.buttonRow}>{children}</View>
+        <View style={styles.buttonRow}>
+          {React.Children.map(children, (child) =>
+            typeof child === 'string' || typeof child === 'number' ? (
+              <Text style={[styles.buttonText, vs.text]}>{child}</Text>
+            ) : (
+              child
+            )
+          )}
+        </View>
       )}
     </TouchableOpacity>
   );

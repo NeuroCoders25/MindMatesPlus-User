@@ -9,8 +9,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
-  SafeAreaView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -81,7 +81,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color="white" />
+          <Ionicons name="arrow-back" size={22} color={COLORS.text} />
         </TouchableOpacity>
 
         <View style={styles.headerProfile}>
@@ -96,7 +96,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
         </View>
 
         <TouchableOpacity style={styles.phoneBtn}>
-          <Ionicons name="call-outline" size={22} color="white" />
+          <Ionicons name="call-outline" size={22} color={COLORS.text} />
         </TouchableOpacity>
       </View>
 
@@ -143,7 +143,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS.white,
   },
   flex: {
     flex: 1,
@@ -153,10 +153,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: COLORS.primary,
+    backgroundColor: COLORS.white,
     paddingTop: 16,
     paddingBottom: 16,
     paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#ECECEC',
   },
   backBtn: {
     padding: 4,
@@ -176,7 +178,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.6)',
   },
   headerName: {
-    color: 'white',
+    color: COLORS.text,
     fontWeight: 'bold',
     fontSize: 16,
   },
@@ -193,7 +195,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#22C55E',
   },
   onlineText: {
-    color: 'rgba(255,255,255,0.85)',
+    color: COLORS.muted,
     fontSize: 12,
   },
   phoneBtn: {
