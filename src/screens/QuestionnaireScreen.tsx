@@ -475,14 +475,13 @@ const styles = StyleSheet.create({
 
   // Floating assistant
   chatbotRow: {
-    alignSelf: 'flex-end',
+    position: 'absolute',
+    bottom: 40,
+    right: 8,
     flexDirection: 'row',
     alignItems: 'flex-end',
-    marginTop: 8,
-    marginRight: -12,
-    marginBottom: -12,
   },
-  chatbotBtn: { flexDirection: 'row', alignItems: 'flex-end' },
+  chatbotBtn: { flexDirection: 'row', alignItems: 'center' },
   chatBubble: {
     backgroundColor: '#3370B0',
     borderRadius: 14,
@@ -490,6 +489,7 @@ const styles = StyleSheet.create({
     padding: 10,
     maxWidth: 140,
     marginRight: -6,
+    marginTop: -16,
     zIndex: 1,
   },
   chatBubbleText: { color: 'white', fontSize: 10, fontWeight: '500', lineHeight: 14 },

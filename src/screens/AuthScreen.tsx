@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import {
   View,
@@ -54,11 +54,29 @@ interface DropdownPickerProps {
   options: DropdownOption[];
   value: number | null;
   onChange: (val: number) => void;
+  scrollToValue?: number;
 }
 
-const DropdownPicker: React.FC<DropdownPickerProps> = ({ placeholder, options, value, onChange }) => {
+const OPTION_HEIGHT = 46;
+
+const DropdownPicker: React.FC<DropdownPickerProps> = ({ placeholder, options, value, onChange, scrollToValue }) => {
   const [open, setOpen] = useState(false);
+  const scrollRef = useRef<any>(null);
   const selected = options.find(o => o.value === value);
+
+  useEffect(() => {
+    if (open && scrollRef.current) {
+      const targetValue = value ?? scrollToValue;
+      if (targetValue != null) {
+        const idx = options.findIndex(o => o.value === targetValue);
+        if (idx >= 0) {
+          setTimeout(() => {
+            scrollRef.current?.scrollTo({ y: idx * OPTION_HEIGHT, animated: false });
+          }, 50);
+        }
+      }
+    }
+  }, [open]);
 
   return (
     <View style={dpStyles.container}>
@@ -82,9 +100,11 @@ const DropdownPicker: React.FC<DropdownPickerProps> = ({ placeholder, options, v
           />
           <View style={dpStyles.dropdown}>
             <ScrollView
-              style={{ maxHeight: 200 }}
+              ref={scrollRef}
+              style={{ maxHeight: 240 }}
               nestedScrollEnabled={true}
               keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={true}
               persistentScrollbar={true}
               contentContainerStyle={{ paddingBottom: 10 }}
             >
@@ -174,7 +194,7 @@ const dpStyles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingVertical: 12,
+    height: OPTION_HEIGHT,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#F3F4F6',
   },
@@ -216,13 +236,13 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
     );
   }, [name, nickname, gender, dobYear, dobMonth, dobDay, email, password, confirmPassword]);
 
-  const currentYear = new Date().getFullYear();
-
-  const yearOptions = useMemo<DropdownOption[]>(() =>
-    Array.from({ length: 91 }, (_, i) => {
-      const y = currentYear - 10 - i;
+  const yearOptions = useMemo<DropdownOption[]>(() => {
+    const endYear = new Date().getFullYear() - 10;
+    return Array.from({ length: endYear - 1960 + 1 }, (_, i) => {
+      const y = 1960 + i;
       return { label: String(y), value: y };
-    }), [currentYear]);
+    });
+  }, []);
 
   const monthOptions = useMemo<DropdownOption[]>(() =>
     MONTHS.map((m, i) => ({ label: m, value: i + 1 })), []);
@@ -390,6 +410,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                         options={yearOptions}
                         value={dobYear}
                         onChange={v => { setDobYear(v); setDobDay(null); }}
+                        scrollToValue={2000}
                       />
                     </View>
                     <View style={styles.dobMonth}>
