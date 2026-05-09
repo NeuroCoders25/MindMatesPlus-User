@@ -29,7 +29,7 @@ export const ProfileScreen = () => {
       icon: 'heart' as const,
       label: 'Wellness Goals',
       color: '#EC4899',
-      onPress: () => {},
+      onPress: () => navigation.navigate('WellnessGoals'),
     },
     {
       icon: 'message-square' as const,

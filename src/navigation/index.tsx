@@ -23,6 +23,7 @@ import { ChatScreen } from '../screens/ChatScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { FeedbackScreen } from '../screens/FeedbackScreen';
+import { WellnessGoalsScreen } from '../screens/WellnessGoalsScreen';
 import { ForgotPasswordScreen } from '../screens/ForgotPasswordScreen';
 import { RecoverPasswordScreen } from '../screens/RecoverPasswordScreen';
 
@@ -42,6 +43,7 @@ export type RootStackParamList = {
   Main: undefined;
   GroupChat: { groupId: string; groupName: string };
   Feedback: undefined;
+  WellnessGoals: undefined;
 };
 
 export type MainTabParamList = {
@@ -176,6 +178,7 @@ export const Navigation = () => (
         options={{ headerShown: false }}
       />
       <RootStack.Screen name="Feedback" component={FeedbackScreen} />
+      <RootStack.Screen name="WellnessGoals" component={WellnessGoalsScreen} />
     </RootStack.Navigator>
   </NavigationContainer>
 );

@@ -27,23 +27,6 @@ import {
 import { RootStackParamList } from '../navigation';
 import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
 
-// ─── Colour helpers for ML insight categories ─────────────────────────────────
-
-const INSIGHT_COLORS: Record<string, { accent: string; bg: string; border: string }> = {
-  depression: { accent: '#EF4444', bg: 'rgba(239,68,68,0.08)',  border: '#EF4444' },
-  anxiety:    { accent: '#F59E0B', bg: 'rgba(245,158,11,0.08)', border: '#F59E0B' },
-  normal:     { accent: '#22C55E', bg: 'rgba(34,197,94,0.08)',  border: '#22C55E' },
-};
-
-const formatRelativeTime = (date: Date): string => {
-  const mins = Math.floor((Date.now() - date.getTime()) / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
-
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
@@ -162,8 +145,8 @@ export const HomeScreen = () => {
     setJoiningId(group.id);
     try {
       await joinGroup(group.id);
-      setSelectedGroup(group);
-      navigation.navigate('GroupChat', { groupId: group.id, groupName: group.name });
+      // Switch to the Groups tab so the user sees the group card with the Open button
+      (navigation as any).navigate('Groups');
     } finally {
       setJoiningId(null);
     }
@@ -244,39 +227,53 @@ export const HomeScreen = () => {
         />
       </View>
 
-      {/* Motivation Card */}
-      <View style={styles.motivationCard}>
-        <View style={styles.motivationContent}>
-          <Text style={styles.motivationLabel}>Daily Motivation</Text>
-          <Text style={styles.motivationQuote}>
+      {/* Combined Daily Card */}
+      <View style={styles.dailyCard}>
+        {/* Decorative background circles */}
+        <View style={styles.dailyCardCircle1} />
+        <View style={styles.dailyCardCircle2} />
+
+        {/* Date badge */}
+        <View style={styles.dailyCardDateBadge}>
+          <Ionicons name="calendar-outline" size={10} color="rgba(255,255,255,0.85)" />
+          <Text style={styles.dailyCardDateText}>
+            {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          </Text>
+        </View>
+
+        {/* Motivation */}
+        <View style={styles.dailyCardTop}>
+          <View style={styles.dailyCardLabelRow}>
+            <Ionicons name="sunny-outline" size={12} color="#BFDBFE" />
+            <Text style={styles.dailyCardLabel}>Daily Motivation</Text>
+          </View>
+          <Text style={styles.dailyCardQuote}>
             "One small step at a time is still progress."
           </Text>
         </View>
-        <Ionicons name="happy-outline" size={32} color="rgba(255,255,255,0.45)" />
-      </View>
 
-      {/* Compact Mental Wellness Score */}
-      {!insightLoading && mlInsight && (() => {
-        const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
-        const activeCategory = recommendationProfile?.activeRecommendationCategory;
-        const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
-        if (wellnessScore === null) return null;
-        return (
-          <View style={[styles.compactScoreCard, { borderLeftColor: palette.border }]}>
-            <View style={styles.compactScoreLeft}>
-              <Text style={styles.compactScoreLabel}>Mental Wellness Score</Text>
-              <Text style={[styles.compactScoreValue, { color: palette.accent }]}>{wellnessScore}%</Text>
+        {/* Wellness Score strip (conditional) */}
+        {!insightLoading && mlInsight && (() => {
+          const activeCategory = recommendationProfile?.activeRecommendationCategory;
+          const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
+          if (wellnessScore === null) return null;
+          return (
+            <View style={styles.dailyCardBottom}>
+              <View style={styles.dailyCardScoreSection}>
+                <Text style={styles.dailyCardScoreLabel}>Mental Wellness Score</Text>
+                <Text style={[styles.dailyCardScoreValue, { color: '#FFFFFF' }]}>{wellnessScore}%</Text>
+              </View>
+              <View style={styles.dailyCardDivider} />
+              <View style={styles.dailyCardCategorySection}>
+                <Text style={styles.dailyCardScoreLabel}>Category</Text>
+                <Text style={[styles.dailyCardCategoryValue, { color: '#FFFFFF' }]} numberOfLines={2}>
+                  {activeCategory}
+                </Text>
+              </View>
             </View>
-            <View style={styles.compactScoreDivider} />
-            <View style={styles.compactScoreRight}>
-              <Text style={styles.compactScoreLabel}>Category</Text>
-              <Text style={[styles.compactScoreCategory, { color: palette.accent }]} numberOfLines={2}>
-                {activeCategory}
-              </Text>
-            </View>
-          </View>
-        );
-      })()}
+          );
+        })()}
+      </View>
 
       {/* Recommended Groups */}
       <View style={styles.section}>
@@ -364,20 +361,20 @@ export const HomeScreen = () => {
                       <Ionicons name="people-outline" size={12} color={COLORS.accent} />
                       <Text style={styles.membersText}>{group.members} members</Text>
                     </View>
-                    <TouchableOpacity
-                      style={[styles.joinBtn, isJoined && styles.joinBtnJoined]}
-                      onPress={() => handleGroupPress(group)}
-                      disabled={isLoading}
-                      activeOpacity={0.8}
-                    >
-                      {isLoading ? (
-                        <ActivityIndicator size="small" color="white" />
-                      ) : (
-                        <Text style={styles.joinBtnText}>
-                          {isJoined ? 'Open' : 'Join'}
-                        </Text>
-                      )}
-                    </TouchableOpacity>
+                    {!isJoined && (
+                      <TouchableOpacity
+                        style={styles.joinBtn}
+                        onPress={() => handleGroupPress(group)}
+                        disabled={isLoading}
+                        activeOpacity={0.8}
+                      >
+                        {isLoading ? (
+                          <ActivityIndicator size="small" color="white" />
+                        ) : (
+                          <Text style={styles.joinBtnText}>Join</Text>
+                        )}
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </Card>
               );
@@ -420,89 +417,6 @@ export const HomeScreen = () => {
         </View>
       )}
 
-      {/* Wellbeing Insight Card */}
-      {insightLoading ? (
-        <Card style={styles.insightCard}>
-          <ActivityIndicator size="small" color={COLORS.accent} />
-          <Text style={styles.insightLoadingText}>Loading insight…</Text>
-        </Card>
-      ) : !mlInsight ? (
-        <Card style={styles.insightCard}>
-          <Ionicons name="sparkles-outline" size={22} color={COLORS.muted} />
-          <Text style={styles.insightEmptyText}>No journal insights yet</Text>
-          <Text style={styles.insightEmptySubText}>
-            Write a journal entry to see your emotion pattern here.
-          </Text>
-        </Card>
-      ) : (() => {
-        const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
-        const categoryLbl = ML_CATEGORY_MAP[mlInsight.latestPrediction] ?? mlInsight.latestPrediction;
-        const dominantLabel = ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? mlInsight.dominantCategory;
-        const activeCategory = recommendationProfile?.activeRecommendationCategory;
-        const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
-        return (
-          <Card style={[styles.insightCard, { borderLeftColor: palette.border, borderLeftWidth: 4 }]}>
-            <View style={styles.insightHeader}>
-              <View style={styles.insightHeaderLeft}>
-                <Ionicons name="sparkles" size={14} color={palette.accent} />
-                <Text style={[styles.insightTitle, { color: palette.accent }]}>WELLBEING INSIGHT</Text>
-              </View>
-              <Text style={styles.insightTime}>{formatRelativeTime(mlInsight.lastUpdated)}</Text>
-            </View>
-
-            {wellnessScore !== null && (
-              <View style={styles.wellnessScoreRow}>
-                <View style={styles.wellnessScoreLeft}>
-                  <Text style={styles.insightFieldLabel}>Mental Wellness Score</Text>
-                  <Text style={[styles.wellnessScoreValue, { color: palette.accent }]}>
-                    {wellnessScore}%
-                  </Text>
-                </View>
-                <View style={styles.wellnessScoreRight}>
-                  <Text style={styles.insightFieldLabel}>Category</Text>
-                  <Text style={[styles.dominantValue, { color: palette.accent }]} numberOfLines={2}>
-                    {activeCategory}
-                  </Text>
-                </View>
-              </View>
-            )}
-
-            <View style={styles.insightMainRow}>
-              <View style={styles.insightMainLeft}>
-                <Text style={styles.insightFieldLabel}>Latest Emotion</Text>
-                <View style={[styles.emotionBadge, { backgroundColor: palette.bg }]}>
-                  <Text style={[styles.emotionBadgeText, { color: palette.accent }]}>
-                    {categoryLbl}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.insightMainRight}>
-                <Text style={styles.insightFieldLabel}>Dominant Pattern</Text>
-                <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
-              </View>
-            </View>
-
-            <View style={styles.countsRow}>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Depression</Text>
-                <Text style={[styles.countChipValue, { color: '#EF4444' }]}>{mlInsight.depressionCount}</Text>
-              </View>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(245,158,11,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Anxiety</Text>
-                <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>{mlInsight.anxietyCount}</Text>
-              </View>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Normal</Text>
-                <Text style={[styles.countChipValue, { color: '#22C55E' }]}>{mlInsight.normalCount}</Text>
-              </View>
-            </View>
-
-            <Text style={styles.insightDisclaimer}>
-              AI suggestion only — not professional advice
-            </Text>
-          </Card>
-        );
-      })()}
 
     </ScrollView>
     </>
@@ -520,63 +434,105 @@ const styles = StyleSheet.create({
   greeting: { fontSize: 22, fontWeight: 'bold', color: COLORS.text },
   subGreeting: { fontSize: 13, color: COLORS.muted, marginTop: 2 },
   logo: { width: 80, height: 36 },
-  motivationCard: {
+  dailyCard: {
     backgroundColor: COLORS.primary,
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
+    borderRadius: 20,
+    overflow: 'hidden',
+    padding: 20,
+    gap: 16,
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  dailyCardCircle1: {
+    position: 'absolute',
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    top: -40,
+    right: 30,
+  },
+  dailyCardCircle2: {
+    position: 'absolute',
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    bottom: -20,
+    left: -10,
+  },
+  dailyCardDateBadge: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 4,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    zIndex: 1,
   },
-  motivationContent: { flex: 1, marginRight: 12 },
-  motivationLabel: {
+  dailyCardDateText: {
     fontSize: 11,
-    color: '#BFDBFE',
-    fontWeight: '600',
-    marginBottom: 4,
+    color: 'rgba(255,255,255,0.92)',
+    fontWeight: '700',
+    letterSpacing: 0.4,
   },
-  motivationQuote: {
-    fontSize: 14,
+  dailyCardTop: {
+    gap: 8,
+    paddingRight: 76,
+  },
+  dailyCardLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  dailyCardLabel: {
+    fontSize: 10,
+    color: '#BFDBFE',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  dailyCardQuote: {
+    fontSize: 15,
     fontWeight: 'bold',
     color: 'white',
-    lineHeight: 20,
+    lineHeight: 22,
   },
-  compactScoreCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: 14,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.accent,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+  dailyCardBottom: {
     flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
+    backgroundColor: 'rgba(219,234,254,0.25)',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
   },
-  compactScoreLeft: { flex: 1, gap: 2 },
-  compactScoreDivider: {
+  dailyCardScoreSection: { flex: 1, gap: 3 },
+  dailyCardDivider: {
     width: 1,
     height: 36,
-    backgroundColor: COLORS.cardBorder,
+    backgroundColor: 'rgba(255,255,255,0.3)',
     marginHorizontal: 14,
   },
-  compactScoreRight: { flex: 1, gap: 2 },
-  compactScoreLabel: {
-    fontSize: 10,
+  dailyCardCategorySection: { flex: 1, gap: 3 },
+  dailyCardScoreLabel: {
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.7)',
     fontWeight: '700',
-    color: COLORS.muted,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  compactScoreValue: {
-    fontSize: 22,
+  dailyCardScoreValue: {
+    fontSize: 24,
     fontWeight: 'bold',
   },
-  compactScoreCategory: {
+  dailyCardCategoryValue: {
     fontSize: 13,
     fontWeight: '700',
     flexShrink: 1,

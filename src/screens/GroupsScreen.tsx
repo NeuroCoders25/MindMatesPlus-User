@@ -17,13 +17,14 @@ import { RootStackParamList } from '../navigation';
 import { Group } from '../types';
 
 export const GroupsScreen = () => {
-  const { peerGroups, joinedGroupIds, setSelectedGroup, visitedGroupIds } = useApp();
+  const { peerGroups, joinedGroupIds, setSelectedGroup, visitedGroupIds, markGroupAsVisited } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const myGroups = peerGroups.filter(g => joinedGroupIds.includes(g.id));
   const unvisitedGroupsCount = myGroups.filter(g => !visitedGroupIds.includes(g.id)).length;
 
   const handleOpen = (group: Group) => {
+    markGroupAsVisited(group.id);
     setSelectedGroup(group);
     navigation.navigate('GroupChat', { groupId: group.id, groupName: group.name });
   };
@@ -52,13 +53,15 @@ export const GroupsScreen = () => {
             <Ionicons name="people-outline" size={12} color={COLORS.muted} />
             <Text style={styles.membersText}>{group.members} members active</Text>
           </View>
-          <TouchableOpacity
-            style={styles.openBtn}
-            onPress={() => handleOpen(group)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.openBtnText}>Open</Text>
-          </TouchableOpacity>
+          {!visitedGroupIds.includes(group.id) && (
+            <TouchableOpacity
+              style={styles.openBtn}
+              onPress={() => handleOpen(group)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.openBtnText}>Open</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Card>
