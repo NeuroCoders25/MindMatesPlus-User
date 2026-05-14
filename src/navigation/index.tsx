@@ -1,6 +1,7 @@
 import React from 'react';
 import { Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { NavigationContainer, useNavigation } from '@react-navigation/native';
+import { navigationRef } from './navigationRef';
 import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -159,7 +160,7 @@ const MainTabs = () => {
 // ─── Root Navigator ───────────────────────────────────────────────────────────
 
 export const Navigation = () => (
-  <NavigationContainer>
+  <NavigationContainer ref={navigationRef}>
     <RootStack.Navigator screenOptions={{ headerShown: false }}>
       <RootStack.Screen name="Splash" component={SplashScreen} />
       <RootStack.Screen name="Auth" component={AuthScreen} />

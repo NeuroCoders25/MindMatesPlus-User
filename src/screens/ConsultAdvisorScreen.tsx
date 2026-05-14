@@ -8,7 +8,6 @@ import {
   Image,
   ActivityIndicator,
   Alert,
-  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -20,8 +19,6 @@ import {
   listenToUserAdvisorConnections,
   getAdvisorButtonStatus,
   AdvisorConnectionStatusValue,
-  listenToMentalHealthProfile,
-  continueAfterAdvisorApproval,
 } from '../services/dataService';
 import { Advisor } from '../types';
 import { useApp } from '../context/AppContext';
@@ -46,11 +43,9 @@ const getBtnConfig = (
   if (connecting.has(advisorId)) return { label: 'Sending…', style: 'muted', disabled: true };
   const status = getAdvisorButtonStatus(advisorId, connections);
   switch (status) {
-    case 'pending':   return { label: 'Pending',   style: 'muted',    disabled: true };
-    case 'accepted':  return { label: 'Connected', style: 'muted',    disabled: true };
-    case 'approved':  return { label: 'Approved',  style: 'green',    disabled: false };
-    case 'reviewed':  return { label: 'Reviewed',  style: 'muted',    disabled: true };
-    default:          return { label: 'Connect',   style: 'default',  disabled: false };
+    case 'pending':  return { label: 'Pending',   style: 'muted',   disabled: true };
+    case 'accepted': return { label: 'Connected', style: 'muted',   disabled: true };
+    default:         return { label: 'Connect',   style: 'default', disabled: false };
   }
 };
 
@@ -62,10 +57,6 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
   const [loading, setLoading] = useState(true);
   const [connections, setConnections] = useState<Record<string, AdvisorConnectionStatusValue>>({});
   const [connecting, setConnecting] = useState<Set<string>>(new Set());
-
-  // Approval modal state
-  const [showApprovalModal, setShowApprovalModal] = useState(false);
-  const [approvedCategory, setApprovedCategory] = useState<string>('');
 
   // Load advisors once
   useEffect(() => {
@@ -84,36 +75,12 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
     return unsub;
   }, [user]);
 
-  // Real-time listener for advisor approval on the mental health profile
-  useEffect(() => {
-    if (!user) return;
-    const unsub = listenToMentalHealthProfile(user.id, profile => {
-      if (
-        profile?.userStatus === 'normal' &&
-        profile?.advisorConnectionStatus === 'approved' &&
-        profile?.recommendationSource === 'advisor_approval' &&
-        profile?.approvalMessageSeen !== true
-      ) {
-        console.log('[AdvisorApproval] Profile approval detected');
-        setApprovedCategory(profile.approvedCategory ?? profile.activeRecommendationCategory ?? 'General Wellbeing');
-        setShowApprovalModal(true);
-        console.log('[AdvisorApproval] Showing approval modal');
-      }
-    });
-    return unsub;
-  }, [user]);
-
   const handleConnect = async (advisor: Advisor) => {
     if (!user) return;
     const status = getAdvisorButtonStatus(advisor.id, connections);
 
-    // Approved → open chat directly
-    if (status === 'approved') {
-      navigation.navigate('AdvisorDetails', { advisor });
-      return;
-    }
-    // Already pending/connected/reviewed → navigate to details
-    if (status && status !== null) {
+    // Active connection → navigate to advisor details (chat/status)
+    if (status === 'pending' || status === 'accepted') {
       navigation.navigate('AdvisorDetails', { advisor });
       return;
     }
@@ -139,49 +106,8 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
-  const handleContinueAfterApproval = async () => {
-    console.log('[AdvisorApproval] Continue clicked');
-    setShowApprovalModal(false);
-    if (user) {
-      await continueAfterAdvisorApproval(user.id).catch(err =>
-        console.error('[AdvisorApproval] Failed to mark approval seen:', err)
-      );
-    }
-    navigation.navigate('Main');
-  };
-
   return (
     <View style={styles.container}>
-      {/* Advisor Approval Modal */}
-      <Modal visible={showApprovalModal} transparent animationType="fade" onRequestClose={() => {}}>
-        <View style={styles.approvalOverlay}>
-          <View style={styles.approvalCard}>
-            <View style={styles.approvalIconWrapper}>
-              <Ionicons name="checkmark-circle" size={52} color="#22C55E" />
-            </View>
-            <Text style={styles.approvalTitle}>You're Approved!</Text>
-            <Text style={styles.approvalMessage}>
-              Your advisor has approved you to continue using MindMates+.
-            </Text>
-            <View style={styles.approvalCategoryBox}>
-              <Text style={styles.approvalCategoryLabel}>Recommended category</Text>
-              <Text style={styles.approvalCategoryValue}>{approvedCategory}</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.approvalBtn}
-              onPress={handleContinueAfterApproval}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="arrow-forward-circle-outline" size={20} color="white" />
-              <Text style={styles.approvalBtnText}>Continue to App</Text>
-            </TouchableOpacity>
-            <Text style={styles.approvalDisclaimer}>
-              AI suggestion only — not professional advice
-            </Text>
-          </View>
-        </View>
-      </Modal>
-
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.canGoBack() ? navigation.goBack() : navigation.navigate('Main')} style={styles.backButton}>
@@ -203,7 +129,7 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
         ) : (
           advisors.map(advisor => {
             const { label, style: btnStyle, disabled } = getBtnConfig(advisor.id, connections, connecting);
-            const isApproved = getAdvisorButtonStatus(advisor.id, connections) === 'approved';
+            const isPreviouslyApproved = connections[advisor.id] === 'approved';
 
             return (
               <TouchableOpacity
@@ -231,11 +157,10 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
                     </View>
                   )}
 
-                  {/* Approved status banner */}
-                  {isApproved && (
+                  {isPreviouslyApproved && (
                     <View style={styles.approvedBanner}>
                       <Ionicons name="shield-checkmark-outline" size={12} color="#15803D" />
-                      <Text style={styles.approvedBannerText}>Advisor approved your case</Text>
+                      <Text style={styles.approvedBannerText}>Previously approved</Text>
                     </View>
                   )}
 
@@ -414,85 +339,4 @@ const styles = StyleSheet.create({
   connectBtnText: { color: 'white', fontSize: 12, fontWeight: '700' },
   connectBtnTextMuted: { color: '#9CA3AF' },
   connectBtnTextGreen: { color: 'white' },
-
-  // ─── Approval Modal ────────────────────────────────────────────────────────
-  approvalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  approvalCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: 24,
-    padding: 28,
-    width: '100%',
-    maxWidth: 380,
-    alignItems: 'center',
-    gap: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.18,
-    shadowRadius: 20,
-    elevation: 12,
-  },
-  approvalIconWrapper: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: 'rgba(34,197,94,0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  approvalTitle: { fontSize: 24, fontWeight: 'bold', color: COLORS.text, textAlign: 'center' },
-  approvalMessage: {
-    fontSize: 14,
-    color: COLORS.muted,
-    textAlign: 'center',
-    lineHeight: 22,
-  },
-  approvalCategoryBox: {
-    width: '100%',
-    backgroundColor: '#F0FDF4',
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    gap: 4,
-  },
-  approvalCategoryLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#16A34A',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  approvalCategoryValue: { fontSize: 16, fontWeight: 'bold', color: '#15803D', textAlign: 'center' },
-  approvalBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    width: '100%',
-    backgroundColor: '#22C55E',
-    borderRadius: 16,
-    paddingVertical: 16,
-    marginTop: 4,
-    shadowColor: '#22C55E',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  approvalBtnText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
-  approvalDisclaimer: {
-    fontSize: 10,
-    color: COLORS.muted,
-    textAlign: 'center',
-    fontStyle: 'italic',
-  },
 });

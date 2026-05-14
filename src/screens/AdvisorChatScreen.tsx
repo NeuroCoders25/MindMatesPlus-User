@@ -8,7 +8,6 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Platform,
-  Image,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -26,22 +25,12 @@ import { useApp } from '../context/AppContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AdvisorChat'>;
 
-const FALLBACK_AVATARS: Record<string, any> = {
-  'Clinical Psychologist': require('../assets/group_image1.jpg'),
-  'Mental Health Advisor': require('../assets/group_image3.png'),
-  'Depression Specialist': require('../assets/group_image4.jpeg'),
-  default: require('../assets/group_image5.png'),
-};
 
 type ConnectionStatus = 'pending' | 'accepted' | 'reviewed';
 
 export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { advisor } = route.params;
   const { user } = useApp();
-  const avatar = advisor.imageUrl
-    ? { uri: advisor.imageUrl }
-    : FALLBACK_AVATARS[advisor.specialty] ?? FALLBACK_AVATARS['default'];
-
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
   const [messages, setMessages] = useState<AdvisorMessage[]>([]);
@@ -77,7 +66,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || sending || !connectionId || !user || connectionStatus === 'reviewed') return;
+    if (!text || sending || !connectionId || !user || connectionStatus !== 'accepted') return;
     setSending(true);
     setInput('');
     try {
@@ -90,7 +79,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   };
 
-  const isReadOnly = connectionStatus === 'reviewed';
+  const isReadOnly = connectionStatus !== 'accepted';
 
   const renderStatusBanner = () => {
     if (connectionStatus === 'pending') {
@@ -135,7 +124,9 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
         <Ionicons name="arrow-back" size={22} color={COLORS.text} />
       </TouchableOpacity>
       <View style={styles.headerProfile}>
-        <Image source={avatar} style={styles.headerAvatar} />
+        <View style={styles.headerAvatarCircle}>
+            <Ionicons name="person" size={22} color="white" />
+          </View>
         <View>
           <Text style={styles.headerName}>{advisor.name}</Text>
           {showStatus && connectionStatus && (
@@ -207,7 +198,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
               <Text style={styles.emptyChatTitle}>No messages yet</Text>
               <Text style={styles.emptyChatSub}>
                 {connectionStatus === 'pending'
-                  ? 'You can send a message while waiting for approval.'
+                  ? 'Chat will unlock once the advisor accepts your request.'
                   : `Start the conversation with ${advisor.name}`}
               </Text>
             </View>
@@ -220,8 +211,19 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
         {isReadOnly ? (
           <View style={styles.readOnlyBar}>
-            <Ionicons name="lock-closed-outline" size={14} color={COLORS.muted} />
-            <Text style={styles.readOnlyText}>This conversation is read-only</Text>
+            <Ionicons
+              name={connectionStatus === 'pending' ? 'time-outline' : 'lock-closed-outline'}
+              size={14}
+              color={connectionStatus === 'pending' ? '#D97706' : COLORS.muted}
+            />
+            <Text style={[
+              styles.readOnlyText,
+              connectionStatus === 'pending' && styles.readOnlyTextPending,
+            ]}>
+              {connectionStatus === 'pending'
+                ? 'Waiting for advisor to accept your request'
+                : 'This conversation is read-only'}
+            </Text>
           </View>
         ) : (
           <View style={styles.inputRow}>
@@ -274,12 +276,15 @@ const styles = StyleSheet.create({
     gap: 10,
     flex: 1,
   },
-  headerAvatar: {
+  headerAvatarCircle: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.6)',
+    backgroundColor: '#B0B0B0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#9E9E9E',
   },
   headerName: { fontSize: 16, fontWeight: 'bold', color: COLORS.text },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
@@ -397,6 +402,7 @@ const styles = StyleSheet.create({
     borderTopColor: '#ECECEC',
   },
   readOnlyText: { fontSize: 13, color: COLORS.muted },
+  readOnlyTextPending: { color: '#D97706' },
 
   centeredState: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 },
   stateTitle: { fontSize: 20, fontWeight: 'bold', color: COLORS.text },

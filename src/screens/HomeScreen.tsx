@@ -30,7 +30,7 @@ import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
-  const { user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup } = useApp();
+  const { user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup, isRestricted } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [joiningId, setJoiningId] = useState<string | null>(null);
 
@@ -71,9 +71,7 @@ export const HomeScreen = () => {
   useEffect(() => {
     const p = recommendationProfile;
     if (
-      p?.userStatus === 'normal' &&
       p?.advisorConnectionStatus === 'approved' &&
-      p?.recommendationSource === 'advisor_approval' &&
       p?.approvalMessageSeen !== true
     ) {
       setShowApprovalModal(true);
@@ -92,51 +90,36 @@ export const HomeScreen = () => {
   // Advisor redirect when DASS result is severe
   const isAdvisorRequired = recommendationProfile?.userStatus === 'under_review';
 
-  // Build primary + secondary groups, deduplicated
-  const { recommendedGroups, hasSecondary } = (() => {
-    if (isAdvisorRequired) return { recommendedGroups: [], hasSecondary: false };
+  // Build recommended groups using the stable weekly-trend peer category.
+  // Falls back to baselineRecommendationCategory when no trend has been calculated yet.
+  const recommendedGroups = (() => {
+    if (isAdvisorRequired) return [];
 
     if (recommendationProfile) {
-      const active   = recommendationProfile.activeRecommendationCategory;
-      const baseline = recommendationProfile.baselineRecommendationCategory;
-
-      const primary = peerGroups.filter(g => g.category === active).slice(0, 4);
-      const primaryIds = new Set(primary.map(g => g.id));
-
-      const secondary = baseline !== active
-        ? peerGroups.filter(g => g.category === baseline && !primaryIds.has(g.id)).slice(0, 2)
-        : [];
-
-      return {
-        recommendedGroups: [...primary, ...secondary],
-        hasSecondary: secondary.length > 0,
-      };
+      const peerCategory =
+        recommendationProfile.peerGroupRecommendationCategory ??
+        recommendationProfile.baselineRecommendationCategory;
+      return peerGroups.filter(g => g.category === peerCategory).slice(0, 4);
     }
 
     // Fallback: no questionnaire yet — use ML insight
     if (mlInsight) {
-      return {
-        recommendedGroups: getGroupsByMlPrediction(peerGroups, mlInsight.dominantCategory).slice(0, 4),
-        hasSecondary: false,
-      };
+      return getGroupsByMlPrediction(peerGroups, mlInsight.dominantCategory).slice(0, 4);
     }
 
-    return { recommendedGroups: [], hasSecondary: false };
+    return [];
   })();
 
-  // Source label and category subtitle
+  // Source label and category subtitle (uses the stable peer group category)
   const sourceLabel: string | null = (() => {
-    if (recommendationProfile) {
-      return recommendationProfile.recommendationSource === 'ml_analysis'
-        ? 'Based on your recent activity'
-        : 'Based on your initial assessment';
-    }
+    if (recommendationProfile) return 'Based on your wellbeing trend';
     if (mlInsight) return 'Based on your recent activity';
     return null;
   })();
 
   const categoryLabel: string | null = recommendationProfile
-    ? recommendationProfile.activeRecommendationCategory
+    ? (recommendationProfile.peerGroupRecommendationCategory ??
+        recommendationProfile.baselineRecommendationCategory)
     : mlInsight
     ? ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? null
     : null;
@@ -254,8 +237,17 @@ export const HomeScreen = () => {
 
         {/* Wellness Score strip (conditional) */}
         {!insightLoading && mlInsight && (() => {
-          const activeCategory = recommendationProfile?.activeRecommendationCategory;
-          const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
+          // Dashboard category is the stable weekly-trend peer group category,
+          // not the real-time resource category.
+          const dashboardCategory = recommendationProfile
+            ? (recommendationProfile.peerGroupRecommendationCategory ??
+                recommendationProfile.baselineRecommendationCategory ??
+                recommendationProfile.activeRecommendationCategory)
+            : null;
+          const storedScore = recommendationProfile?.wellnessScore;
+          const wellnessScore = storedScore !== undefined
+            ? storedScore
+            : dashboardCategory ? calculateWellnessScore(dashboardCategory) : null;
           if (wellnessScore === null) return null;
           return (
             <View style={styles.dailyCardBottom}>
@@ -267,7 +259,7 @@ export const HomeScreen = () => {
               <View style={styles.dailyCardCategorySection}>
                 <Text style={styles.dailyCardScoreLabel}>Category</Text>
                 <Text style={[styles.dailyCardCategoryValue, { color: '#FFFFFF' }]} numberOfLines={2}>
-                  {activeCategory}
+                  {dashboardCategory}
                 </Text>
               </View>
             </View>
@@ -280,21 +272,40 @@ export const HomeScreen = () => {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Recommended Groups</Text>
-            {categoryLabel && sourceLabel && (
+            {!isRestricted && categoryLabel && sourceLabel && (
               <Text style={styles.categoryLabel}>
                 {categoryLabel}{'  •  '}{sourceLabel}
               </Text>
             )}
           </View>
-          {!isAdvisorRequired && (
+          {!isAdvisorRequired && !isRestricted && (
             <TouchableOpacity onPress={() => navigation.navigate('Main')}>
               <Text style={styles.seeAll}>See All</Text>
             </TouchableOpacity>
           )}
         </View>
 
-        {/* Advisor redirect for severe DASS users */}
-        {isAdvisorRequired ? (
+        {/* Low wellness restriction banner */}
+        {isRestricted ? (
+          <View style={styles.restrictionCard}>
+            <Ionicons name="shield-outline" size={32} color="#DC2626" />
+            <Text style={styles.restrictionTitle}>Support Pause Active</Text>
+            <Text style={styles.restrictionText}>
+              Your wellness score is very low right now. For your safety and support, group recommendations are temporarily paused. Please connect with an advisor to continue.
+            </Text>
+            <TouchableOpacity
+              style={styles.restrictionBtn}
+              onPress={() => navigation.navigate('Advisor')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="call-outline" size={14} color="white" />
+              <Text style={styles.restrictionBtnText}>Consult Advisor</Text>
+            </TouchableOpacity>
+            <Text style={styles.advisorDisclaimer}>
+              AI suggestion only — not professional advice
+            </Text>
+          </View>
+        ) : isAdvisorRequired ? (
           <View style={styles.advisorRedirectCard}>
             <Ionicons name="alert-circle" size={32} color={COLORS.danger} />
             <Text style={styles.advisorRedirectTitle}>Professional Support Recommended</Text>
@@ -335,9 +346,7 @@ export const HomeScreen = () => {
             {recommendedGroups.map(group => {
               const isJoined = joinedGroupIds.includes(group.id);
               const isLoading = joiningId === group.id;
-              const isPrimary = recommendationProfile
-                ? group.category === recommendationProfile.activeRecommendationCategory
-                : true;
+              const isPrimary = true;
               return (
                 <Card
                   key={group.id}
@@ -611,6 +620,42 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: COLORS.muted,
     fontStyle: 'italic',
+  },
+  restrictionCard: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(220,38,38,0.25)',
+  },
+  restrictionTitle: {
+    fontSize: 15,
+    fontWeight: 'bold',
+    color: '#DC2626',
+    textAlign: 'center',
+  },
+  restrictionText: {
+    fontSize: 13,
+    color: '#7F1D1D',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  restrictionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#DC2626',
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  restrictionBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: 'white',
   },
   groupCard: { width: 220, padding: 16 },
   groupCardSecondary: { opacity: 0.85 },

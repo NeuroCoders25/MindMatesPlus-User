@@ -163,7 +163,7 @@ export interface MentalHealthRecommendationProfile {
   baselineRecommendationCategory: GroupCategory;
   activeRecommendationCategory: GroupCategory;
   recommendationSource: 'questionnaire' | 'ml_analysis' | 'advisor_approval';
-  userStatus: 'normal' | 'under_review';
+  userStatus: 'normal' | 'under_review' | 'restricted';
   mlStabilityCounter: MlStabilityCounter | null;
   // Advisor approval fields — populated by the advisor portal on approval
   advisorConnectionStatus?: string;
@@ -171,6 +171,9 @@ export interface MentalHealthRecommendationProfile {
   approvalMessageSeen?: boolean;
   peerGroupRecommendationCategory?: GroupCategory;
   resourceRecommendationCategory?: GroupCategory;
+  wellnessScore?: number;
+  restrictedReason?: string;
+  restrictedAt?: Date;
 }
 
 export interface RecommendationResult {

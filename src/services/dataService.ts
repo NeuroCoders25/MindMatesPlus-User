@@ -26,6 +26,7 @@ export const saveJournalEntry = async (
 };
 
 export const fetchJournalEntries = async (userId: string): Promise<JournalEntry[]> => {
+  console.log('[Firestore] Fetching journal entries for user:', userId);
   const ref = collection(db, 'users', userId, 'journal_entries');
   const q = query(ref, orderBy('date', 'desc'));
   const snapshot = await getDocs(q);
@@ -82,6 +83,7 @@ export const GROUP_IMAGE_MAP: Record<string, any> = {
 };
 
 export const fetchPeerGroups = async (): Promise<Group[]> => {
+  console.log('[Firestore] Fetching peer groups');
   const snap = await getDocs(collection(db, 'peer_groups'));
   return snap.docs.map(d => {
     const data = d.data();
@@ -99,6 +101,7 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
 };
 
 export const fetchUserJoinedGroupIds = async (userId: string): Promise<string[]> => {
+  console.log('[Firestore] Fetching joined group IDs for user:', userId);
   const q = query(collection(db, 'groupMembers'), where('userId', '==', userId));
   const snap = await getDocs(q);
   return snap.docs.map(d => d.data().groupId as string);
@@ -493,22 +496,29 @@ export const subscribeGroupMessages = (
   groupId: string,
   callback: (messages: Message[]) => void
 ): (() => void) => {
+  console.log('[Firestore] Subscribing group messages for group:', groupId);
   const q = query(
     collection(db, 'peer_groups', groupId, 'chatMessages'),
     orderBy('timestamp', 'asc')
   );
-  return onSnapshot(q, snapshot => {
-    const messages: Message[] = snapshot.docs.map(d => ({
-      id: d.id,
-      text: d.data().text,
-      sender: 'peer',
-      senderId: d.data().senderId as string,
-      senderName: d.data().senderName as string,
-      timestamp: (d.data().timestamp as Timestamp).toDate(),
-      flagged: d.data().flagged ?? false,
-    }));
-    callback(messages);
-  });
+  return onSnapshot(
+    q,
+    snapshot => {
+      const messages: Message[] = snapshot.docs.map(d => ({
+        id: d.id,
+        text: d.data().text,
+        sender: 'peer',
+        senderId: d.data().senderId as string,
+        senderName: d.data().senderName as string,
+        timestamp: (d.data().timestamp as Timestamp).toDate(),
+        flagged: d.data().flagged ?? false,
+      }));
+      callback(messages);
+    },
+    err => {
+      console.error('[Firestore] subscribeGroupMessages error:', err);
+    }
+  );
 };
 
 // ─── ML Recommendation Category Map ──────────────────────────────────────────
@@ -559,9 +569,14 @@ export const fetchAdvisors = async (): Promise<Advisor[]> => {
 
 // ─── Advisor Connection Real-time Functions ───────────────────────────────────
 
-export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed';
+export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed' | 'closed';
+
+// Statuses that mean a connection is actively blocking a new request.
+const ACTIVE_CONNECTION_STATUSES: ReadonlySet<string> = new Set(['pending', 'accepted']);
 
 // Streams all advisor connections for a user as a map of advisorId → status.
+// When a user has multiple docs for the same advisor (e.g. old approved + new pending),
+// active statuses (pending/accepted) take precedence over terminal ones.
 // Fires immediately with current data, then on every Firestore change.
 export const listenToUserAdvisorConnections = (
   userId: string,
@@ -569,23 +584,66 @@ export const listenToUserAdvisorConnections = (
 ): (() => void) => {
   console.log('[AdvisorStatus] Listening user advisor connections');
   const q = query(collection(db, 'advisorConnections'), where('userId', '==', userId));
-  return onSnapshot(q, snapshot => {
-    const connections: Record<string, AdvisorConnectionStatusValue> = {};
-    snapshot.docs.forEach(d => {
-      const data = d.data();
-      if (data.advisorId && data.status) {
-        connections[data.advisorId] = data.status as AdvisorConnectionStatusValue;
-        console.log('[AdvisorStatus] Connection status changed:', data.advisorId, '->', data.status);
-      }
-    });
-    callback(connections);
-  });
+  return onSnapshot(
+    q,
+    snapshot => {
+      const connections: Record<string, AdvisorConnectionStatusValue> = {};
+      snapshot.docs.forEach(d => {
+        const data = d.data();
+        if (data.advisorId && data.status) {
+          const incoming = data.status as AdvisorConnectionStatusValue;
+          const existing = connections[data.advisorId];
+          // Active status always wins; among same priority, last write wins.
+          if (!existing || ACTIVE_CONNECTION_STATUSES.has(incoming)) {
+            connections[data.advisorId] = incoming;
+          }
+          console.log('[AdvisorStatus] Connection status changed:', data.advisorId, '->', data.status);
+        }
+      });
+      callback(connections);
+    },
+    err => {
+      console.error('[Firestore] listenToUserAdvisorConnections error:', err);
+    }
+  );
 };
 
+// Streams all advisor connections for a user with full details (including advisor name).
+// Used by the global approval notification in AppContext.
+export const listenToAdvisorConnectionsWithNames = (
+  userId: string,
+  callback: (connections: Array<{ advisorId: string; advisorName: string; status: AdvisorConnectionStatusValue }>) => void
+): (() => void) => {
+  const q = query(collection(db, 'advisorConnections'), where('userId', '==', userId));
+  return onSnapshot(
+    q,
+    snapshot => {
+      const connections = snapshot.docs
+        .filter(d => d.data().advisorId && d.data().status)
+        .map(d => ({
+          advisorId: d.data().advisorId as string,
+          advisorName: (d.data().advisorName as string) || 'Your Advisor',
+          status: d.data().status as AdvisorConnectionStatusValue,
+        }));
+      callback(connections);
+    },
+    err => {
+      console.error('[Firestore] listenToAdvisorConnectionsWithNames error:', err);
+    }
+  );
+};
+
+// Returns the active connection status (pending/accepted) for an advisor,
+// or null if there is no active connection. Approved/reviewed/closed are treated
+// as completed — a new connection can be created.
 export const getAdvisorButtonStatus = (
   advisorId: string,
   connections: Record<string, AdvisorConnectionStatusValue>
-): AdvisorConnectionStatusValue | null => connections[advisorId] ?? null;
+): 'pending' | 'accepted' | null => {
+  const status = connections[advisorId];
+  if (status === 'pending' || status === 'accepted') return status;
+  return null;
+};
 
 // ─── Advisor Connection Functions ────────────────────────────────────────────
 
@@ -715,23 +773,29 @@ export const listenToAdvisorConnectionMessages = (
     collection(db, 'advisorConnections', connectionId, 'messages'),
     orderBy('createdAt', 'asc')
   );
-  return onSnapshot(q, snapshot => {
-    callback(
-      snapshot.docs.map(d => {
-        const data = d.data();
-        return {
-          id: d.id,
-          senderId: data.senderId as string,
-          senderRole: data.senderRole as 'user' | 'advisor',
-          receiverId: data.receiverId as string,
-          messageText: data.messageText as string,
-          messageType: data.messageType ?? 'text',
-          createdAt: data.createdAt?.toDate() ?? new Date(),
-          isRead: data.isRead ?? false,
-        };
-      })
-    );
-  });
+  return onSnapshot(
+    q,
+    snapshot => {
+      callback(
+        snapshot.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            senderId: data.senderId as string,
+            senderRole: data.senderRole as 'user' | 'advisor',
+            receiverId: data.receiverId as string,
+            messageText: data.messageText as string,
+            messageType: data.messageType ?? 'text',
+            createdAt: data.createdAt?.toDate() ?? new Date(),
+            isRead: data.isRead ?? false,
+          };
+        })
+      );
+    },
+    err => {
+      console.error('[Firestore] listenToAdvisorConnectionMessages error:', err);
+    }
+  );
 };
 
 export const updateAdvisorConnectionLastMessage = async (
@@ -864,24 +928,38 @@ export const fetchResourcesByCategory = async (
   return [...primary, ...baseline];
 };
 
-// Realtime listener that emits the active + baseline recommendation categories
+// Realtime listener that emits resource + baseline recommendation categories
 // from mentalHealthProfile/currentProfile whenever they change.
+// active = resourceRecommendationCategory (real-time, changes per ML result)
+// baseline = baselineRecommendationCategory (set once from questionnaire)
 export const listenToUserRecommendationCategory = (
   userId: string,
   callback: (categories: { active: GroupCategory | null; baseline: GroupCategory | null }) => void,
 ): (() => void) => {
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
-  return onSnapshot(profileRef, snap => {
-    if (!snap.exists()) {
+  return onSnapshot(
+    profileRef,
+    snap => {
+      if (!snap.exists()) {
+        callback({ active: null, baseline: null });
+        return;
+      }
+      const raw = snap.data();
+      // Prefer resourceRecommendationCategory (real-time ML) for resource feed;
+      // fall back to activeRecommendationCategory for users who have not yet
+      // received an ML analysis update.
+      callback({
+        active: (raw.resourceRecommendationCategory as GroupCategory)
+          ?? (raw.activeRecommendationCategory as GroupCategory)
+          ?? null,
+        baseline: (raw.baselineRecommendationCategory as GroupCategory) ?? null,
+      });
+    },
+    err => {
+      console.error('[Firestore] listenToUserRecommendationCategory error:', err);
       callback({ active: null, baseline: null });
-      return;
     }
-    const raw = snap.data();
-    callback({
-      active: (raw.activeRecommendationCategory as GroupCategory) ?? null,
-      baseline: (raw.baselineRecommendationCategory as GroupCategory) ?? null,
-    });
-  });
+  );
 };
 
 // ─── ML Mental Health Profile (journal-based) ─────────────────────────────────
@@ -973,26 +1051,34 @@ export const subscribeToMlMentalHealthProfile = (
   userId: string,
   callback: (profile: MlMentalHealthProfile | null) => void
 ): (() => void) => {
-  return onSnapshot(doc(db, 'users', userId), (snap) => {
-    if (!snap.exists()) {
+  console.log('[Firestore] Subscribing ML mental health profile for user:', userId);
+  return onSnapshot(
+    doc(db, 'users', userId),
+    snap => {
+      if (!snap.exists()) {
+        callback(null);
+        return;
+      }
+      const raw = snap.data().mlMentalHealthProfile;
+      if (!raw) {
+        callback(null);
+        return;
+      }
+      callback({
+        latestPrediction: raw.latestPrediction ?? 'normal',
+        latestConfidence: raw.latestConfidence ?? 0,
+        dominantCategory: raw.dominantCategory ?? 'normal',
+        depressionCount: raw.depressionCount ?? 0,
+        anxietyCount: raw.anxietyCount ?? 0,
+        normalCount: raw.normalCount ?? 0,
+        lastUpdated: raw.lastUpdated?.toDate() ?? new Date(),
+      });
+    },
+    err => {
+      console.error('[Firestore] subscribeToMlMentalHealthProfile error:', err);
       callback(null);
-      return;
     }
-    const raw = snap.data().mlMentalHealthProfile;
-    if (!raw) {
-      callback(null);
-      return;
-    }
-    callback({
-      latestPrediction: raw.latestPrediction ?? 'normal',
-      latestConfidence: raw.latestConfidence ?? 0,
-      dominantCategory: raw.dominantCategory ?? 'normal',
-      depressionCount: raw.depressionCount ?? 0,
-      anxietyCount: raw.anxietyCount ?? 0,
-      normalCount: raw.normalCount ?? 0,
-      lastUpdated: raw.lastUpdated?.toDate() ?? new Date(),
-    });
-  });
+  );
 };
 
 // ─── Recommendation Category Logic ───────────────────────────────────────────
@@ -1329,6 +1415,7 @@ export const subscribeToRecommendationProfile = (
   userId: string,
   callback: (profile: MentalHealthRecommendationProfile | null) => void
 ): (() => void) => {
+  console.log('[Firestore] Subscribing recommendation profile for user:', userId);
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
   return onSnapshot(profileRef, snap => {
     if (!snap.exists()) { callback(null); return; }
@@ -1373,7 +1460,11 @@ export const subscribeToRecommendationProfile = (
       approvalMessageSeen: raw.approvalMessageSeen as boolean | undefined,
       peerGroupRecommendationCategory: raw.peerGroupRecommendationCategory as GroupCategory | undefined,
       resourceRecommendationCategory: raw.resourceRecommendationCategory as GroupCategory | undefined,
+      wellnessScore: typeof raw.wellnessScore === 'number' ? raw.wellnessScore : undefined,
     });
+  }, err => {
+    console.error('[Firestore] subscribeToRecommendationProfile error:', err);
+    callback(null);
   });
 };
 
@@ -1732,6 +1823,122 @@ export const runUserTextMlAnalysis = async (userId: string): Promise<void> => {
 export const triggerBatchMlAnalysis = async (userId: string): Promise<void> =>
   runUserTextMlAnalysis(userId);
 
+// ─── Low Wellness Restriction ────────────────────────────────────────────────
+
+export const isUserRestricted = (profile: MentalHealthRecommendationProfile | null): boolean => {
+  if (!profile) return false;
+  return (
+    profile.userStatus === 'restricted' ||
+    (typeof profile.wellnessScore === 'number' && profile.wellnessScore < 10)
+  );
+};
+
+export const applyLowWellnessRestriction = async (
+  userId: string,
+  wellnessScore: number
+): Promise<void> => {
+  console.log('[Restriction] Wellness score below 10');
+  console.log('[Restriction] User restricted');
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  await setDoc(profileRef, {
+    userStatus: 'restricted',
+    restrictedReason: 'Low wellness score detected',
+    restrictedAt: serverTimestamp(),
+    recommendationSource: 'safety_restriction',
+  }, { merge: true });
+};
+
+// ─── Gradual Wellness Score ───────────────────────────────────────────────────
+
+const POSITIVE_KEYWORDS = ['happy', 'good', 'better', 'calm', 'grateful', 'relaxed', 'excited', 'hopeful', 'peaceful'];
+const NEGATIVE_KEYWORDS = ['sad', 'stressed', 'anxious', 'angry', 'tired', 'lonely', 'worried', 'depressed', 'upset'];
+
+export const calculateScoreAdjustment = (
+  text: string,
+  mlResult: MlPredictResponse
+): number => {
+  let mlAdjustment = 0;
+  if (mlResult.confidence >= 0.80) {
+    if (mlResult.prediction === 'normal') mlAdjustment = 2;
+    else if (mlResult.prediction === 'anxiety') mlAdjustment = -1;
+    else if (mlResult.prediction === 'depression') mlAdjustment = -1;
+  }
+
+  const lower = text.toLowerCase();
+  let keywordAdjustment = 0;
+  if (POSITIVE_KEYWORDS.some(kw => lower.includes(kw))) keywordAdjustment += 2;
+  if (NEGATIVE_KEYWORDS.some(kw => lower.includes(kw))) keywordAdjustment -= 1;
+
+  return mlAdjustment + keywordAdjustment;
+};
+
+export const saveWellnessScoreHistory = async (
+  userId: string,
+  previousScore: number,
+  newScore: number,
+  source: string,
+  textPreview: string,
+  mlResult: MlPredictResponse
+): Promise<void> => {
+  await addDoc(collection(db, 'users', userId, 'wellnessScoreHistory'), {
+    previousScore,
+    newScore,
+    changeAmount: newScore - previousScore,
+    source,
+    textPreview,
+    mlPrediction: mlResult.prediction,
+    mlConfidence: mlResult.confidence,
+    createdAt: Timestamp.now(),
+  });
+};
+
+export const updateWellnessScoreGradually = async (
+  userId: string,
+  text: string,
+  source: 'journal' | 'group_chat' | 'ai_chat',
+  mlResult: MlPredictResponse
+): Promise<void> => {
+  const adjustment = calculateScoreAdjustment(text, mlResult);
+  if (adjustment === 0) return;
+
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const snap = await getDoc(profileRef);
+
+  let currentScore: number;
+  if (snap.exists()) {
+    const data = snap.data();
+    if (typeof data.wellnessScore === 'number') {
+      currentScore = data.wellnessScore;
+    } else {
+      const activeCategory = data.activeRecommendationCategory as GroupCategory | undefined;
+      currentScore = activeCategory ? (WELLNESS_SCORE_MAP[activeCategory] ?? 50) : 50;
+    }
+  } else {
+    currentScore = 50;
+  }
+
+  const newScore = Math.min(100, Math.max(0, currentScore + adjustment));
+  const textPreview = text.slice(0, 80);
+
+  const payload: Record<string, any> = {
+    wellnessScore: newScore,
+    wellnessScoreUpdatedAt: Timestamp.now(),
+  };
+
+  if (snap.exists()) {
+    await updateDoc(profileRef, payload);
+  } else {
+    await setDoc(profileRef, payload, { merge: true });
+  }
+
+  saveWellnessScoreHistory(userId, currentScore, newScore, source, textPreview, mlResult).catch(() => {});
+  console.log(`[Wellness] Score: ${currentScore} → ${newScore} (${adjustment >= 0 ? '+' : ''}${adjustment}) [${source}]`);
+
+  if (newScore < 10) {
+    applyLowWellnessRestriction(userId, newScore).catch(() => {});
+  }
+};
+
 // ─── Per-Event ML Analysis ────────────────────────────────────────────────────
 
 // Analyzes only the single text that triggered the update (no historical fetch).
@@ -1751,14 +1958,218 @@ export const runMlAnalysisForText = async (
   try {
     const result = await predictText(trimmed);
     console.log('[ML] ML prediction result:', JSON.stringify(result));
-    await updateMentalHealthProfileFromMl(
-      userId,
-      result,
-      [source],
-      trimmed.slice(0, 80)
-    );
-    console.log('[ML] latestMlEmotionScore updated successfully');
+    const textPreview = trimmed.slice(0, 80);
+    await Promise.all([
+      updateMentalHealthProfileFromMl(userId, result, [source], textPreview),
+      updateResourceRecommendationFromLatestMl(userId, result),
+      updateWellnessScoreGradually(userId, trimmed, source, result),
+      saveMlAnalysisHistory(userId, result, source, textPreview),
+    ]);
+    console.log('[ML] latestMlEmotionScore and resourceRecommendationCategory updated');
+
+    const trendResult = await calculateWeeklyMlTrend(userId);
+    if (trendResult) {
+      await updatePeerGroupRecommendationFromWeeklyTrend(userId, trendResult);
+      console.log('[ML] Weekly trend calculated — peerGroupCategory:', trendResult.finalPeerGroupCategory,
+        trendResult.updatedPeerGroup ? '(moved)' : '(unchanged)');
+    }
   } catch (err) {
     console.error(`[ML] ML analysis failed for source "${source}":`, err);
   }
 };
+
+// ─── ML Analysis History ──────────────────────────────────────────────────────
+
+// Saves a single ML prediction to the per-user history subcollection.
+// Used to build the weekly trend that drives peerGroupRecommendationCategory.
+export const saveMlAnalysisHistory = async (
+  userId: string,
+  mlResult: MlPredictResponse,
+  source: 'journal' | 'group_chat' | 'ai_chat',
+  textPreview: string
+): Promise<string> => {
+  const ref = collection(db, 'users', userId, 'mlAnalysisHistory');
+  const docRef = await addDoc(ref, {
+    prediction: mlResult.prediction,
+    confidence: mlResult.confidence,
+    probabilities: mlResult.probabilities,
+    source,
+    textPreview: textPreview.slice(0, 80),
+    resourceRecommendationCategory: ML_TO_PRIMARY_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving',
+    createdAt: serverTimestamp(),
+  });
+  return docRef.id;
+};
+
+// Updates resourceRecommendationCategory on the profile in real-time.
+// Called on every ML result — does NOT touch peerGroupRecommendationCategory.
+export const updateResourceRecommendationFromLatestMl = async (
+  userId: string,
+  mlResult: MlPredictResponse
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  await setDoc(
+    profileRef,
+    { resourceRecommendationCategory: ML_TO_PRIMARY_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving' },
+    { merge: true }
+  );
+};
+
+// Moves currentCategory exactly one step toward suggestedCategory in
+// ML_RECOMMENDATION_ORDER. Never jumps more than one level. Returns
+// currentCategory if already there, or if either value is outside the order.
+export const moveOneLevelToward = (
+  currentCategory: GroupCategory,
+  suggestedCategory: GroupCategory
+): GroupCategory => {
+  const currentIdx = ML_RECOMMENDATION_ORDER.indexOf(currentCategory);
+  const suggestedIdx = ML_RECOMMENDATION_ORDER.indexOf(suggestedCategory);
+  if (currentIdx === -1 || suggestedIdx === -1 || currentIdx === suggestedIdx) {
+    return currentCategory;
+  }
+  return suggestedIdx > currentIdx
+    ? ML_RECOMMENDATION_ORDER[currentIdx + 1]
+    : ML_RECOMMENDATION_ORDER[currentIdx - 1];
+};
+
+export interface WeeklyTrendResult {
+  validRecordCount: number;
+  dominantPrediction: string;
+  dominantCategory: GroupCategory;
+  dominantCount: number;
+  previousPeerGroupCategory: GroupCategory;
+  suggestedPeerGroupCategory: GroupCategory;
+  finalPeerGroupCategory: GroupCategory;
+  updatedPeerGroup: boolean;
+}
+
+// Reads the last 7 days of mlAnalysisHistory, filters to high-confidence records
+// (>= 0.80), and determines whether peerGroupRecommendationCategory should move
+// one level. Requires >= 5 valid records AND the dominant prediction appearing
+// >= 3 times before any change is made.
+export const calculateWeeklyMlTrend = async (
+  userId: string
+): Promise<WeeklyTrendResult | null> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const profileSnap = await getDoc(profileRef);
+  if (!profileSnap.exists()) return null;
+
+  const profileData = profileSnap.data();
+  const currentPeerGroupCategory: GroupCategory =
+    (profileData.peerGroupRecommendationCategory as GroupCategory | undefined) ??
+    (profileData.baselineRecommendationCategory as GroupCategory | undefined) ??
+    'Wellness - Thriving';
+
+  const sevenDaysAgo = Timestamp.fromDate(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+  const historySnap = await getDocs(
+    query(
+      collection(db, 'users', userId, 'mlAnalysisHistory'),
+      where('createdAt', '>=', sevenDaysAgo)
+    )
+  );
+
+  const validRecords = historySnap.docs
+    .map(d => d.data())
+    .filter(d => typeof d.confidence === 'number' && d.confidence >= 0.80);
+
+  const validRecordCount = validRecords.length;
+  const counts: Record<string, number> = { depression: 0, anxiety: 0, normal: 0 };
+  validRecords.forEach(r => {
+    const p = r.prediction as string;
+    if (p in counts) counts[p]++;
+  });
+
+  let dominantPrediction = 'normal';
+  let dominantCount = 0;
+  for (const [pred, count] of Object.entries(counts)) {
+    if (count > dominantCount) {
+      dominantCount = count;
+      dominantPrediction = pred;
+    }
+  }
+
+  const suggestedPeerGroupCategory: GroupCategory =
+    ML_TO_PRIMARY_CATEGORY[dominantPrediction] ?? 'Wellness - Thriving';
+
+  let finalPeerGroupCategory = currentPeerGroupCategory;
+  let updatedPeerGroup = false;
+
+  if (validRecordCount >= 5 && dominantCount >= 3) {
+    const moved = moveOneLevelToward(currentPeerGroupCategory, suggestedPeerGroupCategory);
+    if (moved !== currentPeerGroupCategory) {
+      finalPeerGroupCategory = moved;
+      updatedPeerGroup = true;
+    }
+  }
+
+  return {
+    validRecordCount,
+    dominantPrediction,
+    dominantCategory: suggestedPeerGroupCategory,
+    dominantCount,
+    previousPeerGroupCategory: currentPeerGroupCategory,
+    suggestedPeerGroupCategory,
+    finalPeerGroupCategory,
+    updatedPeerGroup,
+  };
+};
+
+// Persists the weekly trend summary. Only moves peerGroupRecommendationCategory
+// when updatedPeerGroup is true (threshold rules were satisfied).
+export const updatePeerGroupRecommendationFromWeeklyTrend = async (
+  userId: string,
+  trendResult: WeeklyTrendResult
+): Promise<void> => {
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const update: Record<string, any> = {
+    weeklyTrendSummary: {
+      timeframeDays: 7,
+      validRecordCount: trendResult.validRecordCount,
+      dominantPrediction: trendResult.dominantPrediction,
+      dominantCategory: trendResult.dominantCategory,
+      dominantCount: trendResult.dominantCount,
+      previousPeerGroupCategory: trendResult.previousPeerGroupCategory,
+      suggestedPeerGroupCategory: trendResult.suggestedPeerGroupCategory,
+      finalPeerGroupCategory: trendResult.finalPeerGroupCategory,
+      calculatedAt: serverTimestamp(),
+    },
+  };
+  if (trendResult.updatedPeerGroup) {
+    update['peerGroupRecommendationCategory'] = trendResult.finalPeerGroupCategory;
+    update['dashboardCategory'] = trendResult.finalPeerGroupCategory;
+  }
+  await setDoc(profileRef, update, { merge: true });
+};
+
+// Returns the stable category to display on the dashboard and use for group recommendations.
+export const getDashboardCategory = (
+  profile: MentalHealthRecommendationProfile
+): GroupCategory =>
+  profile.peerGroupRecommendationCategory ??
+  profile.baselineRecommendationCategory ??
+  profile.activeRecommendationCategory;
+
+// Fetches peer groups from Firestore filtered by the given GroupCategory.
+export const fetchRecommendedGroups = async (category: GroupCategory): Promise<Group[]> => {
+  const snap = await getDocs(
+    query(collection(db, 'peer_groups'), where('group_category', '==', category))
+  );
+  return snap.docs.map(d => {
+    const data = d.data();
+    const cat = (data.group_category ?? data.category ?? 'Wellness - Thriving') as GroupCategory;
+    return {
+      id: d.id,
+      name: data.group_name ?? data.name ?? '',
+      description: data.group_description ?? data.description ?? '',
+      members: data.memberCount ?? data.member_count ?? 0,
+      category: cat,
+      image: data.group_image_url
+        ? { uri: data.group_image_url }
+        : GROUP_IMAGE_MAP[cat] ?? GROUP_IMAGE_MAP['Wellness - Thriving'],
+    };
+  });
+};
+
+// Fetches resources filtered by the current resourceRecommendationCategory.
+export const fetchRecommendedResources = async (category: string): Promise<Resource[]> =>
+  fetchResources(category);

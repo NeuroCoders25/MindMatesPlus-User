@@ -1,6 +1,6 @@
-import { initializeApp } from "firebase/app";
-import { initializeAuth, getReactNativePersistence } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { initializeAuth, getReactNativePersistence, getAuth, Auth } from "firebase/auth";
+import { initializeFirestore, getFirestore, Firestore } from "firebase/firestore";
 import ReactNativeAsyncStorage from "@react-native-async-storage/async-storage";
 
 const firebaseConfig = {
@@ -12,37 +12,27 @@ const firebaseConfig = {
   appId: "1:1068423012547:web:ffb37fc78ea1ee15a3c276",
 };
 
-const app = initializeApp(firebaseConfig);
+// Guard against double-initialisation on Expo hot-reload
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+console.log('[Firebase] App initialized');
 
-export const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(ReactNativeAsyncStorage),
-});
-export const db = getFirestore(app);
+// initializeAuth / initializeFirestore both throw if called twice on the same app,
+// so fall back to the getters when the instance already exists.
+let _auth: Auth;
+try {
+  _auth = initializeAuth(app, {
+    persistence: getReactNativePersistence(ReactNativeAsyncStorage),
+  });
+} catch {
+  _auth = getAuth(app);
+}
+export const auth = _auth;
 
-
-
-
-
-
-
-// // Import the functions you need from the SDKs you need
-// import { initializeApp } from "firebase/app";
-// import { getAnalytics } from "firebase/analytics";
-// // TODO: Add SDKs for Firebase products that you want to use
-// // https://firebase.google.com/docs/web/setup#available-libraries
-
-// // Your web app's Firebase configuration
-// // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-// const firebaseConfig = {
-//   apiKey: "AIzaSyB6xYQWNc6R246bMMnohCbaVe6VmaFCQy0",
-//   authDomain: "mindmatesplus.firebaseapp.com",
-//   projectId: "mindmatesplus",
-//   storageBucket: "mindmatesplus.firebasestorage.app",
-//   messagingSenderId: "1068423012547",
-//   appId: "1:1068423012547:web:ffb37fc78ea1ee15a3c276",
-//   measurementId: "G-8PJ6XSG870"
-// };
-
-// // Initialize Firebase
-// const app = initializeApp(firebaseConfig);
-// const analytics = getAnalytics(app);
+let _db: Firestore;
+try {
+  // experimentalForceLongPolling avoids the WebChannel transport errors on iOS/Android
+  _db = initializeFirestore(app, { experimentalForceLongPolling: true });
+} catch {
+  _db = getFirestore(app);
+}
+export const db = _db;

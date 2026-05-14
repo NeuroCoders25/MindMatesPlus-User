@@ -26,7 +26,7 @@ import { Message } from '../types';
 export const ChatScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited } = useApp();
+  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited, isRestricted } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
@@ -97,7 +97,7 @@ export const ChatScreen = () => {
 
   const handleSend = async () => {
     const text = inputText.trim();
-    if (!text || sending) return;
+    if (!text || sending || isRestricted) return;
 
     setModerationError(null);
     setSending(true);
@@ -256,25 +256,53 @@ export const ChatScreen = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View>
+          {isRestricted && (
+            <View style={styles.restrictionCard}>
+              <View style={styles.restrictionCardRow}>
+                <View style={styles.restrictionIconWrap}>
+                  <Ionicons name="shield-outline" size={22} color="#DC2626" />
+                </View>
+                <View style={styles.restrictionCardBody}>
+                  <Text style={styles.restrictionCardTitle}>
+                    {isAI ? 'AI Chat Paused' : 'Group Chat Paused'}
+                  </Text>
+                  <Text style={styles.restrictionCardText}>
+                    {isAI
+                      ? 'AI chat is temporarily paused. Please connect with an advisor for support.'
+                      : 'Group chat is temporarily paused. Please connect with an advisor before continuing.'}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.restrictionAdvisorBtn}
+                onPress={() => navigation.navigate('Advisor')}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="call-outline" size={14} color="white" />
+                <Text style={styles.restrictionAdvisorBtnText}>Consult Advisor</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {moderationError && (
             <View style={styles.moderationBanner}>
               <Ionicons name="warning-outline" size={16} color="#DC2626" />
               <Text style={styles.moderationBannerText}>{moderationError}</Text>
             </View>
           )}
-          <View style={styles.inputBar}>
+          <View style={[styles.inputBar, isRestricted && styles.inputBarDisabled]}>
             <View style={styles.inputField}>
               <Input
                 placeholder={isAI ? 'Talk to Mindy...' : 'Type a message...'}
                 value={inputText}
-                onChangeText={t => { setInputText(t); if (moderationError) setModerationError(null); }}
+                onChangeText={t => { if (!isRestricted) { setInputText(t); if (moderationError) setModerationError(null); } }}
+                editable={!isRestricted}
               />
             </View>
             <TouchableOpacity
               onPress={handleSend}
-              style={[styles.sendBtn, sending && styles.sendBtnDisabled]}
+              style={[styles.sendBtn, (sending || isRestricted) && styles.sendBtnDisabled]}
               activeOpacity={0.8}
-              disabled={sending}
+              disabled={sending || isRestricted}
             >
               {sending
                 ? <ActivityIndicator size="small" color="white" />
@@ -394,6 +422,55 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#DC2626',
     lineHeight: 18,
+  },
+  inputBarDisabled: { opacity: 0.55 },
+  restrictionCard: {
+    backgroundColor: '#FFF5F5',
+    borderTopWidth: 1,
+    borderTopColor: '#FCA5A5',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    gap: 10,
+  },
+  restrictionCardRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  restrictionIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  restrictionCardBody: { flex: 1, gap: 3 },
+  restrictionCardTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  restrictionCardText: {
+    fontSize: 12,
+    color: '#7F1D1D',
+    lineHeight: 18,
+  },
+  restrictionAdvisorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#DC2626',
+    borderRadius: 10,
+    paddingVertical: 10,
+  },
+  restrictionAdvisorBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: 'white',
   },
   headerInfo: { flex: 1 },
   menuBtn: {

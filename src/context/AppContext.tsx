@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { View, ActivityIndicator, Modal, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { doc, getDoc } from 'firebase/firestore';
+import { navigationRef } from '../navigation/navigationRef';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -16,10 +17,16 @@ import {
   fetchMentalHealthProfile, MentalHealthProfile,
   updateMlMentalHealthProfile, saveAiChatMessage,
   saveChatMessage, runMlAnalysisForText, updateMentalHealthProfileFromMl,
+  updateWellnessScoreGradually, saveMlAnalysisHistory,
+  updateResourceRecommendationFromLatestMl, calculateWeeklyMlTrend,
+  updatePeerGroupRecommendationFromWeeklyTrend,
+  listenToMentalHealthProfile, isUserRestricted,
+  listenToAdvisorConnectionsWithNames,
+  continueAfterAdvisorApproval,
 } from '../services/dataService';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
-import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile } from '../types';
+import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
 import { encryptName, decryptName } from '../utils/encryption';
 
 interface AppContextType {
@@ -48,6 +55,8 @@ interface AppContextType {
   joinGroup: (groupId: string) => Promise<void>;
   leaveGroup: (groupId: string) => Promise<void>;
   mlMentalHealthProfile: MlMentalHealthProfile | null;
+  recommendationProfile: MentalHealthRecommendationProfile | null;
+  isRestricted: boolean;
   aiMessages: Message[];
   sendAiMessage: (text: string) => Promise<void>;
   sendGroupMessage: (groupId: string, text: string) => Promise<void>;
@@ -130,6 +139,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [mentalHealthProfile, setMentalHealthProfile] = useState<MentalHealthProfile | null>(null);
   const [joinedGroupIds, setJoinedGroupIds] = useState<string[]>([]);
   const [mlMentalHealthProfile, setMlMentalHealthProfile] = useState<MlMentalHealthProfile | null>(null);
+  const [recommendationProfile, setRecommendationProfile] = useState<MentalHealthRecommendationProfile | null>(null);
   const [aiMessages, setAiMessages] = useState<Message[]>([
     {
       id: '1',
@@ -140,31 +150,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ]);
   const [showCrisisAlert, setShowCrisisAlert] = useState(false);
   const [visitedGroupIds, setVisitedGroupIds] = useState<string[]>([]);
+  const [advisorApprovalNotification, setAdvisorApprovalNotification] = useState<string | null>(null);
+  const [showAdvisorApprovalModal, setShowAdvisorApprovalModal] = useState(false);
+  const [advisorApprovedCategory, setAdvisorApprovedCategory] = useState('');
+  const prevConnectionStatuses = useRef<Record<string, string>>({});
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      console.log('[Auth] State changed. User:', fbUser?.uid ?? 'signed out');
       if (fbUser) {
         setGroupsLoading(true);
-        const [entries, groups, joinedIds, profile, userSnap] = await Promise.all([
-          fetchJournalEntries(fbUser.uid),
-          fetchPeerGroups(),
-          fetchUserJoinedGroupIds(fbUser.uid),
-          fetchMentalHealthProfile(fbUser.uid),
-          getDoc(doc(db, 'users', fbUser.uid)),
-        ]);
-        const nickname = userSnap.exists() ? userSnap.data()?.nickname : undefined;
-        setUser(mapFirebaseUser(fbUser, nickname));
-        setJournalEntries(entries);
-        setPeerGroups(groups);
-        setJoinedGroupIds(joinedIds);
-        setMentalHealthProfile(profile);
-        setGroupsLoading(false);
+        try {
+          console.log('[Firestore] Fetching initial data for user:', fbUser.uid);
+          const [entries, groups, joinedIds, profile, userSnap] = await Promise.all([
+            fetchJournalEntries(fbUser.uid),
+            fetchPeerGroups(),
+            fetchUserJoinedGroupIds(fbUser.uid),
+            fetchMentalHealthProfile(fbUser.uid),
+            getDoc(doc(db, 'users', fbUser.uid)),
+          ]);
+          const nickname = userSnap.exists() ? userSnap.data()?.nickname : undefined;
+          setUser(mapFirebaseUser(fbUser, nickname));
+          setJournalEntries(entries);
+          setPeerGroups(groups);
+          setJoinedGroupIds(joinedIds);
+          setMentalHealthProfile(profile);
+          console.log('[Firestore] Initial data loaded for user:', fbUser.uid);
+        } catch (err) {
+          console.error('[Firestore] Failed to load initial data — operating offline:', err);
+          // Still set the user so the app is usable; data will be empty until Firestore reconnects
+          setUser(mapFirebaseUser(fbUser));
+        } finally {
+          setGroupsLoading(false);
+        }
       } else {
+        console.log('[Auth] User signed out — clearing app state');
         setUser(null);
         setJournalEntries([]);
         setPeerGroups([]);
         setMentalHealthProfile(null);
         setMlMentalHealthProfile(null);
+        setRecommendationProfile(null);
         setJoinedGroupIds([]);
         setVisitedGroupIds([]);
         setGroupsLoading(false);
@@ -173,6 +199,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    console.log('[Listener] Subscribing advisor connections for user:', user.id);
+    const unsub = listenToAdvisorConnectionsWithNames(user.id, (connections) => {
+      const prev = prevConnectionStatuses.current;
+      connections.forEach(({ advisorId, advisorName, status }) => {
+        if (prev[advisorId] === 'pending' && status === 'accepted') {
+          setAdvisorApprovalNotification(advisorName);
+        }
+      });
+      const updated: Record<string, string> = {};
+      connections.forEach(({ advisorId, status }) => { updated[advisorId] = status; });
+      prevConnectionStatuses.current = updated;
+    });
+    return () => {
+      console.log('[Listener] Unsubscribed advisor connections for user:', user.id);
+      unsub();
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    console.log('[Listener] Subscribing mental health profile for user:', user.id);
+    const unsub = listenToMentalHealthProfile(user.id, (profile) => {
+      console.log('[ApprovalPopup] Profile changed:', profile);
+      console.log('[ApprovalPopup] advisorConnectionStatus:', profile?.advisorConnectionStatus);
+      console.log('[ApprovalPopup] userStatus:', profile?.userStatus);
+      console.log('[ApprovalPopup] recommendationSource:', profile?.recommendationSource);
+      console.log('[ApprovalPopup] approvalMessageSeen:', profile?.approvalMessageSeen);
+      setRecommendationProfile(profile);
+      if (profile && isUserRestricted(profile)) {
+        console.log('[Restriction] User restricted');
+        console.log('[Restriction] Blocking feature: groups, chat, journal');
+      }
+      if (
+        profile?.advisorConnectionStatus === 'approved' &&
+        profile?.userStatus === 'normal' &&
+        profile?.recommendationSource === 'advisor_approval' &&
+        profile?.approvalMessageSeen !== true
+      ) {
+        console.log('[ApprovalPopup] Approval condition met');
+        console.log('[ApprovalPopup] Showing modal');
+        const category =
+          profile.approvedCategory ??
+          profile.baselineRecommendationCategory ??
+          'General Wellbeing';
+        setAdvisorApprovedCategory(category);
+        setShowAdvisorApprovalModal(true);
+      }
+    });
+    return () => {
+      console.log('[Listener] Unsubscribed mental health profile for user:', user.id);
+      unsub();
+    };
+  }, [user?.id]);
+
+  const isRestricted = isUserRestricted(recommendationProfile);
+
+  const handleAdvisorApprovalContinue = async () => {
+    console.log('[ApprovalPopup] Continue clicked');
+    setShowAdvisorApprovalModal(false);
+    if (user) {
+      try {
+        await continueAfterAdvisorApproval(user.id);
+        console.log('[ApprovalPopup] approvalMessageSeen updated');
+      } catch (err) {
+        console.error('[ApprovalPopup] Failed to update approvalMessageSeen:', err);
+      }
+    }
+    if (navigationRef.isReady()) {
+      navigationRef.navigate('Main' as never);
+    }
+  };
 
   const login = async (email: string, password: string) => {
     await signInWithEmailAndPassword(auth, email, password);
@@ -216,6 +316,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateMentalHealthProfileFromMl(user.id, mlAnalysis, ['journal'], journalPreview)
         .then(() => console.log('[ML] latestMlEmotionScore updated successfully'))
         .catch(err => console.error('[ML] journal ML analysis failed:', err));
+      updateWellnessScoreGradually(user.id, content, 'journal', mlAnalysis)
+        .catch(err => console.error('[Wellness] journal score update failed:', err));
+      updateResourceRecommendationFromLatestMl(user.id, mlAnalysis)
+        .catch(err => console.error('[ML] journal resource category update failed:', err));
+      saveMlAnalysisHistory(user.id, mlAnalysis, 'journal', journalPreview)
+        .then(() => calculateWeeklyMlTrend(user.id))
+        .then(trend => {
+          if (trend) {
+            updatePeerGroupRecommendationFromWeeklyTrend(user.id, trend)
+              .catch(err => console.error('[ML] weekly trend persist failed:', err));
+          }
+        })
+        .catch(err => console.error('[ML] journal weekly trend calculation failed:', err));
     }
 
     if (
@@ -327,7 +440,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         dass21Result, setDass21Result,
         prepareSupportChatFromDass,
         peerGroups, groupsLoading, mentalHealthProfile, setMentalHealthProfile,
-        mlMentalHealthProfile,
+        mlMentalHealthProfile, recommendationProfile, isRestricted,
         joinedGroupIds, joinGroup, leaveGroup,
         journalEntries, addJournalEntry, removeJournalEntry,
         submitFeedback,
@@ -337,6 +450,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }}
     >
       {children}
+      {/* Advisor approval modal — fires globally on any screen */}
+      <Modal
+        visible={showAdvisorApprovalModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {}}
+      >
+        <View style={approvalStyles.overlay}>
+          <View style={approvalStyles.card}>
+            <View style={approvalStyles.iconCircle}>
+              <Text style={approvalStyles.iconText}>✓</Text>
+            </View>
+            <Text style={approvalStyles.title}>Advisor Approval Received</Text>
+            <Text style={approvalStyles.message}>
+              Your advisor has approved you to continue using MindMates+.
+            </Text>
+            <View style={approvalStyles.categoryBox}>
+              <Text style={approvalStyles.categoryLabel}>You will now continue under:</Text>
+              <Text style={approvalStyles.categoryValue}>{advisorApprovedCategory}</Text>
+            </View>
+            <TouchableOpacity
+              style={approvalStyles.btn}
+              onPress={handleAdvisorApprovalContinue}
+              activeOpacity={0.85}
+            >
+              <Text style={approvalStyles.btnText}>Continue to App</Text>
+            </TouchableOpacity>
+            <Text style={approvalStyles.disclaimer}>
+              AI suggestion only — not professional advice
+            </Text>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={advisorApprovalNotification !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAdvisorApprovalNotification(null)}
+      >
+        <View style={notifStyles.overlay}>
+          <View style={notifStyles.card}>
+            <View style={notifStyles.iconCircle}>
+              <Text style={notifStyles.iconText}>✓</Text>
+            </View>
+            <Text style={notifStyles.title}>Request Approved!</Text>
+            <Text style={notifStyles.body}>
+              <Text style={notifStyles.advisorName}>{advisorApprovalNotification}</Text>
+              {' '}has accepted your connection request. You can now chat with your advisor.
+            </Text>
+            <Text style={notifStyles.disclaimer}>
+              This is peer support — not professional advice.
+            </Text>
+            <TouchableOpacity
+              style={notifStyles.btn}
+              onPress={() => setAdvisorApprovalNotification(null)}
+              activeOpacity={0.85}
+            >
+              <Text style={notifStyles.btnText}>Got it</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </AppContext.Provider>
   );
 };
@@ -346,3 +522,168 @@ export const useApp = () => {
   if (!context) throw new Error('useApp must be used within an AppProvider');
   return context;
 };
+
+const approvalStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 24,
+    padding: 28,
+    width: '100%',
+    alignItems: 'center',
+    gap: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  iconCircle: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: 'rgba(34,197,94,0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  iconText: {
+    fontSize: 40,
+    color: '#22C55E',
+    fontWeight: 'bold',
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#1A1A2E',
+    textAlign: 'center',
+  },
+  message: {
+    fontSize: 14,
+    color: '#4B5563',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  categoryBox: {
+    width: '100%',
+    backgroundColor: '#F0FDF4',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    gap: 4,
+  },
+  categoryLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#16A34A',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  categoryValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#15803D',
+    textAlign: 'center',
+  },
+  btn: {
+    width: '100%',
+    backgroundColor: '#22C55E',
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+    shadowColor: '#22C55E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  btnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  disclaimer: {
+    fontSize: 10,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
+});
+
+const notifStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 28,
+    width: '100%',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  iconCircle: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#D1FAE5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  iconText: {
+    fontSize: 26,
+    color: '#059669',
+    fontWeight: 'bold',
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1A1A2E',
+    marginBottom: 10,
+  },
+  body: {
+    fontSize: 14,
+    color: '#4B5563',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 10,
+  },
+  advisorName: {
+    fontWeight: '700',
+    color: '#1A1A2E',
+  },
+  disclaimer: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  btn: {
+    backgroundColor: '#6C63FF',
+    borderRadius: 12,
+    paddingHorizontal: 40,
+    paddingVertical: 12,
+  },
+  btnText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+});

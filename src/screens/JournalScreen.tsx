@@ -8,7 +8,10 @@ import {
   Modal,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
+import { RootStackParamList } from '../navigation';
 import { Input, Card, Button } from '../components/UI';
 import { COLORS, ML_CATEGORY_MAP } from '../services/dataService';
 import { JournalEntry } from '../types';
@@ -36,7 +39,8 @@ const fmtTime = (d: Date) =>
   d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
 export const JournalScreen = () => {
-  const { journalEntries, addJournalEntry } = useApp();
+  const { journalEntries, addJournalEntry, isRestricted } = useApp();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [selectedMood, setSelectedMood] = useState('');
@@ -48,7 +52,7 @@ export const JournalScreen = () => {
   const [selectedEntry, setSelectedEntry] = useState<JournalEntry | null>(null);
 
   const handleSave = async () => {
-    if (!content.trim()) return;
+    if (!content.trim() || isRestricted) return;
 
     setModerationError(null);
     setIsAnalyzing(true);
@@ -112,8 +116,33 @@ export const JournalScreen = () => {
         <Text style={styles.title}>My Journal</Text>
         <Text style={styles.subtitle}>Express yourself freely and safely</Text>
 
+        {/* Restriction notice */}
+        {isRestricted && (
+          <View style={styles.restrictionCard}>
+            <View style={styles.restrictionCardTop}>
+              <View style={styles.restrictionIconWrap}>
+                <Ionicons name="shield-outline" size={22} color="#DC2626" />
+              </View>
+              <View style={styles.restrictionCardBody}>
+                <Text style={styles.restrictionCardTitle}>Journal Entries Paused</Text>
+                <Text style={styles.restrictionCardText}>
+                  Journal entries are temporarily paused. Please connect with an advisor before continuing.
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={styles.restrictionAdvisorBtn}
+              onPress={() => navigation.navigate('Advisor')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="call-outline" size={14} color="white" />
+              <Text style={styles.restrictionAdvisorBtnText}>Consult Advisor</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Entry Form Card */}
-        <Card style={styles.formCard}>
+        <Card style={[styles.formCard, isRestricted && styles.formCardDisabled]}>
           <View style={styles.formHeader}>
             <View style={styles.dateRow}>
               <Feather name="calendar" size={14} color={COLORS.muted} />
@@ -125,15 +154,17 @@ export const JournalScreen = () => {
           <Input
             placeholder="Entry title (optional)"
             value={title}
-            onChangeText={setTitle}
+            onChangeText={t => { if (!isRestricted) setTitle(t); }}
             style={styles.titleInput}
+            editable={!isRestricted}
           />
           <Input
             placeholder="How are you really feeling today?"
             value={content}
-            onChangeText={t => { setContent(t); if (moderationError) setModerationError(null); }}
+            onChangeText={t => { if (!isRestricted) { setContent(t); if (moderationError) setModerationError(null); } }}
             type="textarea"
             style={styles.contentInput}
+            editable={!isRestricted}
           />
 
           <View style={styles.formFooter}>
@@ -153,7 +184,7 @@ export const JournalScreen = () => {
             </View>
             <Button
               onPress={handleSave}
-              disabled={isAnalyzing || !content.trim()}
+              disabled={isAnalyzing || !content.trim() || isRestricted}
             >
               {isAnalyzing ? 'Analyzing...' : 'Save Entry'}
             </Button>
@@ -326,6 +357,54 @@ const styles = StyleSheet.create({
   title: { fontSize: 28, fontWeight: 'bold', color: COLORS.text },
   subtitle: { fontSize: 13, color: COLORS.muted },
   formCard: { gap: 16 },
+  formCardDisabled: { opacity: 0.55 },
+  restrictionCard: {
+    backgroundColor: '#FFF5F5',
+    borderRadius: 16,
+    padding: 16,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+  },
+  restrictionCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  restrictionIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  restrictionCardBody: { flex: 1, gap: 3 },
+  restrictionCardTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  restrictionCardText: {
+    fontSize: 12,
+    color: '#7F1D1D',
+    lineHeight: 18,
+  },
+  restrictionAdvisorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#DC2626',
+    borderRadius: 10,
+    paddingVertical: 10,
+  },
+  restrictionAdvisorBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: 'white',
+  },
   formHeader: {
     flexDirection: 'row',
     alignItems: 'center',

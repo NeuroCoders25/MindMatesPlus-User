@@ -94,6 +94,7 @@ interface InputProps {
   onChangeText: (text: string) => void;
   type?: 'text' | 'password' | 'email' | 'textarea' | 'number';
   style?: StyleProp<TextStyle>;
+  editable?: boolean;
 }
 
 export const Input: React.FC<InputProps> = ({
@@ -102,6 +103,7 @@ export const Input: React.FC<InputProps> = ({
   onChangeText,
   type = 'text',
   style,
+  editable = true,
 }) => {
   const [showPassword, setShowPassword] = useState(false);
   const isPasswordType = type === 'password';
@@ -118,6 +120,7 @@ export const Input: React.FC<InputProps> = ({
         autoCapitalize={type === 'email' ? 'none' : 'sentences'}
         multiline={type === 'textarea'}
         numberOfLines={type === 'textarea' ? 5 : 1}
+        editable={editable}
         style={[
           styles.input,
           type === 'textarea' && styles.textarea,
