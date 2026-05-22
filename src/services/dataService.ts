@@ -488,6 +488,7 @@ export const saveChatMessage = async (
     text,
     timestamp: Timestamp.now(),
     flagged,
+    reviewStatus: flagged ? 'pending' : 'not_required',
   });
   return docRef.id;
 };
@@ -512,6 +513,9 @@ export const subscribeGroupMessages = (
         senderName: d.data().senderName as string,
         timestamp: (d.data().timestamp as Timestamp).toDate(),
         flagged: d.data().flagged ?? false,
+        reviewStatus: d.data().reviewStatus ?? 'not_required',
+        reviewedBy: d.data().reviewedBy ?? null,
+        reviewedAt: d.data().reviewedAt ? (d.data().reviewedAt as Timestamp).toDate() : null,
       }));
       callback(messages);
     },
@@ -519,6 +523,13 @@ export const subscribeGroupMessages = (
       console.error('[Firestore] subscribeGroupMessages error:', err);
     }
   );
+};
+
+export const deleteGroupMessage = async (
+  groupId: string,
+  messageId: string,
+): Promise<void> => {
+  await deleteDoc(doc(db, 'peer_groups', groupId, 'chatMessages', messageId));
 };
 
 // ─── ML Recommendation Category Map ──────────────────────────────────────────

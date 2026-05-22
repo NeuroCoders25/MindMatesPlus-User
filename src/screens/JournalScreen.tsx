@@ -115,6 +115,12 @@ export const JournalScreen = () => {
       >
         <Text style={styles.title}>My Journal</Text>
         <Text style={styles.subtitle}>Express yourself freely and safely</Text>
+        <View style={styles.privacyNote}>
+          <Ionicons name="analytics-outline" size={11} color={COLORS.muted} />
+          <Text style={styles.privacyNoteText}>
+            Your journal entries are analyzed to help understand your emotional patterns.
+          </Text>
+        </View>
 
         {/* Restriction notice */}
         {isRestricted && (
@@ -356,6 +362,18 @@ const styles = StyleSheet.create({
   content: { padding: 24, paddingBottom: 100, gap: 20 },
   title: { fontSize: 28, fontWeight: 'bold', color: COLORS.text },
   subtitle: { fontSize: 13, color: COLORS.muted },
+  privacyNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  privacyNoteText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    flex: 1,
+    lineHeight: 14,
+    opacity: 0.8,
+  },
   formCard: { gap: 16 },
   formCardDisabled: { opacity: 0.55 },
   restrictionCard: {

@@ -17,11 +17,25 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
-import { COLORS } from '../services/dataService';
-import { subscribeGroupMessages } from '../services/dataService';
+import { COLORS, subscribeGroupMessages, deleteGroupMessage } from '../services/dataService';
 import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
-import { Message } from '../types';
+import { Message, ReviewStatus } from '../types';
+
+// ─── Review-status helpers ─────────────────────────────────────────────────────
+
+// Treat missing reviewStatus (older messages) as 'not_required'.
+const effectiveStatus = (msg: Message): ReviewStatus =>
+  msg.reviewStatus ?? 'not_required';
+
+// Visibility rule:
+//   - clean (not_required) or approved  → always visible
+//   - pending / rejected                → visible only to the sender
+const isMessageVisible = (msg: Message, viewerId: string | undefined): boolean => {
+  const status = effectiveStatus(msg);
+  if (status === 'not_required' || status === 'approved') return true;
+  return msg.senderId === viewerId;
+};
 
 export const ChatScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -41,6 +55,7 @@ export const ChatScreen = () => {
   const [moderationError, setModerationError] = useState<string | null>(null);
   const [menuVisible, setMenuVisible] = useState(false);
   const [infoVisible, setInfoVisible] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const listRef = useRef<FlatList>(null);
 
   const handleExitGroup = () => {
@@ -66,6 +81,34 @@ export const ChatScreen = () => {
     }, 300);
   };
 
+  // Only own messages in group chat can be deleted.
+  // Long-pressing a peer message or any AI message is a no-op.
+  const handleDeleteMessage = (msg: Message) => {
+    Alert.alert(
+      'Delete Message',
+      'Are you sure you want to delete this message?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingId(msg.id);
+            try {
+              await deleteGroupMessage(groupId, msg.id);
+              // The onSnapshot listener removes the message from the list
+              // automatically — no manual state update needed.
+            } catch {
+              Alert.alert('Error', 'Could not delete the message. Please try again.');
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const messages: Message[] = isAI ? aiMessages : groupMessages;
 
   // Subscribe to real-time Firestore messages for group chats
@@ -78,7 +121,7 @@ export const ChatScreen = () => {
         sender: msg.senderId === user?.id ? 'user' : 'peer',
         senderName: msg.senderId === user?.id ? undefined : msg.senderName,
       }));
-      setGroupMessages(mapped);
+      setGroupMessages(mapped.filter(msg => isMessageVisible(msg, user?.id)));
     });
     return unsubscribe;
   }, [groupId, isAI, user?.id]);
@@ -208,47 +251,74 @@ export const ChatScreen = () => {
         style={styles.messageList}
         contentContainerStyle={styles.messageContent}
         showsVerticalScrollIndicator={false}
-        renderItem={({ item: msg }) => (
-          <View
-            style={[
-              styles.msgWrapper,
-              msg.sender === 'user' ? styles.userSide : styles.otherSide,
-            ]}
-          >
-            {msg.senderName && (
-              <Text style={styles.senderName}>{msg.senderName}</Text>
-            )}
+        renderItem={({ item: msg }) => {
+          const status = effectiveStatus(msg);
+          const isOwn = msg.sender === 'user';
+          const isRejected = isOwn && status === 'rejected';
+          const isPending = isOwn && status === 'pending';
+          const canDelete = !isAI && isOwn && !isRejected;
+          return (
             <View
               style={[
-                styles.bubble,
-                msg.sender === 'user' ? styles.userBubble : styles.otherBubble,
+                styles.msgWrapper,
+                isOwn ? styles.userSide : styles.otherSide,
               ]}
             >
-              {msg.flagged && (
-                <View style={styles.flaggedBadge}>
-                  <Ionicons name="warning-outline" size={10} color="#F87171" />
-                  <Text style={styles.flaggedText}>Flagged</Text>
-                </View>
+              {msg.senderName && (
+                <Text style={styles.senderName}>{msg.senderName}</Text>
               )}
-              <Text
-                style={[
-                  styles.bubbleText,
-                  msg.sender === 'user'
-                    ? styles.userBubbleText
-                    : styles.otherBubbleText,
-                ]}
+              <TouchableOpacity
+                onLongPress={canDelete ? () => handleDeleteMessage(msg) : undefined}
+                delayLongPress={400}
+                activeOpacity={canDelete ? 0.8 : 1}
+                disabled={deletingId === msg.id || isRejected}
               >
-                {msg.text}
+                <View
+                  style={[
+                    styles.bubble,
+                    isOwn ? styles.userBubble : styles.otherBubble,
+                    deletingId === msg.id && styles.bubbleDeleting,
+                    isRejected && styles.bubbleRejected,
+                  ]}
+                >
+                  {isPending && (
+                    <View style={styles.reviewBadge}>
+                      <Ionicons name="time-outline" size={10} color="#D97706" />
+                      <Text style={styles.reviewBadgeText}>Under review</Text>
+                    </View>
+                  )}
+                  {isRejected && (
+                    <View style={styles.removedBadge}>
+                      <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
+                      <Text style={styles.removedBadgeText}>Removed by moderator</Text>
+                    </View>
+                  )}
+                  {!isPending && !isRejected && msg.flagged && (
+                    <View style={styles.flaggedBadge}>
+                      <Ionicons name="warning-outline" size={10} color="#F87171" />
+                      <Text style={styles.flaggedText}>Flagged</Text>
+                    </View>
+                  )}
+                  <Text
+                    style={[
+                      styles.bubbleText,
+                      isOwn ? styles.userBubbleText : styles.otherBubbleText,
+                      isRejected && styles.rejectedBubbleText,
+                    ]}
+                  >
+                    {msg.text}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              <Text style={styles.timestamp}>
+                {msg.timestamp.toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
               </Text>
             </View>
-            <Text style={styles.timestamp}>
-              {msg.timestamp.toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Text>
-          </View>
-        )}
+          );
+        }}
       />
 
       {/* Input Bar */}
@@ -289,6 +359,14 @@ export const ChatScreen = () => {
               <Text style={styles.moderationBannerText}>{moderationError}</Text>
             </View>
           )}
+          <View style={styles.safetyNote}>
+            <Ionicons name="shield-checkmark-outline" size={11} color={COLORS.muted} />
+            <Text style={styles.safetyNoteText}>
+              {isAI
+                ? 'Your conversations help Mindy understand and support your emotional wellbeing.'
+                : 'This chat is monitored for your safety by mental health professionals.'}
+            </Text>
+          </View>
           <View style={[styles.inputBar, isRestricted && styles.inputBarDisabled]}>
             <View style={styles.inputField}>
               <Input
@@ -365,6 +443,7 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   bubble: { padding: 14, borderRadius: 20 },
+  bubbleDeleting: { opacity: 0.35 },
   userBubble: { backgroundColor: COLORS.accent, borderTopRightRadius: 4 },
   otherBubble: {
     backgroundColor: COLORS.white,
@@ -424,6 +503,21 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   inputBarDisabled: { opacity: 0.55 },
+  safetyNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 5,
+    backgroundColor: COLORS.white,
+  },
+  safetyNoteText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    flex: 1,
+    lineHeight: 14,
+    opacity: 0.8,
+  },
   restrictionCard: {
     backgroundColor: '#FFF5F5',
     borderTopWidth: 1,
@@ -557,4 +651,25 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   infoCloseText: { color: 'white', fontWeight: '700', fontSize: 14 },
+  reviewBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  reviewBadgeText: { fontSize: 9, color: '#D97706', fontWeight: '700' },
+  removedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  removedBadgeText: { fontSize: 9, color: '#9CA3AF', fontWeight: '700' },
+  bubbleRejected: {
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    opacity: 0.75,
+  },
+  rejectedBubbleText: { color: '#9CA3AF' },
 });

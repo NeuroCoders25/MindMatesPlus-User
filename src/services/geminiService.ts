@@ -113,6 +113,15 @@ HARMFUL CONTENT
 - Content promoting or glorifying violence, terrorism, or extremism
 - Graphic descriptions of abuse or torture
 
+LINKS & EXTERNAL CONTACT
+- Any URL containing http://, https://, or a www. prefix
+- Bare domain names with a recognisable TLD (e.g. example.com, helpline.org, site.io)
+- IPv4 or IPv6 addresses (e.g. 192.168.1.1)
+- Email addresses in any format (e.g. user@domain.com)
+- Obfuscated links or contact info: "example dot com", "h t t p", "h-t-t-p",
+  "user [at] gmail", or any spaced / punctuated attempt to evade the above patterns
+- Any attempt to share off-platform contact details or redirect users away from this app
+
 IMPORTANT CONTEXT: This is a mental health app. Expressions of personal distress (e.g. "I feel like hurting myself", "I want to die", "I feel hopeless") are NOT unsafe — they are cries for help and must be allowed through so users can receive support.
 
 Respond ONLY with a valid JSON object (no markdown, no extra text):

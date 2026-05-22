@@ -27,6 +27,12 @@ export interface Group {
   image: any;
 }
 
+// Advisor-review lifecycle for flagged group chat messages.
+// 'pending'      — set by this app when a flagged message is sent.
+// 'not_required' — set by this app for clean messages.
+// 'approved' / 'rejected' — written exclusively by the advisor portal.
+export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'not_required';
+
 export interface Message {
   id: string;
   text: string;
@@ -35,6 +41,11 @@ export interface Message {
   senderName?: string;
   timestamp: Date;
   flagged?: boolean;
+  /** Present on group chat messages; absent on AI chat messages. */
+  reviewStatus?: ReviewStatus;
+  /** Set by the advisor portal on review; read-only in this app. */
+  reviewedBy?: string | null;
+  reviewedAt?: Date | null;
 }
 
 export interface JournalEntry {
