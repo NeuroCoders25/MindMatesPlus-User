@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -90,23 +89,35 @@ export const HomeScreen = () => {
   // Advisor redirect when DASS result is severe
   const isAdvisorRequired = recommendationProfile?.userStatus === 'under_review';
 
-  // Build recommended groups using the stable weekly-trend peer category.
-  // Falls back to baselineRecommendationCategory when no trend has been calculated yet.
+  // Build recommended groups using a priority chain.
   const recommendedGroups = (() => {
     if (isAdvisorRequired) return [];
 
     if (recommendationProfile) {
-      const peerCategory =
-        recommendationProfile.peerGroupRecommendationCategory ??
-        recommendationProfile.baselineRecommendationCategory;
-      return peerGroups.filter(g => g.category === peerCategory).slice(0, 4);
+      // Priority 1: Live peer group category — set initially by advisor approval,
+      // then kept current by the weekly ML trend. Single source of truth for groups.
+      const weeklyCategory = recommendationProfile.peerGroupRecommendationCategory;
+      if (weeklyCategory) {
+        return peerGroups.filter(g => g.category === weeklyCategory).slice(0, 4);
+      }
+
+      // Priority 2: KNN recommendation (no weekly trend result yet)
+      const knnCategory = recommendationProfile.knnMappedCategory;
+      if (knnCategory && recommendationProfile.knnSafetyFlag !== true) {
+        const knnGroups = peerGroups.filter(g => g.category === knnCategory).slice(0, 4);
+        if (knnGroups.length > 0) return knnGroups;
+      }
+
+      // Priority 3: DASS baseline
+      return peerGroups.filter(g => g.category === recommendationProfile.baselineRecommendationCategory).slice(0, 4);
     }
 
-    // Fallback: no questionnaire yet — use ML insight
+    // Priority 5: Raw ML dominant
     if (mlInsight) {
       return getGroupsByMlPrediction(peerGroups, mlInsight.dominantCategory).slice(0, 4);
     }
 
+    // Priority 6: Empty array
     return [];
   })();
 
@@ -154,44 +165,7 @@ export const HomeScreen = () => {
     'General Wellbeing';
 
   return (
-    <>
-    <Modal
-      visible={showApprovalModal}
-      transparent
-      animationType="fade"
-      onRequestClose={() => {}}
-    >
-      <View style={styles.approvalOverlay}>
-        <View style={styles.approvalCard}>
-          <View style={styles.approvalIconWrapper}>
-            <Ionicons name="checkmark-circle" size={52} color="#22C55E" />
-          </View>
-          <Text style={styles.approvalTitle}>You're Approved!</Text>
-          <Text style={styles.approvalMessage}>
-            Your advisor has reviewed your case and approved you to continue using MindMates+.
-          </Text>
-          <View style={styles.approvalCategoryBox}>
-            <Text style={styles.approvalCategoryLabel}>Your recommended category</Text>
-            <Text style={styles.approvalCategoryValue}>{approvedCategoryLabel}</Text>
-          </View>
-          <Text style={styles.approvalDisclaimer}>
-            Your dashboard, peer groups, and resources will now reflect your advisor-approved support level.
-          </Text>
-          <TouchableOpacity
-            style={styles.approvalBtn}
-            onPress={handleContinueAfterApproval}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-forward-circle-outline" size={20} color="white" />
-            <Text style={styles.approvalBtnText}>Continue to App</Text>
-          </TouchableOpacity>
-          <Text style={styles.approvalSubDisclaimer}>
-            AI suggestion only — not professional advice
-          </Text>
-        </View>
-      </View>
-    </Modal>
-
+    <View style={{ flex: 1 }}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -428,7 +402,40 @@ export const HomeScreen = () => {
 
 
     </ScrollView>
-    </>
+
+    {/* Approval overlay — rendered as absolute View to avoid Android transparent-Modal black screen */}
+    {showApprovalModal && (
+      <View style={[styles.approvalOverlay, StyleSheet.absoluteFillObject]}>
+        <View style={styles.approvalCard}>
+          <View style={styles.approvalIconWrapper}>
+            <Ionicons name="checkmark-circle" size={52} color="#22C55E" />
+          </View>
+          <Text style={styles.approvalTitle}>You're Approved!</Text>
+          <Text style={styles.approvalMessage}>
+            Your advisor has reviewed your case and approved you to continue using MindMates+.
+          </Text>
+          <View style={styles.approvalCategoryBox}>
+            <Text style={styles.approvalCategoryLabel}>Your recommended category</Text>
+            <Text style={styles.approvalCategoryValue}>{approvedCategoryLabel}</Text>
+          </View>
+          <Text style={styles.approvalDisclaimer}>
+            Your dashboard, peer groups, and resources will now reflect your advisor-approved support level.
+          </Text>
+          <TouchableOpacity
+            style={styles.approvalBtn}
+            onPress={handleContinueAfterApproval}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="arrow-forward-circle-outline" size={20} color="white" />
+            <Text style={styles.approvalBtnText}>Continue to App</Text>
+          </TouchableOpacity>
+          <Text style={styles.approvalSubDisclaimer}>
+            AI suggestion only — not professional advice
+          </Text>
+        </View>
+      </View>
+    )}
+    </View>
   );
 };
 

@@ -1,3 +1,5 @@
+import { Timestamp } from 'firebase/firestore';
+
 export interface User {
   id: string;
   name: string;
@@ -119,15 +121,34 @@ export interface MlMentalHealthProfile {
   lastUpdated: Date;
 }
 
-// Input shape prepared for future KNN model — not used for inference yet
+// 5-feature input vector sent to POST /recommend-groups
 export interface KnnInput {
-  dassScore: number;
-  latestPrediction: string;
-  dominantCategory: string;
-  depressionCount: number;
-  anxietyCount: number;
-  normalCount: number;
-  preferredGroupCategory: string;
+  depression_score: number;   // DASS-21 depression subscale × 2  (0–42)
+  anxiety_score: number;      // DASS-21 anxiety subscale × 2     (0–42)
+  stress_score: number;       // DASS-21 stress subscale × 2      (0–42)
+  dominant_emotion: string;   // weekly dominant BERT label: depression | anxiety | normal
+  emotion_confidence: number; // average confidence for dominant emotion over 7 days (0–1)
+}
+
+// Result of aggregating 7-day mlAnalysisHistory into a dominant emotion signal
+export interface WeeklyEmotionSummary {
+  dominantEmotion: string;
+  averageConfidence: number;
+  totalRecords: number;
+  emotionDistribution: {
+    depression: number;
+    anxiety: number;
+    normal: number;
+  };
+}
+
+// Stored at users/{uid}/mentalHealth/recommendationState — owned by KNN pipeline only
+export interface KnnRecommendationState {
+  peerGroupRecommendationCategory: string;
+  dashboardCategory: string;
+  recommendationEngine: 'knn';
+  lastWeeklyAnalysisAt: Date;
+  weeklyTrendSummary: WeeklyEmotionSummary;
 }
 
 export interface QuestionnaireScore {
@@ -174,6 +195,12 @@ export interface MentalHealthRecommendationProfile {
   wellnessScore?: number;
   restrictedReason?: string;
   restrictedAt?: Date;
+  knnRecommendedGroup?: string;
+  knnMappedCategory?: GroupCategory;
+  knnProbabilities?: Record<string, number>;
+  knnLastUpdatedAt?: Timestamp;
+  knnSafetyFlag?: boolean;
+  knnFallbackReason?: 'backend_unreachable' | string;
 }
 
 export interface RecommendationResult {

@@ -23,6 +23,8 @@ import {
   listenToMentalHealthProfile, isUserRestricted,
   listenToAdvisorConnectionsWithNames,
   continueAfterAdvisorApproval,
+  runWeeklyKnnRecommendation,
+  callKnnAndWriteResult,
 } from '../services/dataService';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
@@ -154,6 +156,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [showAdvisorApprovalModal, setShowAdvisorApprovalModal] = useState(false);
   const [advisorApprovedCategory, setAdvisorApprovedCategory] = useState('');
   const prevConnectionStatuses = useRef<Record<string, string>>({});
+  // Ensures weekly KNN fires at most once per app session per user
+  const knnTriggeredRef = useRef(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
@@ -219,6 +223,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsub();
     };
   }, [user?.id]);
+
+  // ─── Weekly KNN trigger — fires once per session when the profile first loads ─
+  // Rate-limited to once per 23 hours via knnLastUpdatedAt in Firestore.
+  // callKnnAndWriteResult is also invoked on every chat message, so this ensures
+  // the fields are always populated even for users who haven't chatted yet.
+  useEffect(() => {
+    if (!user || !recommendationProfile || knnTriggeredRef.current) return;
+    knnTriggeredRef.current = true;
+
+    const lastKnnRun = recommendationProfile.knnLastUpdatedAt?.toDate?.();
+    const hoursSinceLastRun = lastKnnRun
+      ? (Date.now() - lastKnnRun.getTime()) / 1000 / 3600
+      : 999;
+
+    if (hoursSinceLastRun >= 23) {
+      console.log('[KNN] Running weekly recommendation (last ran', Math.round(hoursSinceLastRun), 'h ago)…');
+      runWeeklyKnnRecommendation(user.id).catch(e =>
+        console.error('[KNN WEEKLY ERROR]', e)
+      );
+      // Also call the immediate path so knnRecommendedGroup on currentProfile is fresh.
+      callKnnAndWriteResult(user.id).catch(e =>
+        console.error('[KNN IMMEDIATE ERROR]', e)
+      );
+    } else {
+      console.log('[KNN] Weekly recommendation skipped — ran', Math.round(hoursSinceLastRun), 'h ago');
+    }
+  }, [user?.id, recommendationProfile]);
 
   useEffect(() => {
     if (!user) return;
@@ -289,6 +320,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const logout = async () => {
     await signOut(auth);
     setUser(null);
+    knnTriggeredRef.current = false; // Allow KNN to re-run on next login
   };
 
   const addJournalEntry = async (title: string, content: string, mood: string, mlAnalysis?: MlPredictResponse) => {

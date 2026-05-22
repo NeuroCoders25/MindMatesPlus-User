@@ -1,11 +1,11 @@
-import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
   setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp,
 } from 'firebase/firestore';
-import { predictText, MlPredictResponse } from './mlApiService';
+import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService';
 
 // ─── Journal Firestore Functions ──────────────────────────────────────────────
 
@@ -1021,25 +1021,21 @@ export const updateMlMentalHealthProfile = async (
   return profile;
 };
 
-// ─── KNN Input Builder (prepared for future KNN model — not executed yet) ────
+// ─── KNN Input Builder ────────────────────────────────────────────────────────
 
+// Builds the exact 5-feature vector expected by POST /recommend-groups.
+// emotion_encoded and emotion_confidence now come from the 7-day weekly summary
+// rather than the single latest BERT prediction.
 export const buildKnnInput = (
   dass21Result: Dass21Result | null,
-  mlProfile: MlMentalHealthProfile
-): KnnInput => {
-  const dassScore = dass21Result
-    ? dass21Result.depression.final + dass21Result.anxiety.final + dass21Result.stress.final
-    : 0;
-  return {
-    dassScore,
-    latestPrediction: mlProfile.latestPrediction,
-    dominantCategory: mlProfile.dominantCategory,
-    depressionCount: mlProfile.depressionCount,
-    anxietyCount: mlProfile.anxietyCount,
-    normalCount: mlProfile.normalCount,
-    preferredGroupCategory: ML_CATEGORY_MAP[mlProfile.dominantCategory] ?? 'General Wellbeing',
-  };
-};
+  weeklyEmotion: WeeklyEmotionSummary
+): KnnInput => ({
+  depression_score:   dass21Result?.depression.final ?? 0,
+  anxiety_score:      dass21Result?.anxiety.final    ?? 0,
+  stress_score:       dass21Result?.stress.final     ?? 0,
+  dominant_emotion:   weeklyEmotion.dominantEmotion,
+  emotion_confidence: weeklyEmotion.averageConfidence,
+});
 
 // ─── Realtime ML Mental Health Profile Listener ───────────────────────────────
 
@@ -1499,6 +1495,19 @@ export const ML_RECOMMENDATION_ORDER: GroupCategory[] = [
   'Mild Support',                 // 4
   'Moderate Support',             // 5 — highest support need (ML ceiling)
 ];
+
+// Maps KNN group IDs to GroupCategory. G1 is intentionally absent — it is a
+// safety flag only and must never be auto-assigned as a category.
+export const KNN_GROUP_TO_CATEGORY: Record<string, GroupCategory> = {
+  G1_Crisis_Peer_Support:   'Severe Support',
+  G2_Academic_Burnout:      'Moderate Support',
+  G3_Social_Isolation:      'Moderate Support',
+  G4_Anxiety_Management:    'Mild Support',
+  G5_Study_Buddy:           'Wellness - Stress Aware',
+  G6_General_Wellness:      'Wellness - Thriving',
+  G7_Recovery_Resilience:   'Recovery & Improvement',
+  G8_Depression_Support:    'Moderate Support',
+};
 
 // Returns the ordered support level (0–5). Returns -1 for 'Severe Support'.
 export const getCategoryLevel = (category: GroupCategory): number =>
@@ -1973,6 +1982,7 @@ export const runMlAnalysisForText = async (
       console.log('[ML] Weekly trend calculated — peerGroupCategory:', trendResult.finalPeerGroupCategory,
         trendResult.updatedPeerGroup ? '(moved)' : '(unchanged)');
     }
+    await callKnnAndWriteResult(userId);
   } catch (err) {
     console.error(`[ML] ML analysis failed for source "${source}":`, err);
   }
@@ -2041,6 +2051,128 @@ export interface WeeklyTrendResult {
   suggestedPeerGroupCategory: GroupCategory;
   finalPeerGroupCategory: GroupCategory;
   updatedPeerGroup: boolean;
+}
+
+// Derives a GroupCategory from raw DASS-21 subscale scores.
+// Used as a fallback when the KNN backend is unreachable.
+function mapDassScoreToFallbackCategory(qs: {
+  depressionScore: number;
+  anxietyScore: number;
+  stressScore: number;
+}): GroupCategory {
+  const max = Math.max(qs.depressionScore, qs.anxietyScore, qs.stressScore);
+  if (max >= 21) return 'Severe Support';
+  if (max >= 14) return 'Moderate Support';
+  if (max >= 10) return 'Mild Support';
+  return 'Wellness - Thriving';
+}
+
+// Calls the KNN /recommend-groups endpoint using the current Firestore profile
+// and writes the result back to mentalHealthProfile/currentProfile.
+// On network failure, writes a DASS-derived fallback so KNN fields always exist.
+export async function callKnnAndWriteResult(userId: string): Promise<void> {
+  // Declare these outside try so the catch block can reference them for logging/fallback.
+  const KNN_ENDPOINT = 'http://10.0.2.2:8000/recommend-groups';
+  const profileDocRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  let payload: KnnRecommendRequest | null = null;
+
+  try {
+    console.log('[KNN] Starting KNN call for user:', userId);
+
+    // 1. Read current profile — path: users/{uid}/mentalHealthProfile/currentProfile
+    const profileSnap = await getDoc(profileDocRef);
+    if (!profileSnap.exists()) {
+      console.log('[KNN] Skipping — currentProfile document not found');
+      return;
+    }
+    const profile = profileSnap.data() as MentalHealthRecommendationProfile;
+
+    // 2. Guards - only run when safe
+    if (!profile.initialQuestionnaireScore) {
+      console.log('[KNN] Skipping — initialQuestionnaireScore is null (questionnaire not completed)');
+      return;
+    }
+    if (profile.userStatus !== 'normal') {
+      console.log('[KNN] Skipping — userStatus is', profile.userStatus, '(not normal)');
+      return;
+    }
+
+    // 3. Build 5-feature vector from existing Firestore data
+    payload = {
+      depression_score:   profile.initialQuestionnaireScore.depressionScore,
+      anxiety_score:      profile.initialQuestionnaireScore.anxietyScore,
+      stress_score:       profile.initialQuestionnaireScore.stressScore,
+      dominant_emotion:   profile.latestMlEmotionScore?.prediction  ?? 'normal',
+      emotion_confidence: profile.latestMlEmotionScore?.confidence  ?? 0.5,
+    };
+    console.log('[KNN] Payload:', JSON.stringify(payload));
+
+    // 4. Call KNN endpoint via the shared mlApiService helper
+    console.log('[KNN] Calling /recommend-groups…');
+    const knn = await recommendGroups(payload);
+    console.log('[KNN] Response received:', JSON.stringify(knn));
+
+    // 5. Safety check: G1 is a flag only — NEVER auto-assign Severe Support
+    const isCrisisFlag = knn.recommended_group === 'G1_Crisis_Peer_Support';
+    const mappedCategory: GroupCategory | null = isCrisisFlag
+      ? null
+      : (KNN_GROUP_TO_CATEGORY[knn.recommended_group] ?? null);
+
+    // 6. Write results back to Firestore using setDoc+merge so new fields are
+    //    always created even if updateDoc would reject a missing field.
+    const knnFields: Record<string, unknown> = {
+      knnRecommendedGroup: knn.recommended_group,
+      knnProbabilities:    knn.probabilities,
+      knnLastUpdatedAt:    serverTimestamp(),
+      knnSafetyFlag:       isCrisisFlag,
+    };
+    if (mappedCategory) knnFields['knnMappedCategory'] = mappedCategory;
+
+    console.log('[KNN] Writing to Firestore...');
+    await setDoc(profileDocRef, knnFields, { merge: true });
+
+    console.log(
+      `[KNN] ✅ Written — group=${knn.recommended_group} | mapped=${mappedCategory ?? 'none (crisis flag)'} | crisisFlag=${isCrisisFlag}`
+    );
+    if (isCrisisFlag) {
+      console.warn('[KNN] Crisis flag raised for user:', userId);
+    }
+  } catch (err) {
+    // ── Enhanced error logging so network failures surface in Metro/Logcat ──
+    console.error('[KNN ERROR] callKnnAndWriteResult failed:', err);
+    console.error('[KNN ERROR] Endpoint:', KNN_ENDPOINT);
+    if (payload) {
+      console.error('[KNN ERROR] Payload sent:', JSON.stringify(payload));
+    } else {
+      console.error('[KNN ERROR] Payload was never built (failed before step 3)');
+    }
+
+    // ── Fallback: write questionnaire-derived category so KNN fields always exist ──
+    try {
+      const profileSnap = await getDoc(profileDocRef);
+      if (profileSnap.exists()) {
+        const profile = profileSnap.data() as MentalHealthRecommendationProfile;
+        if (profile.initialQuestionnaireScore) {
+          const fallbackCategory = mapDassScoreToFallbackCategory(
+            profile.initialQuestionnaireScore
+          );
+          await setDoc(profileDocRef, {
+            knnRecommendedGroup: 'FALLBACK_QUESTIONNAIRE',
+            knnMappedCategory:   fallbackCategory,
+            knnProbabilities:    {},
+            knnLastUpdatedAt:    serverTimestamp(),
+            knnSafetyFlag:       false,
+            knnFallbackReason:   'backend_unreachable',
+          }, { merge: true });
+          console.warn('[KNN] Backend unreachable — fallback written:', fallbackCategory);
+        } else {
+          console.warn('[KNN] Cannot write fallback — initialQuestionnaireScore missing');
+        }
+      }
+    } catch (fallbackErr) {
+      console.error('[KNN ERROR] Fallback write also failed:', fallbackErr);
+    }
+  }
 }
 
 // Reads the last 7 days of mlAnalysisHistory, filters to high-confidence records
@@ -2173,3 +2305,181 @@ export const fetchRecommendedGroups = async (category: GroupCategory): Promise<G
 // Fetches resources filtered by the current resourceRecommendationCategory.
 export const fetchRecommendedResources = async (category: string): Promise<Resource[]> =>
   fetchResources(category);
+
+// ─── KNN Weekly Dominant Emotion ─────────────────────────────────────────────
+
+// Reads the last 7 days of mlAnalysisHistory (Firestore path:
+// users/{uid}/mlAnalysisHistory) and aggregates it into a dominant emotion
+// signal for use as the KNN emotion feature.
+// Only records with confidence >= ML_CONFIDENCE_THRESHOLD are counted.
+export const getWeeklyDominantEmotion = async (
+  userId: string
+): Promise<WeeklyEmotionSummary> => {
+  console.log('[KNN] Fetching weekly emotion history');
+
+  const sevenDaysAgo = Timestamp.fromDate(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+  const snap = await getDocs(
+    query(
+      collection(db, 'users', userId, 'mlAnalysisHistory'),
+      where('createdAt', '>=', sevenDaysAgo)
+    )
+  );
+
+  const distribution: { depression: number; anxiety: number; normal: number } =
+    { depression: 0, anxiety: 0, normal: 0 };
+  const confidenceSums: Record<string, number> = { depression: 0, anxiety: 0, normal: 0 };
+
+  snap.docs.forEach(d => {
+    const data = d.data();
+    const pred = data.prediction as string;
+    const conf = typeof data.confidence === 'number' ? data.confidence : 0;
+    if (pred in distribution) {
+      distribution[pred as keyof typeof distribution]++;
+      confidenceSums[pred] += conf;
+    }
+  });
+
+  const totalRecords = distribution.depression + distribution.anxiety + distribution.normal;
+
+  // ── Fallback for new users or sparse history (< 2 high-confidence records) ──
+  // Pull latestMlEmotionScore from the profile document so KNN always gets a
+  // valid emotion input even on first use.
+  if (totalRecords < 2) {
+    console.log(`[KNN] Fewer than 2 emotion records (got ${totalRecords}) — falling back to latestMlEmotionScore`);
+    try {
+      const profileSnap = await getDoc(
+        doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile')
+      );
+      if (profileSnap.exists()) {
+        const profileData = profileSnap.data() as MentalHealthRecommendationProfile;
+        const latestMl = profileData.latestMlEmotionScore;
+        if (latestMl?.prediction) {
+          console.log('[KNN] Fallback emotion:', latestMl.prediction, 'confidence:', latestMl.confidence);
+          return {
+            dominantEmotion:     latestMl.prediction ?? 'normal',
+            averageConfidence:   latestMl.confidence ?? 0.5,
+            totalRecords,
+            emotionDistribution: distribution,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('[KNN] Could not fetch latestMlEmotionScore for fallback:', e);
+    }
+    // Last resort: safe neutral defaults
+    console.log('[KNN] No latestMlEmotionScore found — using neutral defaults');
+    return {
+      dominantEmotion:     'normal',
+      averageConfidence:   0.5,
+      totalRecords,
+      emotionDistribution: distribution,
+    };
+  }
+
+  let dominantEmotion = 'normal';
+  let dominantCount = 0;
+  for (const [pred, count] of Object.entries(distribution)) {
+    if (count > dominantCount) {
+      dominantCount = count;
+      dominantEmotion = pred;
+    }
+  }
+
+  const averageConfidence =
+    dominantCount > 0
+      ? Math.round((confidenceSums[dominantEmotion] / dominantCount) * 1000) / 1000
+      : 0;
+
+  console.log(`[KNN] Dominant emotion: ${dominantEmotion}`);
+  console.log(`[KNN] Average confidence: ${averageConfidence}`);
+
+  return { dominantEmotion, averageConfidence, totalRecords, emotionDistribution: distribution };
+};
+
+// ─── KNN Recommendation State Persistence ────────────────────────────────────
+
+// Writes KNN output to users/{uid}/mentalHealth/recommendationState.
+// This document is owned exclusively by the KNN pipeline. The BERT pipeline
+// (latestMlEmotionScore, resourceRecommendationCategory, wellnessScore) is
+// stored separately on mentalHealthProfile/currentProfile.
+const saveKnnRecommendationState = async (
+  userId: string,
+  recommendedGroup: string,
+  weeklyEmotion: WeeklyEmotionSummary
+): Promise<void> => {
+  console.log('[KNN] Updating recommendationState');
+  const stateRef = doc(db, 'users', userId, 'mentalHealth', 'recommendationState');
+  const state: Omit<KnnRecommendationState, 'lastWeeklyAnalysisAt'> & { lastWeeklyAnalysisAt: any } = {
+    peerGroupRecommendationCategory: recommendedGroup,
+    dashboardCategory:               recommendedGroup,
+    recommendationEngine:            'knn',
+    lastWeeklyAnalysisAt:            serverTimestamp(),
+    weeklyTrendSummary:              weeklyEmotion,
+  };
+  await setDoc(stateRef, state, { merge: true });
+};
+
+// ─── Weekly KNN Recommendation Runner ────────────────────────────────────────
+
+// Runs the full KNN recommendation flow at most once per 23 hours.
+// Call this from a daily trigger (e.g. on app open after 24 h, or a scheduled job).
+// Does NOT touch: latestMlEmotionScore, resourceRecommendationCategory, wellnessScore.
+export const runWeeklyKnnRecommendation = async (userId: string): Promise<void> => {
+  // Rate-limit: skip if already ran within the last 23 hours.
+  const stateRef = doc(db, 'users', userId, 'mentalHealth', 'recommendationState');
+  const stateSnap = await getDoc(stateRef);
+  if (stateSnap.exists()) {
+    const lastRan = stateSnap.data().lastWeeklyAnalysisAt;
+    if (lastRan) {
+      const lastRanMs = (lastRan as Timestamp).toMillis();
+      if (Date.now() - lastRanMs < 23 * 60 * 60 * 1000) {
+        console.log('[KNN] Skipping — already ran within 23 hours');
+        return;
+      }
+    }
+  }
+
+  // Fetch DASS-21 baseline scores.
+  const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+  const profileSnap = await getDoc(profileRef);
+  if (!profileSnap.exists()) {
+    console.log('[KNN] Skipping — no questionnaire profile found');
+    return;
+  }
+  const profileData = profileSnap.data();
+  const qs = profileData.initialQuestionnaireScore;
+  if (!qs) {
+    console.log('[KNN] Skipping — questionnaire not yet completed');
+    return;
+  }
+
+  // Reconstruct a minimal Dass21Result from the persisted score.
+  const dass21Partial = {
+    depression: { final: qs.depressionScore ?? 0 },
+    anxiety:    { final: qs.anxietyScore    ?? 0 },
+    stress:     { final: qs.stressScore     ?? 0 },
+  } as Pick<Dass21Result, 'depression' | 'anxiety' | 'stress'>;
+
+  // Fetch weekly dominant emotion from mlAnalysisHistory.
+  const weeklyEmotion = await getWeeklyDominantEmotion(userId);
+
+  // totalRecords === 0 is fine — getWeeklyDominantEmotion now falls back to
+  // latestMlEmotionScore so the feature vector is always populated.
+  if (weeklyEmotion.totalRecords === 0) {
+    console.log('[KNN] No emotion history in last 7 days — proceeding with latestMlEmotionScore fallback');
+  }
+
+  // Build the KNN feature vector.
+  console.log('[KNN] Building KNN input');
+  const knnInput = buildKnnInput(dass21Partial as Dass21Result, weeklyEmotion);
+
+  // Call the FastAPI /recommend-groups endpoint.
+  console.log('[KNN] Calling /recommend-groups');
+  const { recommendGroups } = await import('./mlApiService');
+  const result = await recommendGroups(knnInput);
+
+  console.log(`[KNN] Predicted group: ${result.recommended_group}`);
+
+  // Persist to the KNN-owned recommendationState document.
+  await saveKnnRecommendationState(userId, result.recommended_group, weeklyEmotion);
+};
