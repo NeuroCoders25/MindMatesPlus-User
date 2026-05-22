@@ -46,7 +46,7 @@ export const ResultScreen: React.FC<Props> = ({ navigation }) => {
       setUser({ ...user, riskLevel: riskLevel as any });
     }
     if (riskLevel === 'severe') {
-      navigation.replace('Advisor');
+      navigation.replace('ConsultAdvisor');
     } else {
       navigation.replace('Main');
     }

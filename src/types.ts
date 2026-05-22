@@ -1,6 +1,9 @@
+import { Timestamp } from 'firebase/firestore';
+
 export interface User {
   id: string;
   name: string;
+  nickname?: string;
   email: string;
   age?: number;
   riskLevel?: 'low' | 'moderate' | 'severe';
@@ -24,6 +27,12 @@ export interface Group {
   image: any;
 }
 
+// Advisor-review lifecycle for flagged group chat messages.
+// 'pending'      — set by this app when a flagged message is sent.
+// 'not_required' — set by this app for clean messages.
+// 'approved' / 'rejected' — written exclusively by the advisor portal.
+export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'not_required';
+
 export interface Message {
   id: string;
   text: string;
@@ -32,6 +41,34 @@ export interface Message {
   senderName?: string;
   timestamp: Date;
   flagged?: boolean;
+  /** Present on group chat messages; absent on AI chat messages. */
+  reviewStatus?: ReviewStatus;
+  /** Set by the advisor portal on review; read-only in this app. */
+  reviewedBy?: string | null;
+  reviewedAt?: Date | null;
+  /** Set by the advisor portal when they hard-delete a message; read-only in this app.
+   *  When true the bubble is replaced by a grey system notice for all members. */
+  deletedByAdvisor?: boolean;
+  /** Set by the advisor portal when a privateThread subcollection is started on this message.
+   *  When true the app subscribes to chatMessages/{id}/privateThread for the message sender. */
+  hasPrivateThread?: boolean;
+}
+
+// Stored at: peer_groups/{groupId}/chatMessages/{flaggedMsgId}/privateThread
+// Each document has visibleTo: [advisorId, userId] — only those two principals receive it.
+export interface PrivateThreadMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderRole: 'user' | 'advisor';
+  receiverId: string;
+  receiverName: string;
+  text: string;
+  timestamp: Date;
+  isPrivate: boolean;
+  threadType: 'advisor_private_message' | 'user_private_reply';
+  flaggedMessageRef: string;
+  visibleTo: string[];
 }
 
 export interface JournalEntry {
@@ -118,15 +155,34 @@ export interface MlMentalHealthProfile {
   lastUpdated: Date;
 }
 
-// Input shape prepared for future KNN model — not used for inference yet
+// 5-feature input vector sent to POST /recommend-groups
 export interface KnnInput {
-  dassScore: number;
-  latestPrediction: string;
-  dominantCategory: string;
-  depressionCount: number;
-  anxietyCount: number;
-  normalCount: number;
-  preferredGroupCategory: string;
+  depression_score: number;   // DASS-21 depression subscale × 2  (0–42)
+  anxiety_score: number;      // DASS-21 anxiety subscale × 2     (0–42)
+  stress_score: number;       // DASS-21 stress subscale × 2      (0–42)
+  dominant_emotion: string;   // weekly dominant BERT label: depression | anxiety | normal
+  emotion_confidence: number; // average confidence for dominant emotion over 7 days (0–1)
+}
+
+// Result of aggregating 7-day mlAnalysisHistory into a dominant emotion signal
+export interface WeeklyEmotionSummary {
+  dominantEmotion: string;
+  averageConfidence: number;
+  totalRecords: number;
+  emotionDistribution: {
+    depression: number;
+    anxiety: number;
+    normal: number;
+  };
+}
+
+// Stored at users/{uid}/mentalHealth/recommendationState — owned by KNN pipeline only
+export interface KnnRecommendationState {
+  peerGroupRecommendationCategory: string;
+  dashboardCategory: string;
+  recommendationEngine: 'knn';
+  lastWeeklyAnalysisAt: Date;
+  weeklyTrendSummary: WeeklyEmotionSummary;
 }
 
 export interface QuestionnaireScore {
@@ -161,12 +217,39 @@ export interface MentalHealthRecommendationProfile {
   latestMlEmotionScore: MlEmotionScore | null;
   baselineRecommendationCategory: GroupCategory;
   activeRecommendationCategory: GroupCategory;
-  recommendationSource: 'questionnaire' | 'ml_analysis';
-  userStatus: 'normal' | 'under_review';
+  recommendationSource: 'questionnaire' | 'ml_analysis' | 'advisor_approval';
+  userStatus: 'normal' | 'under_review' | 'restricted';
   mlStabilityCounter: MlStabilityCounter | null;
+  // Advisor approval fields — populated by the advisor portal on approval
+  advisorConnectionStatus?: string;
+  approvedCategory?: GroupCategory;
+  approvalMessageSeen?: boolean;
+  peerGroupRecommendationCategory?: GroupCategory;
+  resourceRecommendationCategory?: GroupCategory;
+  wellnessScore?: number;
+  restrictedReason?: string;
+  restrictedAt?: Date;
+  knnRecommendedGroup?: string;
+  knnMappedCategory?: GroupCategory;
+  knnProbabilities?: Record<string, number>;
+  knnLastUpdatedAt?: Timestamp;
+  knnSafetyFlag?: boolean;
+  knnFallbackReason?: 'backend_unreachable' | string;
 }
 
 export interface RecommendationResult {
   groups: Group[];
   resources: Resource[];
+}
+
+export interface Advisor {
+  id: string;
+  name: string;
+  specialty: string;
+  rating: number;
+  availability: string;
+  imageUrl?: string;
+  experience?: string;
+  sessions?: string;
+  about?: string;
 }

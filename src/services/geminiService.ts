@@ -1,21 +1,20 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import Groq from 'groq-sdk';
 import { Dass21Result } from '../types';
 import { localWordFilter } from './wordFilter';
 
-const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
-
 // ─── Client ──────────────────────────────────────────────────────────────────
 
-let genAI: GoogleGenerativeAI | null = null;
+let groqClient: Groq | null = null;
 let cachedKey = '';
 
-const getClient = (): GoogleGenerativeAI => {
-  const key = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
-  if (!genAI || key !== cachedKey) {
-    genAI = new GoogleGenerativeAI(key);
+const getClient = (): Groq | null => {
+  const key = process.env.EXPO_PUBLIC_GROQ_API_KEY ?? '';
+  if (!key) return null;
+  if (!groqClient || key !== cachedKey) {
+    groqClient = new Groq({ apiKey: key, dangerouslyAllowBrowser: true });
     cachedKey = key;
   }
-  return genAI;
+  return groqClient;
 };
 
 // ─── System prompts ───────────────────────────────────────────────────────────
@@ -68,15 +67,19 @@ export const sendSupportMessage = async (
   userText: string,
   dass21Result: Dass21Result,
 ): Promise<string | null> => {
-  if (!API_KEY || API_KEY === 'addkey') return null;
+  const client = getClient();
+  if (!client) return null;
   try {
-    const model = getClient().getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const chat = model.startChat({
-      systemInstruction: SUPPORT_SYSTEM(dass21Result),
-      generationConfig: { maxOutputTokens: 200, temperature: 0.7 },
+    const completion = await client.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: SUPPORT_SYSTEM(dass21Result) },
+        { role: 'user',   content: userText },
+      ],
+      max_tokens: 200,
+      temperature: 0.7,
     });
-    const res = await chat.sendMessage(userText);
-    return res.response.text().trim();
+    return completion.choices[0]?.message?.content?.trim() ?? null;
   } catch {
     return null;
   }
@@ -110,6 +113,15 @@ HARMFUL CONTENT
 - Content promoting or glorifying violence, terrorism, or extremism
 - Graphic descriptions of abuse or torture
 
+LINKS & EXTERNAL CONTACT
+- Any URL containing http://, https://, or a www. prefix
+- Bare domain names with a recognisable TLD (e.g. example.com, helpline.org, site.io)
+- IPv4 or IPv6 addresses (e.g. 192.168.1.1)
+- Email addresses in any format (e.g. user@domain.com)
+- Obfuscated links or contact info: "example dot com", "h t t p", "h-t-t-p",
+  "user [at] gmail", or any spaced / punctuated attempt to evade the above patterns
+- Any attempt to share off-platform contact details or redirect users away from this app
+
 IMPORTANT CONTEXT: This is a mental health app. Expressions of personal distress (e.g. "I feel like hurting myself", "I want to die", "I feel hopeless") are NOT unsafe — they are cries for help and must be allowed through so users can receive support.
 
 Respond ONLY with a valid JSON object (no markdown, no extra text):
@@ -120,6 +132,8 @@ Respond ONLY with a valid JSON object (no markdown, no extra text):
 export interface ModerationResult {
   safe: boolean;
   reason?: string;
+  /** Which layer blocked the content: 'gemini' | 'local' | undefined (when safe) */
+  blockedBy?: 'gemini' | 'local';
 }
 
 /**
@@ -130,37 +144,44 @@ export interface ModerationResult {
 export const moderateContent = async (text: string): Promise<ModerationResult> => {
   if (!text.trim()) return { safe: true };
 
-  const key = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
-
-  // ── Primary: Gemini API ───────────────────────────────────────────────────
-  if (key && key !== 'addkey') {
+  // ── Primary: Groq API ────────────────────────────────────────────────────
+  const client = getClient();
+  if (client) {
     try {
-      const model = getClient().getGenerativeModel({ model: 'gemini-2.0-flash' });
-      const prompt = `${MODERATION_PROMPT}\n\nUser text:\n"""${text.trim()}"""`;
-      const res = await model.generateContent(prompt);
-      const raw = res.response.text().trim();
-      console.log('[Moderation] raw response:', raw);
-      const json = raw.replace(/```json|```/g, '').trim();
+      const completion = await client.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: 'You are a strict content safety classifier. Respond ONLY with valid JSON.' },
+          { role: 'user',   content: `${MODERATION_PROMPT}\n\nUser text:\n"""${text.trim()}"""` },
+        ],
+        max_tokens: 120,
+        temperature: 0,
+      });
+      const raw = completion.choices[0]?.message?.content?.trim() ?? '';
+      const json = raw.replace(/```json|```/gi, '').trim();
       const parsed = JSON.parse(json) as ModerationResult;
-      console.log('[Moderation] result:', parsed);
-      return parsed;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('429') || msg.toLowerCase().includes('quota')) {
-        // quota exhausted — silent fallback, no console noise
+      if (parsed.safe) {
+        console.log('[Moderation:Groq] ✅ ALLOWED');
+        return { safe: true };
       } else {
-        console.warn('[Moderation] Gemini unavailable, falling back to local filter');
+        console.warn('[Moderation:Groq] 🚫 BLOCKED —', parsed.reason);
+        return { safe: false, reason: parsed.reason, blockedBy: 'gemini' };
       }
+    } catch (err) {
+      console.warn('[Moderation:Groq] ⚠️ Unavailable, falling back to local filter:', err);
     }
   } else {
-    console.warn('[Moderation] No API key — using local filter');
+    console.warn('[Moderation:Groq] ⚠️ No API key — using local filter only');
   }
 
   // ── Fallback: local word filter (offline) ─────────────────────────────────
   const local = localWordFilter(text);
-  return local.flagged
-    ? { safe: false, reason: local.reason }
-    : { safe: true };
+  if (local.flagged) {
+    console.warn('[Moderation:Local] 🚫 BLOCKED —', local.reason);
+    return { safe: false, reason: local.reason, blockedBy: 'local' };
+  }
+  console.log('[Moderation:Local] ✅ ALLOWED');
+  return { safe: true };
 };
 
 /**
@@ -173,18 +194,24 @@ export const askQuestionDoubt = async (
   subscale: 'depression' | 'anxiety' | 'stress',
   questionNum: number,
 ): Promise<string | null> => {
-  if (!API_KEY || API_KEY === 'addkey') return null;
+  const client = getClient();
+  if (!client) return null;
   try {
-    const model = getClient().getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const chat = model.startChat({
-      systemInstruction: DOUBT_SYSTEM(questionText, subscale, questionNum),
-      generationConfig: { maxOutputTokens: 180, temperature: 0.5 },
+    const completion = await client.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: DOUBT_SYSTEM(questionText, subscale, questionNum) },
+        {
+          role: 'user',
+          content: userDoubt.trim()
+            ? userDoubt
+            : 'Please explain what this question is asking and how to pick the right score.',
+        },
+      ],
+      max_tokens: 180,
+      temperature: 0.5,
     });
-    const prompt = userDoubt.trim()
-      ? userDoubt
-      : 'Please explain what this question is asking and how to pick the right score.';
-    const res = await chat.sendMessage(prompt);
-    return res.response.text().trim();
+    return completion.choices[0]?.message?.content?.trim() ?? null;
   } catch {
     return null;
   }

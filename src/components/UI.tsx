@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { Ionicons } from '@expo/vector-icons';
 import {
   TouchableOpacity,
   Text,
@@ -49,10 +50,18 @@ export const Button: React.FC<ButtonProps> = ({
       activeOpacity={0.85}
       style={[styles.buttonBase, vs.container, disabled && styles.disabled, style]}
     >
-      {typeof children === 'string' ? (
+      {typeof children === 'string' || typeof children === 'number' ? (
         <Text style={[styles.buttonText, vs.text]}>{children}</Text>
       ) : (
-        <View style={styles.buttonRow}>{children}</View>
+        <View style={styles.buttonRow}>
+          {React.Children.map(children, (child) =>
+            typeof child === 'string' || typeof child === 'number' ? (
+              <Text style={[styles.buttonText, vs.text]}>{child}</Text>
+            ) : (
+              child
+            )
+          )}
+        </View>
       )}
     </TouchableOpacity>
   );
@@ -85,6 +94,7 @@ interface InputProps {
   onChangeText: (text: string) => void;
   type?: 'text' | 'password' | 'email' | 'textarea' | 'number';
   style?: StyleProp<TextStyle>;
+  editable?: boolean;
 }
 
 export const Input: React.FC<InputProps> = ({
@@ -93,20 +103,43 @@ export const Input: React.FC<InputProps> = ({
   onChangeText,
   type = 'text',
   style,
-}) => (
-  <TextInput
-    placeholder={placeholder}
-    placeholderTextColor={COLORS.muted}
-    value={value}
-    onChangeText={onChangeText}
-    secureTextEntry={type === 'password'}
-    keyboardType={type === 'email' ? 'email-address' : type === 'number' ? 'numeric' : 'default'}
-    autoCapitalize={type === 'email' ? 'none' : 'sentences'}
-    multiline={type === 'textarea'}
-    numberOfLines={type === 'textarea' ? 5 : 1}
-    style={[styles.input, type === 'textarea' && styles.textarea, style]}
-  />
-);
+  editable = true,
+}) => {
+  const [showPassword, setShowPassword] = useState(false);
+  const isPasswordType = type === 'password';
+
+  return (
+    <View style={styles.inputContainer}>
+      <TextInput
+        placeholder={placeholder}
+        placeholderTextColor={COLORS.muted}
+        value={value}
+        onChangeText={onChangeText}
+        secureTextEntry={isPasswordType && !showPassword}
+        keyboardType={type === 'email' ? 'email-address' : type === 'number' ? 'numeric' : 'default'}
+        autoCapitalize={type === 'email' ? 'none' : 'sentences'}
+        multiline={type === 'textarea'}
+        numberOfLines={type === 'textarea' ? 5 : 1}
+        editable={editable}
+        style={[
+          styles.input,
+          type === 'textarea' && styles.textarea,
+          isPasswordType && { paddingRight: 50 },
+          style
+        ]}
+      />
+      {isPasswordType && (
+        <TouchableOpacity
+          style={styles.eyeIcon}
+          onPress={() => setShowPassword(!showPassword)}
+          activeOpacity={0.7}
+        >
+          <Ionicons name={showPassword ? 'eye-outline' : 'eye-off-outline'} size={20} color={COLORS.muted} />
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+};
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -142,6 +175,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.cardBorder,
   },
+  inputContainer: {
+    width: '100%',
+    position: 'relative',
+    justifyContent: 'center',
+  },
   input: {
     width: '100%',
     paddingHorizontal: 20,
@@ -152,6 +190,12 @@ const styles = StyleSheet.create({
     borderColor: '#BFDBFE',
     color: COLORS.text,
     fontSize: 15,
+  },
+  eyeIcon: {
+    position: 'absolute',
+    right: 16,
+    height: '100%',
+    justifyContent: 'center',
   },
   textarea: {
     minHeight: 120,

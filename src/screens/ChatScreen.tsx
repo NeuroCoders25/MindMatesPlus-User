@@ -17,16 +17,32 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
-import { COLORS } from '../services/dataService';
-import { subscribeGroupMessages } from '../services/dataService';
+import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply } from '../services/dataService';
 import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
-import { Message } from '../types';
+import { Message, ReviewStatus, PrivateThreadMessage } from '../types';
+
+// ─── Review-status helpers ─────────────────────────────────────────────────────
+
+// Treat missing reviewStatus (older messages) as 'not_required'.
+const effectiveStatus = (msg: Message): ReviewStatus =>
+  msg.reviewStatus ?? 'not_required';
+
+// Visibility rule (main chatMessages feed only — privateThread is a separate subcollection):
+//   - deletedByAdvisor                  → always visible (system notice to everyone)
+//   - clean (not_required) or approved  → always visible
+//   - pending / rejected                → visible only to the sender
+const isMessageVisible = (msg: Message, viewerId: string | undefined): boolean => {
+  if (msg.deletedByAdvisor) return true;
+  const status = effectiveStatus(msg);
+  if (status === 'not_required' || status === 'approved') return true;
+  return msg.senderId === viewerId;
+};
 
 export const ChatScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup } = useApp();
+  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited, isRestricted } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
@@ -41,7 +57,18 @@ export const ChatScreen = () => {
   const [moderationError, setModerationError] = useState<string | null>(null);
   const [menuVisible, setMenuVisible] = useState(false);
   const [infoVisible, setInfoVisible] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // { flaggedMessageId, advisorId, advisorName } set when user taps "Reply privately"
+  const [replyingToPrivate, setReplyingToPrivate] = useState<{
+    flaggedMessageId: string;
+    advisorId: string;
+    advisorName: string;
+  } | null>(null);
+  // keyed by flaggedMessageId → sorted thread messages
+  const [privateThreads, setPrivateThreads] = useState<Record<string, PrivateThreadMessage[]>>({});
   const listRef = useRef<FlatList>(null);
+  // Holds unsubscribe functions for active privateThread listeners; cleaned up on unmount / group change
+  const privateThreadUnsubs = useRef<Record<string, () => void>>({});
 
   const handleExitGroup = () => {
     setMenuVisible(false);
@@ -66,6 +93,34 @@ export const ChatScreen = () => {
     }, 300);
   };
 
+  // Only own messages in group chat can be deleted.
+  // Long-pressing a peer message or any AI message is a no-op.
+  const handleDeleteMessage = (msg: Message) => {
+    Alert.alert(
+      'Delete Message',
+      'Are you sure you want to delete this message?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingId(msg.id);
+            try {
+              await deleteGroupMessage(groupId, msg.id);
+              // The onSnapshot listener removes the message from the list
+              // automatically — no manual state update needed.
+            } catch {
+              Alert.alert('Error', 'Could not delete the message. Please try again.');
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const messages: Message[] = isAI ? aiMessages : groupMessages;
 
   // Subscribe to real-time Firestore messages for group chats
@@ -78,10 +133,45 @@ export const ChatScreen = () => {
         sender: msg.senderId === user?.id ? 'user' : 'peer',
         senderName: msg.senderId === user?.id ? undefined : msg.senderName,
       }));
-      setGroupMessages(mapped);
+      setGroupMessages(mapped.filter(msg => isMessageVisible(msg, user?.id)));
     });
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      // Also tear down all private-thread listeners when the group subscription resets
+      Object.values(privateThreadUnsubs.current).forEach(u => u());
+      privateThreadUnsubs.current = {};
+      setPrivateThreads({});
+    };
   }, [groupId, isAI, user?.id]);
+
+  // Subscribe to privateThread subcollections for the current user's own flagged messages.
+  //
+  // IMPORTANT: we do NOT require hasPrivateThread === true as the trigger, because the
+  // advisor portal writes directly to the privateThread subcollection without necessarily
+  // setting that flag on the parent doc first.  Instead we subscribe to the privateThread
+  // of every flagged message sent by the current user.  The Firestore query uses
+  // `where('visibleTo', 'array-contains', userId)` as the real security gate — it returns
+  // nothing until the advisor creates a doc, then fires in real-time when they do.
+  //
+  // Other group members never call this function — they have no listener on this path.
+  useEffect(() => {
+    if (isAI || !groupId || !user?.id) return;
+    groupMessages
+      .filter(msg => msg.senderId === user.id && (msg.flagged || msg.hasPrivateThread))
+      .forEach(msg => {
+        if (privateThreadUnsubs.current[msg.id]) return; // already subscribed — skip
+        const unsub = subscribePrivateThread(groupId, msg.id, user.id, threads => {
+          setPrivateThreads(prev => ({ ...prev, [msg.id]: threads }));
+        });
+        privateThreadUnsubs.current[msg.id] = unsub;
+      });
+  }, [groupMessages, groupId, isAI, user?.id]);
+
+  useEffect(() => {
+    if (!isAI && groupId) {
+      markGroupAsVisited(groupId);
+    }
+  }, [groupId, isAI, markGroupAsVisited]);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -91,7 +181,7 @@ export const ChatScreen = () => {
 
   const handleSend = async () => {
     const text = inputText.trim();
-    if (!text || sending) return;
+    if (!text || sending || isRestricted) return;
 
     setModerationError(null);
     setSending(true);
@@ -111,6 +201,25 @@ export const ChatScreen = () => {
     }
 
     setInputText('');
+
+    // Private reply mode — write into the flagged message's privateThread subcollection
+    if (replyingToPrivate && user) {
+      try {
+        await sendPrivateThreadReply(
+          groupId,
+          replyingToPrivate.flaggedMessageId,
+          user.id,
+          user.name ?? user.nickname ?? 'Me',
+          replyingToPrivate.advisorId,
+          replyingToPrivate.advisorName,
+          text,
+        );
+      } finally {
+        setSending(false);
+        setReplyingToPrivate(null);
+      }
+      return;
+    }
 
     if (isAI) {
       setSending(false);
@@ -202,47 +311,153 @@ export const ChatScreen = () => {
         style={styles.messageList}
         contentContainerStyle={styles.messageContent}
         showsVerticalScrollIndicator={false}
-        renderItem={({ item: msg }) => (
-          <View
-            style={[
-              styles.msgWrapper,
-              msg.sender === 'user' ? styles.userSide : styles.otherSide,
-            ]}
-          >
-            {msg.senderName && (
-              <Text style={styles.senderName}>{msg.senderName}</Text>
-            )}
-            <View
-              style={[
-                styles.bubble,
-                msg.sender === 'user' ? styles.userBubble : styles.otherBubble,
-              ]}
-            >
-              {msg.flagged && (
-                <View style={styles.flaggedBadge}>
-                  <Ionicons name="warning-outline" size={10} color="#F87171" />
-                  <Text style={styles.flaggedText}>Flagged</Text>
+        renderItem={({ item: msg }) => {
+          // Advisor hard-deleted — replace bubble in its original position for everyone.
+          if (msg.deletedByAdvisor) {
+            const deletedIsOwn = msg.sender === 'user';
+            return (
+              <View style={[styles.msgWrapper, deletedIsOwn ? styles.userSide : styles.otherSide]}>
+                {msg.senderName && (
+                  <Text style={styles.senderName}>{msg.senderName}</Text>
+                )}
+                <View style={styles.deletedBubble}>
+                  <Text style={styles.deletedBubbleText}>
+                    🗑 This message was deleted by the advisor.
+                  </Text>
+                </View>
+                <Text style={styles.timestamp}>
+                  {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </View>
+            );
+          }
+
+          const status = effectiveStatus(msg);
+          const isOwn = msg.sender === 'user';
+          const isRejected = isOwn && status === 'rejected';
+          const isPending = isOwn && status === 'pending';
+          const canDelete = !isAI && isOwn && !isRejected;
+          // Private thread data — only populated for the current user's own flagged messages
+          const thread: PrivateThreadMessage[] = isOwn ? (privateThreads[msg.id] ?? []) : [];
+          const hasThread = thread.length > 0;
+          const advisorMsg = thread.find(t => t.senderRole === 'advisor');
+
+          return (
+            <View>
+              {/* Original message bubble */}
+              <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
+                {msg.senderName && (
+                  <Text style={styles.senderName}>{msg.senderName}</Text>
+                )}
+                <TouchableOpacity
+                  onLongPress={canDelete ? () => handleDeleteMessage(msg) : undefined}
+                  delayLongPress={400}
+                  activeOpacity={canDelete ? 0.8 : 1}
+                  disabled={deletingId === msg.id || isRejected}
+                >
+                  <View
+                    style={[
+                      styles.bubble,
+                      isOwn ? styles.userBubble : styles.otherBubble,
+                      deletingId === msg.id && styles.bubbleDeleting,
+                      isRejected && styles.bubbleRejected,
+                    ]}
+                  >
+                    {isPending && (
+                      <View style={styles.reviewBadge}>
+                        <Ionicons name="time-outline" size={10} color="#D97706" />
+                        <Text style={styles.reviewBadgeText}>Under review</Text>
+                      </View>
+                    )}
+                    {isRejected && (
+                      <View style={styles.removedBadge}>
+                        <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
+                        <Text style={styles.removedBadgeText}>Removed by moderator</Text>
+                      </View>
+                    )}
+                    {!isPending && !isRejected && status !== 'approved' && msg.flagged && (
+                      <View style={styles.flaggedBadge}>
+                        <Ionicons name="warning-outline" size={10} color="#F87171" />
+                        <Text style={styles.flaggedText}>Flagged</Text>
+                      </View>
+                    )}
+                    <Text
+                      style={[
+                        styles.bubbleText,
+                        isOwn ? styles.userBubbleText : styles.otherBubbleText,
+                        isRejected && styles.rejectedBubbleText,
+                      ]}
+                    >
+                      {msg.text}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                <Text style={styles.timestamp}>
+                  {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </View>
+
+              {/* Inline private advisor thread — only rendered for the message sender */}
+              {hasThread && (
+                <View style={styles.privateThreadContainer}>
+                  {/* Thread header */}
+                  <View style={styles.privateThreadHeader}>
+                    <Ionicons name="lock-closed" size={11} color="#7C3AED" />
+                    <Text style={styles.privateThreadHeaderText}>
+                      Private · Only you can see this
+                    </Text>
+                  </View>
+
+                  {/* Thread messages — advisor LEFT, user RIGHT */}
+                  {thread.map(threadMsg => (
+                    <View
+                      key={threadMsg.id}
+                      style={[
+                        styles.threadMsgRow,
+                        threadMsg.senderRole === 'user'
+                          ? styles.threadUserRow
+                          : styles.threadAdvisorRow,
+                      ]}
+                    >
+                      {threadMsg.senderRole === 'advisor' && (
+                        <Text style={styles.threadSenderName}>{threadMsg.senderName}</Text>
+                      )}
+                      <View style={[
+                        styles.threadBubble,
+                        threadMsg.senderRole === 'user'
+                          ? styles.threadUserBubble
+                          : styles.threadAdvisorBubble,
+                      ]}>
+                        <Text style={[
+                          styles.threadBubbleText,
+                          threadMsg.senderRole === 'user' && styles.threadUserBubbleText,
+                        ]}>
+                          {threadMsg.text}
+                        </Text>
+                      </View>
+                      <Text style={styles.threadTimestamp}>
+                        {threadMsg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+                  ))}
+
+                  {/* Reply button */}
+                  <TouchableOpacity
+                    style={styles.threadReplyBtn}
+                    onPress={() => setReplyingToPrivate({
+                      flaggedMessageId: msg.id,
+                      advisorId: advisorMsg?.senderId ?? '',
+                      advisorName: advisorMsg?.senderName ?? 'Advisor',
+                    })}
+                  >
+                    <Ionicons name="arrow-undo-outline" size={12} color="#7C3AED" />
+                    <Text style={styles.threadReplyBtnText}>Reply privately</Text>
+                  </TouchableOpacity>
                 </View>
               )}
-              <Text
-                style={[
-                  styles.bubbleText,
-                  msg.sender === 'user'
-                    ? styles.userBubbleText
-                    : styles.otherBubbleText,
-                ]}
-              >
-                {msg.text}
-              </Text>
             </View>
-            <Text style={styles.timestamp}>
-              {msg.timestamp.toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Text>
-          </View>
-        )}
+          );
+        }}
       />
 
       {/* Input Bar */}
@@ -250,24 +465,72 @@ export const ChatScreen = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View>
+          {isRestricted && (
+            <View style={styles.restrictionCard}>
+              <View style={styles.restrictionCardRow}>
+                <View style={styles.restrictionIconWrap}>
+                  <Ionicons name="shield-outline" size={22} color="#DC2626" />
+                </View>
+                <View style={styles.restrictionCardBody}>
+                  <Text style={styles.restrictionCardTitle}>
+                    {isAI ? 'AI Chat Paused' : 'Group Chat Paused'}
+                  </Text>
+                  <Text style={styles.restrictionCardText}>
+                    {isAI
+                      ? 'AI chat is temporarily paused. Please connect with an advisor for support.'
+                      : 'Group chat is temporarily paused. Please connect with an advisor before continuing.'}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.restrictionAdvisorBtn}
+                onPress={() => navigation.navigate('Advisor')}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="call-outline" size={14} color="white" />
+                <Text style={styles.restrictionAdvisorBtnText}>Consult Advisor</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {replyingToPrivate && (
+            <View style={styles.privateReplyBanner}>
+              <Ionicons name="lock-closed" size={13} color="#7C3AED" />
+              <Text style={styles.privateReplyBannerText}>
+                Replying privately to {replyingToPrivate.advisorName}
+              </Text>
+              <TouchableOpacity onPress={() => setReplyingToPrivate(null)}>
+                <Ionicons name="close" size={18} color="#7C3AED" />
+              </TouchableOpacity>
+            </View>
+          )}
           {moderationError && (
             <View style={styles.moderationBanner}>
               <Ionicons name="warning-outline" size={16} color="#DC2626" />
               <Text style={styles.moderationBannerText}>{moderationError}</Text>
             </View>
           )}
-          <View style={styles.inputBar}>
-            <Input
-              placeholder={isAI ? 'Talk to Mindy...' : 'Type a message...'}
-              value={inputText}
-              onChangeText={t => { setInputText(t); if (moderationError) setModerationError(null); }}
-              style={styles.inputField}
-            />
+          <View style={styles.safetyNote}>
+            <Ionicons name="shield-checkmark-outline" size={11} color={COLORS.muted} />
+            <Text style={styles.safetyNoteText}>
+              {isAI
+                ? 'Your conversations help Mindy understand and support your emotional wellbeing.'
+                : 'This chat is monitored for your safety by mental health professionals.'}
+            </Text>
+          </View>
+          <View style={[styles.inputBar, isRestricted && styles.inputBarDisabled]}>
+            <View style={styles.inputField}>
+              <Input
+                placeholder={isAI ? 'Talk to Mindy...' : 'Type a message...'}
+                value={inputText}
+                onChangeText={t => { if (!isRestricted) { setInputText(t); if (moderationError) setModerationError(null); } }}
+                editable={!isRestricted}
+              />
+            </View>
             <TouchableOpacity
               onPress={handleSend}
-              style={[styles.sendBtn, sending && styles.sendBtnDisabled]}
+              style={[styles.sendBtn, (sending || isRestricted) && styles.sendBtnDisabled]}
               activeOpacity={0.8}
-              disabled={sending}
+              disabled={sending || isRestricted}
             >
               {sending
                 ? <ActivityIndicator size="small" color="white" />
@@ -330,6 +593,7 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   bubble: { padding: 14, borderRadius: 20 },
+  bubbleDeleting: { opacity: 0.35 },
   userBubble: { backgroundColor: COLORS.accent, borderTopRightRadius: 4 },
   otherBubble: {
     backgroundColor: COLORS.white,
@@ -387,6 +651,70 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#DC2626',
     lineHeight: 18,
+  },
+  inputBarDisabled: { opacity: 0.55 },
+  safetyNote: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 16,
+    paddingVertical: 5,
+    backgroundColor: COLORS.white,
+  },
+  safetyNoteText: {
+    fontSize: 10,
+    color: COLORS.muted,
+    flex: 1,
+    lineHeight: 14,
+    opacity: 0.8,
+  },
+  restrictionCard: {
+    backgroundColor: '#FFF5F5',
+    borderTopWidth: 1,
+    borderTopColor: '#FCA5A5',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    gap: 10,
+  },
+  restrictionCardRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  restrictionIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  restrictionCardBody: { flex: 1, gap: 3 },
+  restrictionCardTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  restrictionCardText: {
+    fontSize: 12,
+    color: '#7F1D1D',
+    lineHeight: 18,
+  },
+  restrictionAdvisorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#DC2626',
+    borderRadius: 10,
+    paddingVertical: 10,
+  },
+  restrictionAdvisorBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: 'white',
   },
   headerInfo: { flex: 1 },
   menuBtn: {
@@ -473,4 +801,129 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   infoCloseText: { color: 'white', fontWeight: '700', fontSize: 14 },
+  reviewBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  reviewBadgeText: { fontSize: 9, color: '#D97706', fontWeight: '700' },
+  removedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  removedBadgeText: { fontSize: 9, color: '#9CA3AF', fontWeight: '700' },
+  bubbleRejected: {
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    opacity: 0.75,
+  },
+  rejectedBubbleText: { color: '#9CA3AF' },
+  deletedBubble: {
+    padding: 14,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  deletedBubbleText: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    fontStyle: 'italic',
+    lineHeight: 18,
+  },
+  // ── Inline private advisor thread ─────────────────────────────────────────
+  privateThreadContainer: {
+    marginTop: 6,
+    marginHorizontal: 8,
+    backgroundColor: '#FAF5FF',
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+    borderRadius: 16,
+    padding: 12,
+    gap: 10,
+  },
+  privateThreadHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EDE9FE',
+  },
+  privateThreadHeaderText: {
+    fontSize: 10,
+    color: '#7C3AED',
+    fontWeight: '700',
+  },
+  threadMsgRow: { gap: 3 },
+  threadAdvisorRow: { alignItems: 'flex-start' },
+  threadUserRow: { alignItems: 'flex-end' },
+  threadSenderName: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#7C3AED',
+    marginLeft: 4,
+    marginBottom: 2,
+  },
+  threadBubble: {
+    maxWidth: '85%',
+    padding: 10,
+    borderRadius: 14,
+  },
+  threadAdvisorBubble: {
+    backgroundColor: '#EDE9FE',
+    borderTopLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+  },
+  threadUserBubble: {
+    backgroundColor: '#7C3AED',
+    borderTopRightRadius: 4,
+  },
+  threadBubbleText: {
+    fontSize: 13,
+    color: '#5B21B6',
+    lineHeight: 18,
+  },
+  threadUserBubbleText: { color: 'white' },
+  threadTimestamp: {
+    fontSize: 9,
+    color: COLORS.muted,
+    marginTop: 2,
+    opacity: 0.6,
+  },
+  threadReplyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#EDE9FE',
+  },
+  threadReplyBtnText: {
+    fontSize: 12,
+    color: '#7C3AED',
+    fontWeight: '600',
+  },
+  // ── Private reply input banner ─────────────────────────────────────────────
+  privateReplyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FAF5FF',
+    borderTopWidth: 1,
+    borderTopColor: '#DDD6FE',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  privateReplyBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#7C3AED',
+    fontWeight: '600',
+  },
 });

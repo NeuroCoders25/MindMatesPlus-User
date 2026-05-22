@@ -17,12 +17,15 @@ import { RootStackParamList } from '../navigation';
 import { Group } from '../types';
 
 export const GroupsScreen = () => {
-  const { peerGroups, joinedGroupIds, setSelectedGroup } = useApp();
+  const { peerGroups, joinedGroupIds, setSelectedGroup, visitedGroupIds, markGroupAsVisited, isRestricted } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const myGroups = peerGroups.filter(g => joinedGroupIds.includes(g.id));
+  const unvisitedGroupsCount = myGroups.filter(g => !visitedGroupIds.includes(g.id)).length;
 
   const handleOpen = (group: Group) => {
+    if (isRestricted) return;
+    markGroupAsVisited(group.id);
     setSelectedGroup(group);
     navigation.navigate('GroupChat', { groupId: group.id, groupName: group.name });
   };
@@ -51,13 +54,15 @@ export const GroupsScreen = () => {
             <Ionicons name="people-outline" size={12} color={COLORS.muted} />
             <Text style={styles.membersText}>{group.members} members active</Text>
           </View>
-          <TouchableOpacity
-            style={styles.openBtn}
-            onPress={() => handleOpen(group)}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.openBtnText}>Open</Text>
-          </TouchableOpacity>
+          {!visitedGroupIds.includes(group.id) && (
+            <TouchableOpacity
+              style={styles.openBtn}
+              onPress={() => handleOpen(group)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.openBtnText}>Open</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     </Card>
@@ -71,12 +76,33 @@ export const GroupsScreen = () => {
     >
       <View style={styles.header}>
         <Text style={styles.title}>My Groups</Text>
-        <View style={styles.countBadge}>
-          <Text style={styles.countText}>{myGroups.length}</Text>
-        </View>
+        {unvisitedGroupsCount > 0 && (
+          <View style={styles.countBadge}>
+            <Text style={styles.countText}>{unvisitedGroupsCount}</Text>
+          </View>
+        )}
       </View>
 
-      {myGroups.length === 0 ? (
+      {isRestricted ? (
+        <View style={styles.restrictionCard}>
+          <Ionicons name="shield-outline" size={40} color="#DC2626" />
+          <Text style={styles.restrictionTitle}>Peer Groups Paused</Text>
+          <Text style={styles.restrictionText}>
+            Peer groups are temporarily unavailable. Please speak with an advisor first so we can guide you safely.
+          </Text>
+          <TouchableOpacity
+            style={styles.restrictionBtn}
+            onPress={() => navigation.navigate('Advisor')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="call-outline" size={14} color="white" />
+            <Text style={styles.restrictionBtnText}>Consult Advisor</Text>
+          </TouchableOpacity>
+          <Text style={styles.restrictionDisclaimer}>
+            AI suggestion only — not professional advice
+          </Text>
+        </View>
+      ) : myGroups.length === 0 ? (
         <View style={styles.emptyState}>
           <Ionicons name="people-outline" size={48} color={COLORS.muted} />
           <Text style={styles.emptyTitle}>No groups joined yet</Text>
@@ -160,4 +186,46 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingVertical: 64, gap: 12 },
   emptyTitle: { fontSize: 16, fontWeight: 'bold', color: COLORS.text },
   emptySubtext: { fontSize: 13, color: COLORS.muted, textAlign: 'center', lineHeight: 20 },
+  restrictionCard: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(220,38,38,0.25)',
+    marginTop: 8,
+  },
+  restrictionTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#DC2626',
+    textAlign: 'center',
+  },
+  restrictionText: {
+    fontSize: 13,
+    color: '#7F1D1D',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  restrictionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#DC2626',
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  restrictionBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: 'white',
+  },
+  restrictionDisclaimer: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontStyle: 'italic',
+  },
 });

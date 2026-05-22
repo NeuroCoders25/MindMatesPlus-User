@@ -1,16 +1,29 @@
 import React from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
 import { COLORS } from '../services/dataService';
+import { callKnnAndWriteResult } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 
 export const ProfileScreen = () => {
   const { user, setUser } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  // ── [DEV] Manual KNN test — remove before production release ──────────────
+  const handleDevTestKnn = async () => {
+    if (!user) { Alert.alert('KNN Test', 'No user logged in'); return; }
+    Alert.alert('[DEV] KNN Test', `Triggering KNN for user: ${user.id}\nCheck Metro/Logcat for [KNN] logs.`);
+    try {
+      await callKnnAndWriteResult(user.id);
+      Alert.alert('[DEV] KNN Test', '✅ callKnnAndWriteResult completed.\nCheck Firestore → users/{uid}/mentalHealthProfile/currentProfile for knn* fields.');
+    } catch (e) {
+      Alert.alert('[DEV] KNN Test', `❌ Error: ${e}`);
+    }
+  };
 
   const handleLogout = () => {
     setUser(null);
@@ -29,7 +42,7 @@ export const ProfileScreen = () => {
       icon: 'heart' as const,
       label: 'Wellness Goals',
       color: '#EC4899',
-      onPress: () => {},
+      onPress: () => navigation.navigate('WellnessGoals'),
     },
     {
       icon: 'message-square' as const,
@@ -50,7 +63,7 @@ export const ProfileScreen = () => {
         <View style={styles.avatar}>
           <Ionicons name="person" size={48} color="white" />
         </View>
-        <Text style={styles.userName}>{user?.name}</Text>
+        <Text style={styles.userName}>{user?.name} {user?.nickname ? `(${user.nickname})` : ''}</Text>
         <Text style={styles.userEmail}>{user?.email}</Text>
         <View style={styles.riskBadge}>
           <Text style={styles.riskText}>
@@ -71,6 +84,16 @@ export const ProfileScreen = () => {
             <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
           </Card>
         ))}
+
+        {/* ── [DEV] Remove before production release ── */}
+        {__DEV__ && (
+          <TouchableOpacity onPress={handleDevTestKnn} style={styles.devTestRow}>
+            <View style={styles.devTestIcon}>
+              <Feather name="cpu" size={18} color="#7C3AED" />
+            </View>
+            <Text style={styles.devTestText}>[DEV] Test KNN Recommendation</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity onPress={handleLogout} style={styles.logoutRow}>
           <View style={styles.logoutIcon}>
@@ -167,4 +190,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   logoutText: { fontSize: 15, fontWeight: '700', color: '#EF4444' },
+  // [DEV] test button styles
+  devTestRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: 16,
+    borderRadius: 24,
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: '#EDE9FE',
+    backgroundColor: '#F5F3FF',
+  },
+  devTestIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#EDE9FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  devTestText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#7C3AED' },
 });
