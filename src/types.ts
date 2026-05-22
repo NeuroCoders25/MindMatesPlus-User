@@ -46,6 +46,29 @@ export interface Message {
   /** Set by the advisor portal on review; read-only in this app. */
   reviewedBy?: string | null;
   reviewedAt?: Date | null;
+  /** Set by the advisor portal when they hard-delete a message; read-only in this app.
+   *  When true the bubble is replaced by a grey system notice for all members. */
+  deletedByAdvisor?: boolean;
+  /** Set by the advisor portal when a privateThread subcollection is started on this message.
+   *  When true the app subscribes to chatMessages/{id}/privateThread for the message sender. */
+  hasPrivateThread?: boolean;
+}
+
+// Stored at: peer_groups/{groupId}/chatMessages/{flaggedMsgId}/privateThread
+// Each document has visibleTo: [advisorId, userId] — only those two principals receive it.
+export interface PrivateThreadMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderRole: 'user' | 'advisor';
+  receiverId: string;
+  receiverName: string;
+  text: string;
+  timestamp: Date;
+  isPrivate: boolean;
+  threadType: 'advisor_private_message' | 'user_private_reply';
+  flaggedMessageRef: string;
+  visibleTo: string[];
 }
 
 export interface JournalEntry {

@@ -1,4 +1,4 @@
-import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor } from '../types';
+import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor, PrivateThreadMessage } from '../types';
 import { db } from './firebaseConfig';
 import {
   collection, addDoc, getDocs, deleteDoc,
@@ -516,6 +516,8 @@ export const subscribeGroupMessages = (
         reviewStatus: d.data().reviewStatus ?? 'not_required',
         reviewedBy: d.data().reviewedBy ?? null,
         reviewedAt: d.data().reviewedAt ? (d.data().reviewedAt as Timestamp).toDate() : null,
+        deletedByAdvisor: d.data().deletedByAdvisor ?? false,
+        hasPrivateThread: d.data().hasPrivateThread ?? false,
       }));
       callback(messages);
     },
@@ -530,6 +532,81 @@ export const deleteGroupMessage = async (
   messageId: string,
 ): Promise<void> => {
   await deleteDoc(doc(db, 'peer_groups', groupId, 'chatMessages', messageId));
+};
+
+// Subscribes to the private advisor thread for a specific flagged message.
+// Uses array-contains so only docs where visibleTo includes userId are streamed.
+// Other group members never call this — they have no subscription to this subcollection.
+// Returns an unsubscribe function — call it in a useEffect cleanup.
+export const subscribePrivateThread = (
+  groupId: string,
+  flaggedMessageId: string,
+  userId: string,
+  callback: (messages: PrivateThreadMessage[]) => void,
+): (() => void) => {
+  // orderBy('timestamp') is intentionally omitted — combining array-contains with
+  // orderBy requires a composite index that is not yet provisioned.
+  // Messages are sorted manually in JS after the snapshot is received.
+  const q = query(
+    collection(db, 'peer_groups', groupId, 'chatMessages', flaggedMessageId, 'privateThread'),
+    where('visibleTo', 'array-contains', userId),
+  );
+  return onSnapshot(
+    q,
+    snapshot => {
+      const messages: PrivateThreadMessage[] = snapshot.docs
+        .map(d => ({
+          id: d.id,
+          senderId: d.data().senderId as string,
+          senderName: d.data().senderName as string,
+          senderRole: d.data().senderRole as 'user' | 'advisor',
+          receiverId: d.data().receiverId as string,
+          receiverName: d.data().receiverName as string,
+          text: d.data().text as string,
+          timestamp: (d.data().timestamp as Timestamp).toDate(),
+          isPrivate: d.data().isPrivate ?? true,
+          threadType: d.data().threadType as 'advisor_private_message' | 'user_private_reply',
+          flaggedMessageRef: d.data().flaggedMessageRef as string,
+          visibleTo: d.data().visibleTo as string[],
+        }))
+        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      callback(messages);
+    },
+    err => {
+      console.error('[Firestore] subscribePrivateThread error:', err);
+    },
+  );
+};
+
+// Saves the user's reply to a private advisor thread.
+// Written to peer_groups/{groupId}/chatMessages/{flaggedMessageId}/privateThread.
+// visibleTo: [advisorId, userId] — only those two see this document.
+export const sendPrivateThreadReply = async (
+  groupId: string,
+  flaggedMessageId: string,
+  userId: string,
+  userName: string,
+  advisorId: string,
+  advisorName: string,
+  text: string,
+): Promise<string> => {
+  const ref = collection(
+    db, 'peer_groups', groupId, 'chatMessages', flaggedMessageId, 'privateThread',
+  );
+  const docRef = await addDoc(ref, {
+    senderId: userId,
+    senderName: userName,
+    senderRole: 'user',
+    receiverId: advisorId,
+    receiverName: advisorName,
+    text,
+    timestamp: Timestamp.now(),
+    isPrivate: true,
+    threadType: 'user_private_reply',
+    flaggedMessageRef: flaggedMessageId,
+    visibleTo: [advisorId, userId],
+  });
+  return docRef.id;
 };
 
 // ─── ML Recommendation Category Map ──────────────────────────────────────────
