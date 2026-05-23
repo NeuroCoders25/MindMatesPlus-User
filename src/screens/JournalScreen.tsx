@@ -115,12 +115,6 @@ export const JournalScreen = () => {
       >
         <Text style={styles.title}>My Journal</Text>
         <Text style={styles.subtitle}>Express yourself freely and safely</Text>
-        <View style={styles.privacyNote}>
-          <Ionicons name="analytics-outline" size={11} color={COLORS.muted} />
-          <Text style={styles.privacyNoteText}>
-            Your journal entries are analyzed to help understand your emotional patterns.
-          </Text>
-        </View>
 
         {/* Restriction notice */}
         {isRestricted && (
@@ -313,6 +307,13 @@ export const JournalScreen = () => {
             </Text>
           </Card>
         )}
+
+        <View style={styles.privacyNote}>
+          <Ionicons name="analytics-outline" size={11} color={COLORS.muted} />
+          <Text style={styles.privacyNoteText}>
+            Your journal entries are analyzed to help understand your emotional patterns.
+          </Text>
+        </View>
       </ScrollView>
 
       {/* Entry Detail Modal */}

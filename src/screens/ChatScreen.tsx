@@ -509,14 +509,6 @@ export const ChatScreen = () => {
               <Text style={styles.moderationBannerText}>{moderationError}</Text>
             </View>
           )}
-          <View style={styles.safetyNote}>
-            <Ionicons name="shield-checkmark-outline" size={11} color={COLORS.muted} />
-            <Text style={styles.safetyNoteText}>
-              {isAI
-                ? 'Your conversations help Mindy understand and support your emotional wellbeing.'
-                : 'This chat is monitored for your safety by mental health professionals.'}
-            </Text>
-          </View>
           <View style={[styles.inputBar, isRestricted && styles.inputBarDisabled]}>
             <View style={styles.inputField}>
               <Input
@@ -537,6 +529,14 @@ export const ChatScreen = () => {
                 : <Ionicons name="send" size={18} color="white" />
               }
             </TouchableOpacity>
+          </View>
+          <View style={styles.safetyNote}>
+            <Ionicons name="shield-checkmark-outline" size={11} color={COLORS.muted} />
+            <Text style={styles.safetyNoteText}>
+              {isAI
+                ? 'Your conversations help Mindy understand and support your emotional wellbeing.'
+                : 'This chat is monitored for your safety by mental health professionals.'}
+            </Text>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -658,7 +658,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     paddingHorizontal: 16,
-    paddingVertical: 5,
+    paddingTop: 4,
+    paddingBottom: 12,
     backgroundColor: COLORS.white,
   },
   safetyNoteText: {
