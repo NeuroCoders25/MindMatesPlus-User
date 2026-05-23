@@ -1038,6 +1038,84 @@ export const fetchResourcesByCategory = async (
   return enrichResourcesWithAdvisorImages([...primary, ...baseline]);
 };
 
+// ─── Resource Social Features ────────────────────────────────────────────────
+
+export interface ResourceInteractions {
+  likeCount: number;
+  isLiked: boolean;
+}
+
+export const toggleResourceLike = async (resourceId: string, userId: string): Promise<boolean> => {
+  const likeRef = doc(db, 'resources', resourceId, 'likes', userId);
+  const snap = await getDoc(likeRef);
+  if (snap.exists()) { await deleteDoc(likeRef); return false; }
+  await setDoc(likeRef, { userId, createdAt: Timestamp.now() });
+  return true;
+};
+
+export const listenToResourceInteractions = (
+  resourceId: string,
+  userId: string,
+  callback: (interactions: ResourceInteractions) => void,
+): (() => void) => {
+  return onSnapshot(collection(db, 'resources', resourceId, 'likes'), snap => {
+    callback({ likeCount: snap.size, isLiked: snap.docs.some(d => d.id === userId) });
+  });
+};
+
+export const toggleResourceSave = async (userId: string, resource: Resource): Promise<boolean> => {
+  const saveRef = doc(db, 'users', userId, 'savedResources', resource.id);
+  const snap = await getDoc(saveRef);
+  if (snap.exists()) { await deleteDoc(saveRef); return false; }
+  await setDoc(saveRef, {
+    resourceId: resource.id,
+    title: resource.title,
+    description: resource.description ?? '',
+    category: resource.category,
+    contentType: resource.contentType,
+    imageUrl: resource.imageUrl ?? '',
+    textContent: resource.textContent ?? '',
+    postedBy: resource.postedBy ?? '',
+    posterImageUrl: resource.posterImageUrl ?? '',
+    authorId: resource.authorId ?? '',
+    createdAt: Timestamp.fromDate(resource.createdAt),
+    savedAt: Timestamp.now(),
+  });
+  return true;
+};
+
+export const listenToResourceSaveState = (
+  userId: string,
+  resourceId: string,
+  callback: (saved: boolean) => void,
+): (() => void) => {
+  return onSnapshot(doc(db, 'users', userId, 'savedResources', resourceId), snap => {
+    callback(snap.exists());
+  });
+};
+
+export const listenToUserSavedResources = (
+  userId: string,
+  callback: (resources: Resource[]) => void,
+): (() => void) => {
+  const q = query(collection(db, 'users', userId, 'savedResources'), orderBy('savedAt', 'desc'));
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      id: d.data().resourceId as string,
+      title: d.data().title as string,
+      description: d.data().description as string | undefined,
+      category: d.data().category as string,
+      contentType: d.data().contentType as 'text' | 'image',
+      imageUrl: d.data().imageUrl as string | undefined,
+      textContent: d.data().textContent as string | undefined,
+      postedBy: d.data().postedBy as string | undefined,
+      posterImageUrl: d.data().posterImageUrl as string | undefined,
+      authorId: d.data().authorId as string | undefined,
+      createdAt: (d.data().createdAt as Timestamp).toDate(),
+    })));
+  });
+};
+
 // Realtime listener that emits resource + baseline recommendation categories
 // from mentalHealthProfile/currentProfile whenever they change.
 // active = resourceRecommendationCategory (real-time, changes per ML result)
