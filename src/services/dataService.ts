@@ -643,12 +643,12 @@ export const getMlGroupCategory = (dominantCategory: string): GroupCategory =>
 export const fetchAdvisors = async (): Promise<Advisor[]> => {
   const snap = await getDocs(collection(db, 'advisors'));
   return snap.docs.map(d => ({
-    id: d.id,
+    id: (d.data().uid || d.id) as string,
     name: d.data().name as string,
-    specialty: d.data().specialty as string,
+    specialty: (d.data().specialty || d.data().role) as string,
     rating: d.data().rating as number,
     availability: d.data().availability as string,
-    imageUrl: d.data().imageUrl as string | undefined,
+    imageUrl: (d.data().profileImageUrl || d.data().imageUrl) as string | undefined,
     experience: d.data().experience as string | undefined,
     sessions: d.data().sessions as string | undefined,
     about: d.data().about as string | undefined,
@@ -968,6 +968,7 @@ const mapResourceDoc = (d: any): Resource => {
     textContent: getVal(['resource', 'textContent', 'resource_content', 'content']) as string | undefined,
     isActive: data.isActive ?? true,
     postedBy: postedBy as string | undefined,
+    authorId: data.authorId as string | undefined,
     authorInitials: getVal(['authorInitials', 'author_initials']) as string | undefined,
     type: data.type as string | undefined,
     content: data.content as string | undefined,
@@ -976,16 +977,36 @@ const mapResourceDoc = (d: any): Resource => {
   };
 };
 
+const enrichResourcesWithAdvisorImages = async (resources: Resource[]): Promise<Resource[]> => {
+  const authorIds = [...new Set(resources.map(r => r.authorId).filter(Boolean))] as string[];
+  if (authorIds.length === 0) return resources;
+  const imageMap: Record<string, string> = {};
+  // advisors doc ID === advisor uid, so fetch by document ID directly
+  for (let i = 0; i < authorIds.length; i += 30) {
+    const chunk = authorIds.slice(i, i + 30);
+    const snap = await getDocs(query(collection(db, 'advisors'), where('uid', 'in', chunk)));
+    snap.docs.forEach(d => {
+      const uid = d.data().uid as string;
+      const url = d.data().profileImageUrl as string | undefined;
+      if (uid && url) imageMap[uid] = url;
+    });
+  }
+  return resources.map(r =>
+    r.authorId && imageMap[r.authorId] ? { ...r, posterImageUrl: imageMap[r.authorId] } : r
+  );
+};
+
 export const fetchResources = async (category?: string): Promise<Resource[]> => {
   const ref = collection(db, 'resources');
   const q = category
     ? query(ref, where('category', '==', category))
     : query(ref);
   const snap = await getDocs(q);
-  return snap.docs
+  const resources = snap.docs
     .map(mapResourceDoc)
     .filter(r => r.isActive !== false)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  return enrichResourcesWithAdvisorImages(resources);
 };
 
 // Fetches active resources for the given category, plus non-duplicate baseline resources.
@@ -1006,14 +1027,15 @@ export const fetchResourcesByCategory = async (
 
   const primary = await fetchByCategory(activeCategory);
 
-  if (!baselineCategory || baselineCategory === activeCategory) return primary;
+  if (!baselineCategory || baselineCategory === activeCategory)
+    return enrichResourcesWithAdvisorImages(primary);
 
   const primaryIds = new Set(primary.map(r => r.id));
   const baseline = (await fetchByCategory(baselineCategory)).filter(
     r => !primaryIds.has(r.id),
   );
 
-  return [...primary, ...baseline];
+  return enrichResourcesWithAdvisorImages([...primary, ...baseline]);
 };
 
 // Realtime listener that emits resource + baseline recommendation categories

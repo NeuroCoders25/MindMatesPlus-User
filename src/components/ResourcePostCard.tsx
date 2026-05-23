@@ -58,9 +58,13 @@ export const ResourcePostCard: React.FC<ResourcePostCardProps> = ({ resource }) 
     <View style={styles.card}>
       {/* Post header */}
       <View style={styles.header}>
-        <View style={styles.avatarCircle}>
-          <Text style={styles.avatarText}>{initials}</Text>
-        </View>
+        {resource.posterImageUrl ? (
+          <Image source={{ uri: resource.posterImageUrl }} style={styles.avatarImage} />
+        ) : (
+          <View style={styles.avatarCircle}>
+            <Text style={styles.avatarText}>{initials}</Text>
+          </View>
+        )}
         <View style={styles.headerMeta}>
           <Text style={styles.posterName}>{posterName}</Text>
           <Text style={styles.categoryTag}>{resource.category}</Text>
@@ -167,9 +171,13 @@ export const ResourcePostCard: React.FC<ResourcePostCardProps> = ({ resource }) 
               <Ionicons name="arrow-back" size={24} color="#fff" />
             </TouchableOpacity>
             <View style={styles.modalPosterRow}>
-              <View style={styles.modalAvatar}>
-                <Text style={styles.modalAvatarText}>{initials}</Text>
-              </View>
+              {resource.posterImageUrl ? (
+                <Image source={{ uri: resource.posterImageUrl }} style={styles.modalAvatarImage} />
+              ) : (
+                <View style={styles.modalAvatar}>
+                  <Text style={styles.modalAvatarText}>{initials}</Text>
+                </View>
+              )}
               <View>
                 <Text style={styles.modalPosterName}>{posterName}</Text>
                 <Text style={styles.modalCategoryTag}>{resource.category}</Text>
@@ -258,6 +266,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 14,
     gap: 10,
+  },
+  avatarImage: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
   },
   avatarCircle: {
     width: 38,
@@ -387,6 +400,11 @@ const styles = StyleSheet.create({
     gap: 10,
     flex: 1,
     marginHorizontal: 12,
+  },
+  modalAvatarImage: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
   },
   modalAvatar: {
     width: 36,

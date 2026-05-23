@@ -134,6 +134,8 @@ export interface Resource {
   textContent?: string;
   isActive?: boolean;
   postedBy?: string;
+  authorId?: string;
+  posterImageUrl?: string;
   authorInitials?: string;
   advisor?: { name?: string };
   author?: { name?: string };
