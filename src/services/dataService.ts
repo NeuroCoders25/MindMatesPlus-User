@@ -84,11 +84,29 @@ export const GROUP_IMAGE_MAP: Record<string, any> = {
 
 export const fetchPeerGroups = async (): Promise<Group[]> => {
   console.log('[Firestore] Fetching peer groups');
-  const snap = await getDocs(collection(db, 'peer_groups'));
-  return snap.docs.map(d => {
+  const [groupsSnap, advisorsSnap] = await Promise.all([
+    getDocs(collection(db, 'peer_groups')),
+    getDocs(collection(db, 'advisors')),
+  ]);
+
+  // Build name → imageUrl lookup from advisors collection
+  const advisorImageMap: Record<string, string> = {};
+  advisorsSnap.docs.forEach(d => {
+    const a = d.data();
+    const name = (a.name ?? '').toLowerCase().trim();
+    const img: string | undefined = a.profileImageUrl ?? a.imageUrl;
+    if (name && img) advisorImageMap[name] = img;
+  });
+
+  return groupsSnap.docs.map(d => {
     const data = d.data();
     const category = (data.group_category ?? data.category ?? 'Wellness - Thriving') as GroupCategory;
     const imageUrl: string | undefined = data.group_image_url ?? data.imageUrl;
+    const moderatorName: string | undefined =
+      data.group_moderator ?? data.moderator_name ?? data.moderatorName ?? undefined;
+    const moderatorImageUrl: string | undefined = moderatorName
+      ? advisorImageMap[moderatorName.toLowerCase().trim()]
+      : undefined;
     return {
       id: d.id,
       name: data.group_name ?? data.name ?? '',
@@ -96,6 +114,8 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
       members: data.memberCount ?? data.member_count ?? 0,
       category,
       image: imageUrl ? { uri: imageUrl } : (GROUP_IMAGE_MAP[category] ?? GROUP_IMAGE_MAP['Wellness - Thriving']),
+      moderatorName,
+      moderatorImageUrl,
     };
   });
 };
@@ -643,12 +663,12 @@ export const getMlGroupCategory = (dominantCategory: string): GroupCategory =>
 export const fetchAdvisors = async (): Promise<Advisor[]> => {
   const snap = await getDocs(collection(db, 'advisors'));
   return snap.docs.map(d => ({
-    id: d.id,
+    id: (d.data().uid || d.id) as string,
     name: d.data().name as string,
-    specialty: d.data().specialty as string,
+    specialty: (d.data().specialty || d.data().role) as string,
     rating: d.data().rating as number,
     availability: d.data().availability as string,
-    imageUrl: d.data().imageUrl as string | undefined,
+    imageUrl: (d.data().profileImageUrl || d.data().imageUrl) as string | undefined,
     experience: d.data().experience as string | undefined,
     sessions: d.data().sessions as string | undefined,
     about: d.data().about as string | undefined,
@@ -968,6 +988,7 @@ const mapResourceDoc = (d: any): Resource => {
     textContent: getVal(['resource', 'textContent', 'resource_content', 'content']) as string | undefined,
     isActive: data.isActive ?? true,
     postedBy: postedBy as string | undefined,
+    authorId: data.authorId as string | undefined,
     authorInitials: getVal(['authorInitials', 'author_initials']) as string | undefined,
     type: data.type as string | undefined,
     content: data.content as string | undefined,
@@ -976,16 +997,36 @@ const mapResourceDoc = (d: any): Resource => {
   };
 };
 
+const enrichResourcesWithAdvisorImages = async (resources: Resource[]): Promise<Resource[]> => {
+  const authorIds = [...new Set(resources.map(r => r.authorId).filter(Boolean))] as string[];
+  if (authorIds.length === 0) return resources;
+  const imageMap: Record<string, string> = {};
+  // advisors doc ID === advisor uid, so fetch by document ID directly
+  for (let i = 0; i < authorIds.length; i += 30) {
+    const chunk = authorIds.slice(i, i + 30);
+    const snap = await getDocs(query(collection(db, 'advisors'), where('uid', 'in', chunk)));
+    snap.docs.forEach(d => {
+      const uid = d.data().uid as string;
+      const url = d.data().profileImageUrl as string | undefined;
+      if (uid && url) imageMap[uid] = url;
+    });
+  }
+  return resources.map(r =>
+    r.authorId && imageMap[r.authorId] ? { ...r, posterImageUrl: imageMap[r.authorId] } : r
+  );
+};
+
 export const fetchResources = async (category?: string): Promise<Resource[]> => {
   const ref = collection(db, 'resources');
   const q = category
     ? query(ref, where('category', '==', category))
     : query(ref);
   const snap = await getDocs(q);
-  return snap.docs
+  const resources = snap.docs
     .map(mapResourceDoc)
     .filter(r => r.isActive !== false)
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  return enrichResourcesWithAdvisorImages(resources);
 };
 
 // Fetches active resources for the given category, plus non-duplicate baseline resources.
@@ -1006,14 +1047,93 @@ export const fetchResourcesByCategory = async (
 
   const primary = await fetchByCategory(activeCategory);
 
-  if (!baselineCategory || baselineCategory === activeCategory) return primary;
+  if (!baselineCategory || baselineCategory === activeCategory)
+    return enrichResourcesWithAdvisorImages(primary);
 
   const primaryIds = new Set(primary.map(r => r.id));
   const baseline = (await fetchByCategory(baselineCategory)).filter(
     r => !primaryIds.has(r.id),
   );
 
-  return [...primary, ...baseline];
+  return enrichResourcesWithAdvisorImages([...primary, ...baseline]);
+};
+
+// ─── Resource Social Features ────────────────────────────────────────────────
+
+export interface ResourceInteractions {
+  likeCount: number;
+  isLiked: boolean;
+}
+
+export const toggleResourceLike = async (resourceId: string, userId: string): Promise<boolean> => {
+  const likeRef = doc(db, 'resources', resourceId, 'likes', userId);
+  const snap = await getDoc(likeRef);
+  if (snap.exists()) { await deleteDoc(likeRef); return false; }
+  await setDoc(likeRef, { userId, createdAt: Timestamp.now() });
+  return true;
+};
+
+export const listenToResourceInteractions = (
+  resourceId: string,
+  userId: string,
+  callback: (interactions: ResourceInteractions) => void,
+): (() => void) => {
+  return onSnapshot(collection(db, 'resources', resourceId, 'likes'), snap => {
+    callback({ likeCount: snap.size, isLiked: snap.docs.some(d => d.id === userId) });
+  });
+};
+
+export const toggleResourceSave = async (userId: string, resource: Resource): Promise<boolean> => {
+  const saveRef = doc(db, 'users', userId, 'savedResources', resource.id);
+  const snap = await getDoc(saveRef);
+  if (snap.exists()) { await deleteDoc(saveRef); return false; }
+  await setDoc(saveRef, {
+    resourceId: resource.id,
+    title: resource.title,
+    description: resource.description ?? '',
+    category: resource.category,
+    contentType: resource.contentType,
+    imageUrl: resource.imageUrl ?? '',
+    textContent: resource.textContent ?? '',
+    postedBy: resource.postedBy ?? '',
+    posterImageUrl: resource.posterImageUrl ?? '',
+    authorId: resource.authorId ?? '',
+    createdAt: Timestamp.fromDate(resource.createdAt),
+    savedAt: Timestamp.now(),
+  });
+  return true;
+};
+
+export const listenToResourceSaveState = (
+  userId: string,
+  resourceId: string,
+  callback: (saved: boolean) => void,
+): (() => void) => {
+  return onSnapshot(doc(db, 'users', userId, 'savedResources', resourceId), snap => {
+    callback(snap.exists());
+  });
+};
+
+export const listenToUserSavedResources = (
+  userId: string,
+  callback: (resources: Resource[]) => void,
+): (() => void) => {
+  const q = query(collection(db, 'users', userId, 'savedResources'), orderBy('savedAt', 'desc'));
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({
+      id: d.data().resourceId as string,
+      title: d.data().title as string,
+      description: d.data().description as string | undefined,
+      category: d.data().category as string,
+      contentType: d.data().contentType as 'text' | 'image',
+      imageUrl: d.data().imageUrl as string | undefined,
+      textContent: d.data().textContent as string | undefined,
+      postedBy: d.data().postedBy as string | undefined,
+      posterImageUrl: d.data().posterImageUrl as string | undefined,
+      authorId: d.data().authorId as string | undefined,
+      createdAt: (d.data().createdAt as Timestamp).toDate(),
+    })));
+  });
 };
 
 // Realtime listener that emits resource + baseline recommendation categories
@@ -1186,6 +1306,32 @@ export const buildRecommendationCategory = (
 };
 
 const ML_CONFIDENCE_THRESHOLD = 0.80;
+
+// ─── Trend & Stability Thresholds ─────────────────────────────────────────────
+// These constants control how resistant the recommendation system is to change.
+// All three TREND_ constants must be satisfied simultaneously before
+// peerGroupRecommendationCategory is allowed to move.
+
+// Minimum number of high-confidence (>= 0.80) BERT records in the 7-day window.
+// 10 records ≈ a user engaging meaningfully across the week, not just once.
+const TREND_MIN_VALID_RECORDS = 10;
+
+// Minimum times the dominant label must appear among the valid records.
+// With TREND_MIN_VALID_RECORDS = 10, this enforces ≥ 70 % dominance.
+const TREND_MIN_DOMINANT_COUNT = 7;
+
+// Records must originate from at least this many distinct calendar days.
+// Prevents a single very active day from being mistaken for a weekly trend.
+const TREND_MIN_DISTINCT_DAYS = 3;
+
+// Minimum high-confidence records in 7-day window before getWeeklyDominantEmotion
+// trusts the aggregate. Below this threshold it falls back to latestMlEmotionScore.
+const KNN_MIN_RECORDS_FOR_TREND = 5;
+
+// Consecutive high-confidence BERT results required before activeRecommendationCategory
+// moves one level. Raised from 3 to prevent a brief bad day from shifting the category.
+const STABILITY_REPEAT_THRESHOLD = 5;
+// ──────────────────────────────────────────────────────────────────────────────
 
 const SEVERITY_ORDER_DS = ['Normal', 'Mild', 'Moderate', 'Severe', 'Extremely Severe'];
 
@@ -1626,7 +1772,10 @@ export const updateCategorySafely = (
   mlSuggestedCategory: GroupCategory,
   repeatedCount: number
 ): GroupCategory => {
-  if (repeatedCount < 3) return currentCategory;
+  // Require STABILITY_REPEAT_THRESHOLD consecutive same-label confident results
+  // before moving the category one level. Raised from 3 → 5 so a single
+  // rough conversation session cannot immediately shift the recommendation.
+  if (repeatedCount < STABILITY_REPEAT_THRESHOLD) return currentCategory;
   const currentLevel = getCategoryLevel(currentCategory);
   const suggestedLevel = getCategoryLevel(mlSuggestedCategory);
   if (currentLevel === -1 || suggestedLevel === -1 || suggestedLevel === currentLevel) {
@@ -2070,7 +2219,11 @@ export const runMlAnalysisForText = async (
       console.log('[ML] Weekly trend calculated — peerGroupCategory:', trendResult.finalPeerGroupCategory,
         trendResult.updatedPeerGroup ? '(moved)' : '(unchanged)');
     }
-    await callKnnAndWriteResult(userId);
+    // ✋ KNN is NOT called here on purpose.
+    // callKnnAndWriteResult() is rate-limited to 23 h and triggered by the
+    // periodic useEffect in AppContext (on profile load). Running it on every
+    // text event would defeat the stability thresholds we added and cause the
+    // peer-group recommendation to flip after just a few messages.
   } catch (err) {
     console.error(`[ML] ML analysis failed for source "${source}":`, err);
   }
@@ -2185,13 +2338,21 @@ export async function callKnnAndWriteResult(userId: string): Promise<void> {
       return;
     }
 
-    // 3. Build 5-feature vector from existing Firestore data
+    // 3. Build 5-feature vector from existing Firestore data.
+    //    Use the 7-day aggregated weekly trend (not the single per-event raw
+    //    latestMlEmotionScore) so KNN receives a stable, representative signal.
+    const weeklyEmotion = await getWeeklyDominantEmotion(userId);
+    console.log(
+      `[KNN] Weekly emotion used for payload — dominant: ${weeklyEmotion.dominantEmotion}`,
+      `| avgConf: ${weeklyEmotion.averageConfidence}`,
+      `| records: ${weeklyEmotion.totalRecords}`
+    );
     payload = {
       depression_score:   profile.initialQuestionnaireScore.depressionScore,
       anxiety_score:      profile.initialQuestionnaireScore.anxietyScore,
       stress_score:       profile.initialQuestionnaireScore.stressScore,
-      dominant_emotion:   profile.latestMlEmotionScore?.prediction  ?? 'normal',
-      emotion_confidence: profile.latestMlEmotionScore?.confidence  ?? 0.5,
+      dominant_emotion:   weeklyEmotion.dominantEmotion,
+      emotion_confidence: weeklyEmotion.averageConfidence,
     };
     console.log('[KNN] Payload:', JSON.stringify(payload));
 
@@ -2314,7 +2475,26 @@ export const calculateWeeklyMlTrend = async (
   let finalPeerGroupCategory = currentPeerGroupCategory;
   let updatedPeerGroup = false;
 
-  if (validRecordCount >= 5 && dominantCount >= 3) {
+  // ── Distinct-day span check ───────────────────────────────────────────────
+  // Records must come from at least TREND_MIN_DISTINCT_DAYS different calendar
+  // days. This ensures we are seeing a sustained multi-day pattern rather than
+  // a burst of activity on a single day inflating the count.
+  const distinctDays = new Set(
+    validRecords.map(r => {
+      const ts = r.createdAt as import('firebase/firestore').Timestamp | undefined;
+      return ts?.toDate?.()?.toDateString?.() ?? null;
+    }).filter((d): d is string => d !== null)
+  ).size;
+
+  // All three conditions must hold before peerGroupRecommendationCategory moves:
+  //   • enough total high-confidence records (TREND_MIN_VALID_RECORDS)
+  //   • dominant emotion appears with strong majority (TREND_MIN_DOMINANT_COUNT)
+  //   • records span multiple days, not a single session (TREND_MIN_DISTINCT_DAYS)
+  if (
+    validRecordCount >= TREND_MIN_VALID_RECORDS &&
+    dominantCount >= TREND_MIN_DOMINANT_COUNT &&
+    distinctDays >= TREND_MIN_DISTINCT_DAYS
+  ) {
     const moved = moveOneLevelToward(currentPeerGroupCategory, suggestedPeerGroupCategory);
     if (moved !== currentPeerGroupCategory) {
       finalPeerGroupCategory = moved;
@@ -2417,11 +2597,13 @@ export const getWeeklyDominantEmotion = async (
     { depression: 0, anxiety: 0, normal: 0 };
   const confidenceSums: Record<string, number> = { depression: 0, anxiety: 0, normal: 0 };
 
+  // Only count records where BERT was sufficiently confident.
+  // The function comment already states this requirement; this loop enforces it.
   snap.docs.forEach(d => {
     const data = d.data();
     const pred = data.prediction as string;
     const conf = typeof data.confidence === 'number' ? data.confidence : 0;
-    if (pred in distribution) {
+    if (pred in distribution && conf >= ML_CONFIDENCE_THRESHOLD) {
       distribution[pred as keyof typeof distribution]++;
       confidenceSums[pred] += conf;
     }
@@ -2429,11 +2611,11 @@ export const getWeeklyDominantEmotion = async (
 
   const totalRecords = distribution.depression + distribution.anxiety + distribution.normal;
 
-  // ── Fallback for new users or sparse history (< 2 high-confidence records) ──
-  // Pull latestMlEmotionScore from the profile document so KNN always gets a
-  // valid emotion input even on first use.
-  if (totalRecords < 2) {
-    console.log(`[KNN] Fewer than 2 emotion records (got ${totalRecords}) — falling back to latestMlEmotionScore`);
+  // ── Fallback for users with insufficient high-confidence history ─────────
+  // Require at least KNN_MIN_RECORDS_FOR_TREND confident records before trusting
+  // the aggregate. Below this threshold a single entry could dominate the result.
+  if (totalRecords < KNN_MIN_RECORDS_FOR_TREND) {
+    console.log(`[KNN] Fewer than ${KNN_MIN_RECORDS_FOR_TREND} confident emotion records (got ${totalRecords}) — falling back to latestMlEmotionScore`);
     try {
       const profileSnap = await getDoc(
         doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile')

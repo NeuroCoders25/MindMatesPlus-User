@@ -25,6 +25,8 @@ export interface Group {
   members: number;
   category: GroupCategory;
   image: any;
+  moderatorName?: string;
+  moderatorImageUrl?: string;
 }
 
 // Advisor-review lifecycle for flagged group chat messages.
@@ -134,6 +136,8 @@ export interface Resource {
   textContent?: string;
   isActive?: boolean;
   postedBy?: string;
+  authorId?: string;
+  posterImageUrl?: string;
   authorInitials?: string;
   advisor?: { name?: string };
   author?: { name?: string };

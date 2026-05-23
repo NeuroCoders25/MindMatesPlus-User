@@ -29,7 +29,13 @@ const MOODS = [
   { emoji: '😊', label: 'happy' },
   { emoji: '😔', label: 'sad' },
   { emoji: '😤', label: 'angry' },
-  { emoji: '😴', label: 'tired' },
+];
+
+const EMOJI_CATEGORIES = [
+  { label: '😊', emojis: ['😊', '😂', '😍', '😢', '😤', '😴', '😎', '🥺', '😭', '🤔', '😅', '😌', '😡', '🥰', '😩', '🤗', '😔', '😬', '🤩', '😏'] },
+  { label: '❤️', emojis: ['❤️', '💙', '💚', '💜', '🖤', '💔', '💕', '💞', '💗', '💓', '💛', '🧡', '🤍', '🤎', '💝', '💖'] },
+  { label: '🌟', emojis: ['🌟', '⭐', '✨', '💫', '🔥', '🌈', '🌸', '🌺', '🍀', '🦋', '🌙', '☀️', '🌊', '🌿', '🌻', '🌹'] },
+  { label: '📝', emojis: ['📝', '📖', '🎵', '💪', '🏃', '🧘', '💤', '🎯', '🎉', '🎊', '🎈', '🏆', '🌱', '🦁', '🐣', '☁️'] },
 ];
 
 const fmtDate = (d: Date) =>
@@ -50,6 +56,8 @@ export const JournalScreen = () => {
   const [mlError, setMlError] = useState<string | null>(null);
   const [moderationError, setModerationError] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<JournalEntry | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [emojiCategory, setEmojiCategory] = useState(0);
 
   const handleSave = async () => {
     if (!content.trim() || isRestricted) return;
@@ -115,12 +123,6 @@ export const JournalScreen = () => {
       >
         <Text style={styles.title}>My Journal</Text>
         <Text style={styles.subtitle}>Express yourself freely and safely</Text>
-        <View style={styles.privacyNote}>
-          <Ionicons name="analytics-outline" size={11} color={COLORS.muted} />
-          <Text style={styles.privacyNoteText}>
-            Your journal entries are analyzed to help understand your emotional patterns.
-          </Text>
-        </View>
 
         {/* Restriction notice */}
         {isRestricted && (
@@ -187,6 +189,18 @@ export const JournalScreen = () => {
                   <Text style={styles.moodEmoji}>{emoji}</Text>
                 </TouchableOpacity>
               ))}
+              <TouchableOpacity
+                onPress={() => { if (!isRestricted) setShowEmojiPicker(v => !v); }}
+                style={[styles.moodBtn, showEmojiPicker && styles.activeMoodBtn]}
+                disabled={isRestricted}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={showEmojiPicker ? 'close' : 'add'}
+                  size={22}
+                  color={showEmojiPicker ? COLORS.accent : COLORS.muted}
+                />
+              </TouchableOpacity>
             </View>
             <Button
               onPress={handleSave}
@@ -195,6 +209,35 @@ export const JournalScreen = () => {
               {isAnalyzing ? 'Analyzing...' : 'Save Entry'}
             </Button>
           </View>
+
+          {/* Emoji Palette */}
+          {showEmojiPicker && !isRestricted && (
+            <View style={styles.emojiPanel}>
+              <View style={styles.emojiCategoryRow}>
+                {EMOJI_CATEGORIES.map((cat, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    onPress={() => setEmojiCategory(i)}
+                    style={[styles.emojiCategoryBtn, emojiCategory === i && styles.emojiCategoryBtnActive]}
+                  >
+                    <Text style={styles.emojiCategoryIcon}>{cat.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.emojiGrid}>
+                {EMOJI_CATEGORIES[emojiCategory].emojis.map(emoji => (
+                  <TouchableOpacity
+                    key={emoji}
+                    onPress={() => setContent(prev => prev + emoji)}
+                    style={styles.emojiGridBtn}
+                    activeOpacity={0.6}
+                  >
+                    <Text style={styles.emojiGridIcon}>{emoji}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
         </Card>
 
         {/* Moderation error */}
@@ -313,6 +356,13 @@ export const JournalScreen = () => {
             </Text>
           </Card>
         )}
+
+        <View style={styles.privacyNote}>
+          <Ionicons name="analytics-outline" size={11} color={COLORS.muted} />
+          <Text style={styles.privacyNoteText}>
+            Your journal entries are analyzed to help understand your emotional patterns.
+          </Text>
+        </View>
       </ScrollView>
 
       {/* Entry Detail Modal */}
@@ -464,6 +514,47 @@ const styles = StyleSheet.create({
     borderColor: COLORS.accent,
   },
   moodEmoji: { fontSize: 20 },
+  emojiPanel: {
+    backgroundColor: '#F8F9FF',
+    borderRadius: 16,
+    padding: 12,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#E8EEFF',
+  },
+  emojiCategoryRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  emojiCategoryBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: 'white',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E8EEFF',
+  },
+  emojiCategoryBtnActive: {
+    backgroundColor: 'rgba(93,95,239,0.1)',
+    borderColor: COLORS.accent,
+  },
+  emojiCategoryIcon: { fontSize: 18 },
+  emojiGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  emojiGridBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    backgroundColor: 'white',
+  },
+  emojiGridIcon: { fontSize: 22 },
   insightCard: {
     backgroundColor: COLORS.accent,
     borderRadius: 24,

@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -241,16 +242,57 @@ export const ChatScreen = () => {
       <Modal visible={infoVisible} transparent animationType="fade" onRequestClose={() => setInfoVisible(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setInfoVisible(false)}>
           <View style={styles.infoCard}>
-            <View style={styles.infoAvatar}>
-              <Ionicons name="people-outline" size={32} color="#2563EB" />
-            </View>
+            {/* Group image */}
+            {group?.image ? (
+              <Image source={group.image} style={styles.infoGroupImage} resizeMode="cover" />
+            ) : (
+              <View style={styles.infoAvatar}>
+                <Ionicons name="people-outline" size={32} color="#2563EB" />
+              </View>
+            )}
+
             <Text style={styles.infoTitle}>{group?.name ?? title}</Text>
             <Text style={styles.infoBadge}>{group?.category}</Text>
             <Text style={styles.infoDesc}>{group?.description}</Text>
+
             <View style={styles.infoRow}>
               <Ionicons name="person-outline" size={14} color={COLORS.muted} />
               <Text style={styles.infoMeta}>{group?.members ?? '—'} members</Text>
             </View>
+
+            {/* Moderator row */}
+            {group?.moderatorName && (
+              <View style={styles.infoModeratorRow}>
+                {/* Profile picture with verified badge overlay */}
+                <View style={styles.moderatorAvatarWrap}>
+                  {group.moderatorImageUrl ? (
+                    <Image
+                      source={{ uri: group.moderatorImageUrl }}
+                      style={styles.moderatorAvatarImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={styles.moderatorAvatarCircle}>
+                      <Ionicons name="person" size={16} color="#2563EB" />
+                    </View>
+                  )}
+                  {/* Green verified badge pinned to bottom-right of avatar */}
+                  <View style={styles.moderatorVerifiedBadge}>
+                    <Ionicons name="checkmark-circle" size={14} color="#16A34A" />
+                  </View>
+                </View>
+
+                {/* Name + label */}
+                <View style={styles.moderatorTextCol}>
+                  <Text style={styles.moderatorLabel}>Moderator</Text>
+                  <Text style={styles.moderatorName}>{group.moderatorName}</Text>
+                </View>
+
+                {/* Authorized icon on the right */}
+                <Ionicons name="shield-checkmark" size={22} color="#16A34A" />
+              </View>
+            )}
+
             <TouchableOpacity style={styles.infoClose} onPress={() => setInfoVisible(false)}>
               <Text style={styles.infoCloseText}>Close</Text>
             </TouchableOpacity>
@@ -285,16 +327,19 @@ export const ChatScreen = () => {
             <Ionicons name="chevron-back" size={24} color={COLORS.text} />
           </TouchableOpacity>
         )}
-        <View style={[styles.avatar, isAI ? styles.aiAvatar : styles.groupAvatar]}>
-          <Ionicons
-            name={isAI ? 'happy-outline' : 'people-outline'}
-            size={20}
-            color={isAI ? '#7C3AED' : '#2563EB'}
-          />
-        </View>
+        {isAI ? (
+          <View style={[styles.avatar, styles.aiAvatar]}>
+            <Ionicons name="happy-outline" size={20} color="#7C3AED" />
+          </View>
+        ) : (
+          group?.image
+            ? <Image source={group.image} style={styles.headerGroupImage} resizeMode="cover" />
+            : <View style={[styles.avatar, styles.groupAvatar]}>
+                <Ionicons name="people-outline" size={20} color="#2563EB" />
+              </View>
+        )}
         <View style={styles.headerInfo}>
           <Text style={styles.headerTitle}>{title}</Text>
-          <Text style={styles.onlineText}>Live</Text>
         </View>
         {!isAI && (
           <TouchableOpacity style={styles.menuBtn} onPress={() => setMenuVisible(true)}>
@@ -509,14 +554,6 @@ export const ChatScreen = () => {
               <Text style={styles.moderationBannerText}>{moderationError}</Text>
             </View>
           )}
-          <View style={styles.safetyNote}>
-            <Ionicons name="shield-checkmark-outline" size={11} color={COLORS.muted} />
-            <Text style={styles.safetyNoteText}>
-              {isAI
-                ? 'Your conversations help Mindy understand and support your emotional wellbeing.'
-                : 'This chat is monitored for your safety by mental health professionals.'}
-            </Text>
-          </View>
           <View style={[styles.inputBar, isRestricted && styles.inputBarDisabled]}>
             <View style={styles.inputField}>
               <Input
@@ -537,6 +574,14 @@ export const ChatScreen = () => {
                 : <Ionicons name="send" size={18} color="white" />
               }
             </TouchableOpacity>
+          </View>
+          <View style={styles.safetyNote}>
+            <Ionicons name="shield-checkmark-outline" size={11} color={COLORS.muted} />
+            <Text style={styles.safetyNoteText}>
+              {isAI
+                ? 'Your conversations help Mindy understand and support your emotional wellbeing.'
+                : 'This chat is monitored for your safety by mental health professionals.'}
+            </Text>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -572,14 +617,12 @@ const styles = StyleSheet.create({
   },
   aiAvatar: { backgroundColor: '#EDE9FE' },
   groupAvatar: { backgroundColor: '#DBEAFE' },
-  headerTitle: { fontSize: 15, fontWeight: 'bold', color: COLORS.text },
-  onlineText: {
-    fontSize: 10,
-    color: '#22C55E',
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
+  headerGroupImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
   },
+  headerTitle: { fontSize: 15, fontWeight: 'bold', color: COLORS.text },
   messageList: { flex: 1, backgroundColor: COLORS.background },
   messageContent: { padding: 20, gap: 12 },
   msgWrapper: { maxWidth: '80%' },
@@ -658,7 +701,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     paddingHorizontal: 16,
-    paddingVertical: 5,
+    paddingTop: 4,
+    paddingBottom: 12,
     backgroundColor: COLORS.white,
   },
   safetyNoteText: {
@@ -770,10 +814,16 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 10,
   },
+  infoGroupImage: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    marginBottom: 14,
+  },
   infoAvatar: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
+    width: 72,
+    height: 72,
+    borderRadius: 22,
     backgroundColor: '#DBEAFE',
     alignItems: 'center',
     justifyContent: 'center',
@@ -792,8 +842,78 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   infoDesc: { fontSize: 13, color: COLORS.muted, textAlign: 'center', lineHeight: 20, marginBottom: 14 },
-  infoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 20 },
+  infoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
   infoMeta: { fontSize: 13, color: COLORS.muted },
+  // Moderator row
+  infoModeratorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 20,
+    alignSelf: 'stretch',
+  },
+  moderatorAvatarWrap: {
+    position: 'relative',
+    width: 38,
+    height: 38,
+  },
+  moderatorAvatarImage: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: '#BFDBFE',
+  },
+  moderatorAvatarCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#DBEAFE',
+    borderWidth: 1.5,
+    borderColor: '#BFDBFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  moderatorVerifiedBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    width: 16,
+    height: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authorizedBadge: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  authorizedText: {
+    fontSize: 9,
+    color: '#16A34A',
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  moderatorTextCol: { flex: 1 },
+  moderatorLabel: {
+    fontSize: 10,
+    color: COLORS.muted,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 1,
+  },
+  moderatorName: {
+    fontSize: 13,
+    color: COLORS.text,
+    fontWeight: '700',
+  },
   infoClose: {
     backgroundColor: COLORS.primary,
     borderRadius: 12,

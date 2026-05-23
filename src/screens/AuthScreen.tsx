@@ -8,11 +8,13 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Modal,
-  FlatList,
+  Alert,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { ScrollView } from 'react-native-gesture-handler';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { storage } from '../services/firebaseConfig';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { Input, Button } from '../components/UI';
@@ -217,10 +219,28 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
   const [dobYear, setDobYear] = useState<number | null>(null);
   const [dobMonth, setDobMonth] = useState<number | null>(null);
   const [dobDay, setDobDay] = useState<number | null>(null);
+  const [profileImage, setProfileImage] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
   const [hasAttemptedRegistration, setHasAttemptedRegistration] = useState(false);
+
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Please allow access to your photo library to set a profile picture.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      setProfileImage(result.assets[0].uri);
+    }
+  };
 
   const allFieldsFilled = useMemo(() => {
     return !!(
@@ -308,6 +328,14 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
         if (uid) {
           const encryptedName = encryptName(name);
           const dobString = `${dobYear}-${String(dobMonth).padStart(2, '0')}-${String(dobDay).padStart(2, '0')}`;
+            let photoURL: string | null = null;
+          if (profileImage) {
+            const response = await fetch(profileImage);
+            const blob = await response.blob();
+            const storageRef = ref(storage, `profile_pictures/${uid}`);
+            await uploadBytes(storageRef, blob);
+            photoURL = await getDownloadURL(storageRef);
+          }
           await setDoc(doc(db, 'users', uid), {
             name: encryptedName,
             nickname: nickname.trim(),
@@ -315,6 +343,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
             gender,
             age: calculatedAge,
             dob: dobString,
+            photoURL,
             createdAt: serverTimestamp(),
           });
         }
@@ -374,11 +403,28 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                   value={name}
                   onChangeText={setName}
                 />
-                <Input
-                  placeholder="Nickname *"
-                  value={nickname}
-                  onChangeText={setNickname}
-                />
+                {/* Nickname + Profile Photo — full-width input, photo floats on right edge */}
+                <View style={styles.nicknameRow}>
+                  <Input
+                    placeholder="Nickname * — Shown to public"
+                    value={nickname}
+                    onChangeText={setNickname}
+                    style={{ paddingRight: 72 }}
+                  />
+
+                  <TouchableOpacity style={styles.photoPickerBtn} onPress={pickImage} activeOpacity={0.8}>
+                    {profileImage ? (
+                      <Image source={{ uri: profileImage }} style={styles.photoPreview} />
+                    ) : (
+                      <View style={styles.photoPlaceholder}>
+                        <Ionicons name="camera-outline" size={22} color={COLORS.muted} />
+                      </View>
+                    )}
+                    <View style={styles.photoPlusBadge}>
+                      <Ionicons name="add" size={13} color="#fff" />
+                    </View>
+                  </TouchableOpacity>
+                </View>
 
                 {/* Gender */}
                 <View style={styles.fieldGroup}>
@@ -506,6 +552,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
               setDobDay(null);
               setNickname('');
               setGender('');
+              setProfileImage(null);
               setAcceptedPrivacy(false);
               setHasAttemptedRegistration(false);
             }}
@@ -581,4 +628,48 @@ const styles = StyleSheet.create({
   dobYear: { flex: 2.2, zIndex: 3000 },
   dobMonth: { flex: 3, zIndex: 2000 },
   dobDay: { flex: 1.5, zIndex: 1000 },
+
+  // Nickname + photo picker
+  nicknameRow: {
+    position: 'relative',
+    width: '100%',
+  },
+  photoPickerBtn: {
+    position: 'absolute',
+    right: 10,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 52,
+  },
+  photoPlaceholder: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    borderWidth: 1.5,
+    borderColor: '#BFDBFE',
+    borderStyle: 'dashed',
+    backgroundColor: 'rgba(219,234,254,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoPreview: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+  },
+  photoPlusBadge: {
+    position: 'absolute',
+    bottom: 6,
+    right: 0,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
 });
