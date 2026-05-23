@@ -25,6 +25,8 @@ export interface Group {
   members: number;
   category: GroupCategory;
   image: any;
+  moderatorName?: string;
+  moderatorImageUrl?: string;
 }
 
 // Advisor-review lifecycle for flagged group chat messages.

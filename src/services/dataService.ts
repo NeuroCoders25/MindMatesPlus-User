@@ -84,11 +84,29 @@ export const GROUP_IMAGE_MAP: Record<string, any> = {
 
 export const fetchPeerGroups = async (): Promise<Group[]> => {
   console.log('[Firestore] Fetching peer groups');
-  const snap = await getDocs(collection(db, 'peer_groups'));
-  return snap.docs.map(d => {
+  const [groupsSnap, advisorsSnap] = await Promise.all([
+    getDocs(collection(db, 'peer_groups')),
+    getDocs(collection(db, 'advisors')),
+  ]);
+
+  // Build name → imageUrl lookup from advisors collection
+  const advisorImageMap: Record<string, string> = {};
+  advisorsSnap.docs.forEach(d => {
+    const a = d.data();
+    const name = (a.name ?? '').toLowerCase().trim();
+    const img: string | undefined = a.profileImageUrl ?? a.imageUrl;
+    if (name && img) advisorImageMap[name] = img;
+  });
+
+  return groupsSnap.docs.map(d => {
     const data = d.data();
     const category = (data.group_category ?? data.category ?? 'Wellness - Thriving') as GroupCategory;
     const imageUrl: string | undefined = data.group_image_url ?? data.imageUrl;
+    const moderatorName: string | undefined =
+      data.group_moderator ?? data.moderator_name ?? data.moderatorName ?? undefined;
+    const moderatorImageUrl: string | undefined = moderatorName
+      ? advisorImageMap[moderatorName.toLowerCase().trim()]
+      : undefined;
     return {
       id: d.id,
       name: data.group_name ?? data.name ?? '',
@@ -96,6 +114,8 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
       members: data.memberCount ?? data.member_count ?? 0,
       category,
       image: imageUrl ? { uri: imageUrl } : (GROUP_IMAGE_MAP[category] ?? GROUP_IMAGE_MAP['Wellness - Thriving']),
+      moderatorName,
+      moderatorImageUrl,
     };
   });
 };
@@ -1287,6 +1307,32 @@ export const buildRecommendationCategory = (
 
 const ML_CONFIDENCE_THRESHOLD = 0.80;
 
+// ─── Trend & Stability Thresholds ─────────────────────────────────────────────
+// These constants control how resistant the recommendation system is to change.
+// All three TREND_ constants must be satisfied simultaneously before
+// peerGroupRecommendationCategory is allowed to move.
+
+// Minimum number of high-confidence (>= 0.80) BERT records in the 7-day window.
+// 10 records ≈ a user engaging meaningfully across the week, not just once.
+const TREND_MIN_VALID_RECORDS = 10;
+
+// Minimum times the dominant label must appear among the valid records.
+// With TREND_MIN_VALID_RECORDS = 10, this enforces ≥ 70 % dominance.
+const TREND_MIN_DOMINANT_COUNT = 7;
+
+// Records must originate from at least this many distinct calendar days.
+// Prevents a single very active day from being mistaken for a weekly trend.
+const TREND_MIN_DISTINCT_DAYS = 3;
+
+// Minimum high-confidence records in 7-day window before getWeeklyDominantEmotion
+// trusts the aggregate. Below this threshold it falls back to latestMlEmotionScore.
+const KNN_MIN_RECORDS_FOR_TREND = 5;
+
+// Consecutive high-confidence BERT results required before activeRecommendationCategory
+// moves one level. Raised from 3 to prevent a brief bad day from shifting the category.
+const STABILITY_REPEAT_THRESHOLD = 5;
+// ──────────────────────────────────────────────────────────────────────────────
+
 const SEVERITY_ORDER_DS = ['Normal', 'Mild', 'Moderate', 'Severe', 'Extremely Severe'];
 
 // Saves the questionnaire result as the immutable baseline.
@@ -1726,7 +1772,10 @@ export const updateCategorySafely = (
   mlSuggestedCategory: GroupCategory,
   repeatedCount: number
 ): GroupCategory => {
-  if (repeatedCount < 3) return currentCategory;
+  // Require STABILITY_REPEAT_THRESHOLD consecutive same-label confident results
+  // before moving the category one level. Raised from 3 → 5 so a single
+  // rough conversation session cannot immediately shift the recommendation.
+  if (repeatedCount < STABILITY_REPEAT_THRESHOLD) return currentCategory;
   const currentLevel = getCategoryLevel(currentCategory);
   const suggestedLevel = getCategoryLevel(mlSuggestedCategory);
   if (currentLevel === -1 || suggestedLevel === -1 || suggestedLevel === currentLevel) {
@@ -2170,7 +2219,11 @@ export const runMlAnalysisForText = async (
       console.log('[ML] Weekly trend calculated — peerGroupCategory:', trendResult.finalPeerGroupCategory,
         trendResult.updatedPeerGroup ? '(moved)' : '(unchanged)');
     }
-    await callKnnAndWriteResult(userId);
+    // ✋ KNN is NOT called here on purpose.
+    // callKnnAndWriteResult() is rate-limited to 23 h and triggered by the
+    // periodic useEffect in AppContext (on profile load). Running it on every
+    // text event would defeat the stability thresholds we added and cause the
+    // peer-group recommendation to flip after just a few messages.
   } catch (err) {
     console.error(`[ML] ML analysis failed for source "${source}":`, err);
   }
@@ -2285,13 +2338,21 @@ export async function callKnnAndWriteResult(userId: string): Promise<void> {
       return;
     }
 
-    // 3. Build 5-feature vector from existing Firestore data
+    // 3. Build 5-feature vector from existing Firestore data.
+    //    Use the 7-day aggregated weekly trend (not the single per-event raw
+    //    latestMlEmotionScore) so KNN receives a stable, representative signal.
+    const weeklyEmotion = await getWeeklyDominantEmotion(userId);
+    console.log(
+      `[KNN] Weekly emotion used for payload — dominant: ${weeklyEmotion.dominantEmotion}`,
+      `| avgConf: ${weeklyEmotion.averageConfidence}`,
+      `| records: ${weeklyEmotion.totalRecords}`
+    );
     payload = {
       depression_score:   profile.initialQuestionnaireScore.depressionScore,
       anxiety_score:      profile.initialQuestionnaireScore.anxietyScore,
       stress_score:       profile.initialQuestionnaireScore.stressScore,
-      dominant_emotion:   profile.latestMlEmotionScore?.prediction  ?? 'normal',
-      emotion_confidence: profile.latestMlEmotionScore?.confidence  ?? 0.5,
+      dominant_emotion:   weeklyEmotion.dominantEmotion,
+      emotion_confidence: weeklyEmotion.averageConfidence,
     };
     console.log('[KNN] Payload:', JSON.stringify(payload));
 
@@ -2414,7 +2475,26 @@ export const calculateWeeklyMlTrend = async (
   let finalPeerGroupCategory = currentPeerGroupCategory;
   let updatedPeerGroup = false;
 
-  if (validRecordCount >= 5 && dominantCount >= 3) {
+  // ── Distinct-day span check ───────────────────────────────────────────────
+  // Records must come from at least TREND_MIN_DISTINCT_DAYS different calendar
+  // days. This ensures we are seeing a sustained multi-day pattern rather than
+  // a burst of activity on a single day inflating the count.
+  const distinctDays = new Set(
+    validRecords.map(r => {
+      const ts = r.createdAt as import('firebase/firestore').Timestamp | undefined;
+      return ts?.toDate?.()?.toDateString?.() ?? null;
+    }).filter((d): d is string => d !== null)
+  ).size;
+
+  // All three conditions must hold before peerGroupRecommendationCategory moves:
+  //   • enough total high-confidence records (TREND_MIN_VALID_RECORDS)
+  //   • dominant emotion appears with strong majority (TREND_MIN_DOMINANT_COUNT)
+  //   • records span multiple days, not a single session (TREND_MIN_DISTINCT_DAYS)
+  if (
+    validRecordCount >= TREND_MIN_VALID_RECORDS &&
+    dominantCount >= TREND_MIN_DOMINANT_COUNT &&
+    distinctDays >= TREND_MIN_DISTINCT_DAYS
+  ) {
     const moved = moveOneLevelToward(currentPeerGroupCategory, suggestedPeerGroupCategory);
     if (moved !== currentPeerGroupCategory) {
       finalPeerGroupCategory = moved;
@@ -2517,11 +2597,13 @@ export const getWeeklyDominantEmotion = async (
     { depression: 0, anxiety: 0, normal: 0 };
   const confidenceSums: Record<string, number> = { depression: 0, anxiety: 0, normal: 0 };
 
+  // Only count records where BERT was sufficiently confident.
+  // The function comment already states this requirement; this loop enforces it.
   snap.docs.forEach(d => {
     const data = d.data();
     const pred = data.prediction as string;
     const conf = typeof data.confidence === 'number' ? data.confidence : 0;
-    if (pred in distribution) {
+    if (pred in distribution && conf >= ML_CONFIDENCE_THRESHOLD) {
       distribution[pred as keyof typeof distribution]++;
       confidenceSums[pred] += conf;
     }
@@ -2529,11 +2611,11 @@ export const getWeeklyDominantEmotion = async (
 
   const totalRecords = distribution.depression + distribution.anxiety + distribution.normal;
 
-  // ── Fallback for new users or sparse history (< 2 high-confidence records) ──
-  // Pull latestMlEmotionScore from the profile document so KNN always gets a
-  // valid emotion input even on first use.
-  if (totalRecords < 2) {
-    console.log(`[KNN] Fewer than 2 emotion records (got ${totalRecords}) — falling back to latestMlEmotionScore`);
+  // ── Fallback for users with insufficient high-confidence history ─────────
+  // Require at least KNN_MIN_RECORDS_FOR_TREND confident records before trusting
+  // the aggregate. Below this threshold a single entry could dominate the result.
+  if (totalRecords < KNN_MIN_RECORDS_FOR_TREND) {
+    console.log(`[KNN] Fewer than ${KNN_MIN_RECORDS_FOR_TREND} confident emotion records (got ${totalRecords}) — falling back to latestMlEmotionScore`);
     try {
       const profileSnap = await getDoc(
         doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile')
