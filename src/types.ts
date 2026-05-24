@@ -7,6 +7,7 @@ export interface User {
   email: string;
   age?: number;
   riskLevel?: 'low' | 'moderate' | 'severe';
+  avatarSeed?: string;
 }
 
 export type GroupCategory =
@@ -41,6 +42,7 @@ export interface Message {
   sender: 'user' | 'ai' | 'peer';
   senderId?: string;
   senderName?: string;
+  senderAvatarSeed?: string;
   timestamp: Date;
   flagged?: boolean;
   /** Present on group chat messages; absent on AI chat messages. */

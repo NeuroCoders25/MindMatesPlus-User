@@ -497,19 +497,22 @@ export const saveChatMessage = async (
   groupId: string,
   senderId: string,
   senderName: string,
-  text: string
+  text: string,
+  senderAvatarSeed?: string,
 ): Promise<string> => {
   const lower = text.toLowerCase();
   const flagged = CRISIS_KEYWORDS.some(kw => lower.includes(kw));
   const ref = collection(db, 'peer_groups', groupId, 'chatMessages');
-  const docRef = await addDoc(ref, {
+  const payload: Record<string, unknown> = {
     senderId,
     senderName,
     text,
     timestamp: Timestamp.now(),
     flagged,
     reviewStatus: flagged ? 'pending' : 'not_required',
-  });
+  };
+  if (senderAvatarSeed) payload.senderAvatarSeed = senderAvatarSeed;
+  const docRef = await addDoc(ref, payload);
   return docRef.id;
 };
 
@@ -531,6 +534,7 @@ export const subscribeGroupMessages = (
         sender: 'peer',
         senderId: d.data().senderId as string,
         senderName: d.data().senderName as string,
+        senderAvatarSeed: d.data().senderAvatarSeed as string | undefined,
         timestamp: (d.data().timestamp as Timestamp).toDate(),
         flagged: d.data().flagged ?? false,
         reviewStatus: d.data().reviewStatus ?? 'not_required',

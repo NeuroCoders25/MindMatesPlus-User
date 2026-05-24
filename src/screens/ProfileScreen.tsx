@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   Alert, Image, Modal, StatusBar, Dimensions,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { SvgXml } from 'react-native-svg';
+import multiavatar from '@multiavatar/multiavatar';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
@@ -55,6 +57,11 @@ export const ProfileScreen = () => {
   const [savedTab, setSavedTab] = useState(false);
   const [previewResource, setPreviewResource] = useState<Resource | null>(null);
 
+  const avatarSvg = useMemo(
+    () => (user?.avatarSeed ? multiavatar(user.avatarSeed) : null),
+    [user?.avatarSeed],
+  );
+
   useEffect(() => {
     if (!user) return;
     return listenToUserSavedResources(user.id, setSavedResources);
@@ -82,8 +89,10 @@ export const ProfileScreen = () => {
     <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       {/* Avatar */}
       <View style={styles.avatarSection}>
-        <View style={styles.avatar}>
-          <Ionicons name="person" size={48} color="white" />
+        <View style={[styles.avatar, avatarSvg && { backgroundColor: 'transparent', shadowOpacity: 0, elevation: 0 }]}>
+          {avatarSvg
+            ? <SvgXml xml={avatarSvg} width={96} height={96} />
+            : <Ionicons name="person" size={48} color="white" />}
         </View>
         <Text style={styles.userName}>{user?.name}{user?.nickname ? ` (${user.nickname})` : ''}</Text>
         <Text style={styles.userEmail}>{user?.email}</Text>
@@ -167,8 +176,9 @@ const styles = StyleSheet.create({
 
   avatarSection: { alignItems: 'center', paddingTop: 20, gap: 8 },
   avatar: {
-    width: 96, height: 96, backgroundColor: COLORS.accent, borderRadius: 32,
+    width: 96, height: 96, borderRadius: 32, overflow: 'hidden',
     alignItems: 'center', justifyContent: 'center',
+    backgroundColor: COLORS.accent,
     shadowColor: COLORS.accent, shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25, shadowRadius: 16, elevation: 8,
   },

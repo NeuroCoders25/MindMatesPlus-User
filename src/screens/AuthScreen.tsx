@@ -3,18 +3,16 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   View,
   Text,
-  Image,
   TouchableOpacity,
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  Alert,
+  Image,
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
+import { SvgXml } from 'react-native-svg';
+import multiavatar from '@multiavatar/multiavatar';
 import { ScrollView } from 'react-native-gesture-handler';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { storage } from '../services/firebaseConfig';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { Input, Button } from '../components/UI';
@@ -219,28 +217,24 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
   const [dobYear, setDobYear] = useState<number | null>(null);
   const [dobMonth, setDobMonth] = useState<number | null>(null);
   const [dobDay, setDobDay] = useState<number | null>(null);
-  const [profileImage, setProfileImage] = useState<string | null>(null);
+  const [avatarSeed, setAvatarSeed] = useState<string>('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
   const [hasAttemptedRegistration, setHasAttemptedRegistration] = useState(false);
 
-  const pickImage = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Please allow access to your photo library to set a profile picture.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.7,
-    });
-    if (!result.canceled && result.assets.length > 0) {
-      setProfileImage(result.assets[0].uri);
-    }
-  };
+  const randomSeed = () => Math.random().toString(36).substring(2, 14);
+
+const avatarSvg = useMemo(
+    () => (avatarSeed ? multiavatar(avatarSeed) : null),
+    [avatarSeed],
+  );
+
+  useEffect(() => {
+    if (!isLogin) setAvatarSeed(randomSeed());
+  }, [isLogin]);
+
+  const shuffleAvatar = () => setAvatarSeed(randomSeed());
 
   const allFieldsFilled = useMemo(() => {
     return !!(
@@ -328,14 +322,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
         if (uid) {
           const encryptedName = encryptName(name);
           const dobString = `${dobYear}-${String(dobMonth).padStart(2, '0')}-${String(dobDay).padStart(2, '0')}`;
-            let photoURL: string | null = null;
-          if (profileImage) {
-            const response = await fetch(profileImage);
-            const blob = await response.blob();
-            const storageRef = ref(storage, `profile_pictures/${uid}`);
-            await uploadBytes(storageRef, blob);
-            photoURL = await getDownloadURL(storageRef);
-          }
+          const seed = avatarSeed || randomSeed();
           await setDoc(doc(db, 'users', uid), {
             name: encryptedName,
             nickname: nickname.trim(),
@@ -343,7 +330,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
             gender,
             age: calculatedAge,
             dob: dobString,
-            photoURL,
+            avatarSeed: seed,
             createdAt: serverTimestamp(),
           });
         }
@@ -403,7 +390,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                   value={name}
                   onChangeText={setName}
                 />
-                {/* Nickname + Profile Photo — full-width input, photo floats on right edge */}
+                {/* Nickname + avatar shuffle — full-width input, avatar floats on right edge */}
                 <View style={styles.nicknameRow}>
                   <Input
                     placeholder="Nickname * — Shown to public"
@@ -411,17 +398,18 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
                     onChangeText={setNickname}
                     style={{ paddingRight: 72 }}
                   />
-
-                  <TouchableOpacity style={styles.photoPickerBtn} onPress={pickImage} activeOpacity={0.8}>
-                    {profileImage ? (
-                      <Image source={{ uri: profileImage }} style={styles.photoPreview} />
+                  <TouchableOpacity style={styles.photoPickerBtn} onPress={shuffleAvatar} activeOpacity={0.8}>
+                    {avatarSvg ? (
+                      <View style={styles.photoPreview}>
+                        <SvgXml xml={avatarSvg} width={50} height={50} />
+                      </View>
                     ) : (
                       <View style={styles.photoPlaceholder}>
-                        <Ionicons name="camera-outline" size={22} color={COLORS.muted} />
+                        <Ionicons name="person-outline" size={22} color={COLORS.muted} />
                       </View>
                     )}
                     <View style={styles.photoPlusBadge}>
-                      <Ionicons name="add" size={13} color="#fff" />
+                      <Ionicons name="shuffle-outline" size={11} color="#fff" />
                     </View>
                   </TouchableOpacity>
                 </View>
@@ -552,7 +540,7 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
               setDobDay(null);
               setNickname('');
               setGender('');
-              setProfileImage(null);
+              setAvatarSeed('');
               setAcceptedPrivacy(false);
               setHasAttemptedRegistration(false);
             }}
@@ -629,7 +617,7 @@ const styles = StyleSheet.create({
   dobMonth: { flex: 3, zIndex: 2000 },
   dobDay: { flex: 1.5, zIndex: 1000 },
 
-  // Nickname + photo picker
+  // Nickname + avatar picker
   nicknameRow: {
     position: 'relative',
     width: '100%',
@@ -658,6 +646,7 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
+    backgroundColor: 'transparent',
   },
   photoPlusBadge: {
     position: 'absolute',
