@@ -8,7 +8,7 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { COLORS, callKnnAndWriteResult, listenToUserSavedResources } from '../services/dataService';
+import { COLORS, listenToUserSavedResources } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Resource } from '../types';
 import { ResourcePostCard } from '../components/ResourcePostCard';
@@ -60,25 +60,15 @@ export const ProfileScreen = () => {
     return listenToUserSavedResources(user.id, setSavedResources);
   }, [user]);
 
-  const handleDevTestKnn = async () => {
-    if (!user) { Alert.alert('KNN Test', 'No user logged in'); return; }
-    Alert.alert('[DEV] KNN Test', `Triggering KNN for user: ${user.id}`);
-    try {
-      await callKnnAndWriteResult(user.id);
-      Alert.alert('[DEV] KNN Test', '✅ callKnnAndWriteResult completed.');
-    } catch (e) {
-      Alert.alert('[DEV] KNN Test', `❌ Error: ${e}`);
-    }
-  };
-
   const handleLogout = () => {
     setUser(null);
     navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.replace('Auth');
   };
 
   const settings = [
-    { icon: 'bell' as const,           label: 'Notifications', color: '#3B82F6', onPress: () => {} },
+    { icon: 'bell' as const,           label: 'Notifications',  color: '#3B82F6', onPress: () => {} },
     { icon: 'heart' as const,          label: 'Wellness Goals', color: '#EC4899', onPress: () => navigation.navigate('WellnessGoals') },
+    { icon: 'bookmark' as const,       label: `Saved${savedResources.length > 0 ? ` (${savedResources.length})` : ''}`, color: '#F59E0B', onPress: () => setSavedTab(true) },
     { icon: 'message-square' as const, label: 'Feedback',       color: '#7C3AED', onPress: () => navigation.navigate('Feedback') },
   ];
 
@@ -102,21 +92,7 @@ export const ProfileScreen = () => {
         </View>
       </View>
 
-      {/* Tabs */}
-      <View style={styles.tabRow}>
-        <TouchableOpacity style={[styles.tab, !savedTab && styles.activeTab]} onPress={() => setSavedTab(false)}>
-          <Feather name="settings" size={15} color={!savedTab ? COLORS.accent : COLORS.muted} />
-          <Text style={[styles.tabText, !savedTab && styles.activeTabText]}>Settings</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.tab, savedTab && styles.activeTab]} onPress={() => setSavedTab(true)}>
-          <Ionicons name={savedTab ? 'bookmark' : 'bookmark-outline'} size={15} color={savedTab ? COLORS.accent : COLORS.muted} />
-          <Text style={[styles.tabText, savedTab && styles.activeTabText]}>
-            Saved{savedResources.length > 0 ? ` (${savedResources.length})` : ''}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Settings tab */}
+      {/* Settings */}
       {!savedTab && (
         <View style={styles.settingsSection}>
           <Text style={styles.settingsLabel}>SETTINGS</Text>
@@ -129,12 +105,6 @@ export const ProfileScreen = () => {
               <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
             </Card>
           ))}
-          {__DEV__ && (
-            <TouchableOpacity onPress={handleDevTestKnn} style={styles.devTestRow}>
-              <View style={styles.devTestIcon}><Feather name="cpu" size={18} color="#7C3AED" /></View>
-              <Text style={styles.devTestText}>[DEV] Test KNN Recommendation</Text>
-            </TouchableOpacity>
-          )}
           <TouchableOpacity onPress={handleLogout} style={styles.logoutRow}>
             <View style={styles.logoutIcon}><Feather name="log-out" size={18} color="#EF4444" /></View>
             <Text style={styles.logoutText}>Sign Out</Text>
@@ -142,9 +112,13 @@ export const ProfileScreen = () => {
         </View>
       )}
 
-      {/* Saved collection tab */}
+      {/* Saved collection */}
       {savedTab && (
         <View style={styles.savedSection}>
+          <TouchableOpacity onPress={() => setSavedTab(false)} style={styles.savedBackRow}>
+            <Ionicons name="arrow-back" size={20} color={COLORS.accent} />
+            <Text style={styles.savedBackText}>Back to Settings</Text>
+          </TouchableOpacity>
           {savedResources.length === 0 ? (
             <View style={styles.emptyState}>
               <Ionicons name="bookmark-outline" size={44} color={COLORS.muted} />
@@ -203,11 +177,6 @@ const styles = StyleSheet.create({
   riskBadge: { backgroundColor: '#EFF6FF', borderRadius: 24, paddingHorizontal: 16, paddingVertical: 6 },
   riskText: { fontSize: 11, fontWeight: '700', color: COLORS.accent, textTransform: 'uppercase', letterSpacing: 0.5 },
 
-  tabRow: { flexDirection: 'row', backgroundColor: 'rgba(219,234,254,0.3)', borderRadius: 12, padding: 4, gap: 4 },
-  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 9, borderRadius: 8, gap: 6 },
-  activeTab: { backgroundColor: COLORS.white, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
-  tabText: { fontSize: 13, fontWeight: '600', color: COLORS.muted },
-  activeTabText: { color: COLORS.accent },
 
   settingsSection: { gap: 10 },
   settingsLabel: { fontSize: 11, fontWeight: '700', color: COLORS.muted, letterSpacing: 1, paddingHorizontal: 4 },
@@ -222,11 +191,10 @@ const styles = StyleSheet.create({
   logoutRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 24, marginTop: 4 },
   logoutIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center' },
   logoutText: { fontSize: 15, fontWeight: '700', color: '#EF4444' },
-  devTestRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 24, marginTop: 4, borderWidth: 1, borderColor: '#EDE9FE', backgroundColor: '#F5F3FF' },
-  devTestIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#EDE9FE', alignItems: 'center', justifyContent: 'center' },
-  devTestText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#7C3AED' },
 
   savedSection: { gap: 12 },
+  savedBackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  savedBackText: { fontSize: 14, fontWeight: '600', color: COLORS.accent },
   collectionLabel: { fontSize: 11, fontWeight: '700', color: COLORS.muted, letterSpacing: 1, paddingHorizontal: 2 },
   gridRow: { flexDirection: 'row', gap: 4 },
   gridItem: {

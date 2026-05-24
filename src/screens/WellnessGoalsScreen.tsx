@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   TouchableOpacity,
+  Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -19,6 +20,8 @@ import {
   calculateWellnessScore,
 } from '../services/dataService';
 import { MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
+// DEV-only dashboard — tree-shaken in production by the __DEV__ guard below
+import { MLDiagnosticDashboard } from '../components/DevDashboard/MLDiagnosticDashboard';
 
 const INSIGHT_COLORS: Record<string, { accent: string; bg: string; border: string }> = {
   depression: { accent: '#EF4444', bg: 'rgba(239,68,68,0.08)',  border: '#EF4444' },
@@ -42,6 +45,26 @@ export const WellnessGoalsScreen = () => {
   const [mlInsight, setMlInsight] = useState<MlMentalHealthProfile | null>(null);
   const [insightLoading, setInsightLoading] = useState(true);
   const [recommendationProfile, setRecommendationProfile] = useState<MentalHealthRecommendationProfile | null>(null);
+
+  // ── DEV dashboard toggle (only wired up when __DEV__ is true) ─────────────
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  const fadeAnim  = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(-20)).current;
+
+  const toggleDev = useCallback(() => {
+    if (isDashboardOpen) {
+      Animated.parallel([
+        Animated.timing(fadeAnim,  { toValue: 0,   duration: 300, useNativeDriver: true }),
+        Animated.timing(slideAnim, { toValue: -20, duration: 300, useNativeDriver: true }),
+      ]).start(() => setIsDashboardOpen(false));
+    } else {
+      setIsDashboardOpen(true);
+      Animated.parallel([
+        Animated.timing(fadeAnim,  { toValue: 1, duration: 300, useNativeDriver: true }),
+        Animated.timing(slideAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [isDashboardOpen, fadeAnim, slideAnim]);
 
   useEffect(() => {
     if (!user) return;
@@ -72,7 +95,13 @@ export const WellnessGoalsScreen = () => {
           <Ionicons name="chevron-back" size={22} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Wellness Goals</Text>
-        <View style={{ width: 36 }} />
+        {__DEV__ ? (
+          <TouchableOpacity onPress={toggleDev} style={styles.devBadge}>
+            <Text style={styles.devBadgeText}>{isDashboardOpen ? '✕ DEV' : 'DEV'}</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={{ width: 36 }} />
+        )}
       </View>
 
       {/* Wellbeing Insight Card */}
@@ -158,6 +187,18 @@ export const WellnessGoalsScreen = () => {
           </Card>
         );
       })()}
+
+      {/* ── DEV Dashboard — visible only in __DEV__ builds ─────────────────── */}
+      {__DEV__ && isDashboardOpen && user && (
+        <Animated.View
+          style={{
+            opacity:   fadeAnim,
+            transform: [{ translateY: slideAnim }],
+          }}
+        >
+          <MLDiagnosticDashboard uid={user.id} />
+        </Animated.View>
+      )}
     </ScrollView>
   );
 };
@@ -218,4 +259,23 @@ const styles = StyleSheet.create({
   },
   countChipValue: { fontSize: 20, fontWeight: 'bold' },
   insightDisclaimer: { fontSize: 10, color: COLORS.muted, textAlign: 'center', fontStyle: 'italic' },
+
+  // DEV badge — shown only in __DEV__ builds, replaces the header spacer
+  devBadge: {
+    backgroundColor:   '#1a1a2e',
+    borderWidth:       1,
+    borderColor:       '#00FF88',
+    borderRadius:      4,
+    paddingHorizontal: 6,
+    paddingVertical:   2,
+    minWidth:          36,
+    alignItems:        'center',
+    justifyContent:    'center',
+  },
+  devBadgeText: {
+    fontSize:    10,
+    fontWeight:  '700',
+    color:       '#00FF88',
+    letterSpacing: 0.5,
+  },
 });

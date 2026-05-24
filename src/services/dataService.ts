@@ -2252,18 +2252,63 @@ export const saveMlAnalysisHistory = async (
   return docRef.id;
 };
 
+// Consecutive high-confidence predictions pointing in the same direction required
+// before resourceRecommendationCategory moves one level. Lighter than the
+// peer-group threshold (5) since resources update more frequently.
+const RESOURCE_STABILITY_THRESHOLD = 3;
+
 // Updates resourceRecommendationCategory on the profile in real-time.
 // Called on every ML result — does NOT touch peerGroupRecommendationCategory.
+// Moves the category one level at a time toward the ML-suggested target instead
+// of jumping directly, matching the smooth-transition behaviour of the peer-group
+// recommendation pipeline. Requires RESOURCE_STABILITY_THRESHOLD consecutive
+// high-confidence predictions in the same direction before each single-level move.
 export const updateResourceRecommendationFromLatestMl = async (
   userId: string,
   mlResult: MlPredictResponse
 ): Promise<void> => {
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
-  await setDoc(
-    profileRef,
-    { resourceRecommendationCategory: ML_TO_PRIMARY_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving' },
-    { merge: true }
-  );
+  const snap = await getDoc(profileRef);
+  const data = snap.exists() ? snap.data() : null;
+
+  // Where does ML want us to go? (the far-end target, never jumped to directly)
+  const suggestedCategory: GroupCategory =
+    ML_TO_PRIMARY_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving';
+
+  // Current resource category — fall back to questionnaire baseline when not yet set.
+  const currentCategory: GroupCategory =
+    (data?.resourceRecommendationCategory as GroupCategory | undefined) ??
+    (data?.baselineRecommendationCategory as GroupCategory | undefined) ??
+    'Wellness - Thriving';
+
+  // Track a lightweight stability counter specific to the resource feed.
+  const rawCounter = data?.resourceStabilityCounter as
+    | { lastPrediction: string; repeatedCount: number } | undefined;
+  const isSame = rawCounter?.lastPrediction === mlResult.prediction;
+  const newCount = isSame ? (rawCounter!.repeatedCount + 1) : 1;
+
+  const update: Record<string, any> = {
+    resourceStabilityCounter: {
+      lastPrediction: mlResult.prediction,
+      repeatedCount: newCount,
+      lastUpdatedAt: Timestamp.now(),
+    },
+  };
+
+  // Only move one level once the stability threshold is reached.
+  // This prevents a single journal entry or chat message from jumping the
+  // resource feed across multiple levels (e.g. Wellness-Thriving → Moderate Support).
+  if (newCount >= RESOURCE_STABILITY_THRESHOLD && currentCategory !== suggestedCategory) {
+    const newCategory = moveOneLevelToward(currentCategory, suggestedCategory);
+    update['resourceRecommendationCategory'] = newCategory;
+    // Reset the counter so the next move requires another full threshold run.
+    update['resourceStabilityCounter'].repeatedCount = 0;
+  } else if (!snap.exists() || !data?.resourceRecommendationCategory) {
+    // First-time setup — seed from baseline without requiring the threshold.
+    update['resourceRecommendationCategory'] = currentCategory;
+  }
+
+  await setDoc(profileRef, update, { merge: true });
 };
 
 // Moves currentCategory exactly one step toward suggestedCategory in
