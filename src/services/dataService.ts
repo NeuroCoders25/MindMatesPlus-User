@@ -7,6 +7,8 @@ import {
   setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp,
 } from 'firebase/firestore';
 import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService';
+import { awardJournalPoints, unlockDass21Badge } from './gamificationService';
+import { evaluateSupportReply } from './supportDetectionService';
 
 // ─── Journal Firestore Functions ──────────────────────────────────────────────
 
@@ -23,6 +25,7 @@ export const saveJournalEntry = async (
     analysis: entry.analysis ?? null,
     ml_analysis: entry.mlAnalysis ?? null,
   });
+  awardJournalPoints(userId).catch(err => console.warn('[gamify] non-fatal:', err));
   return docRef.id;
 };
 
@@ -525,17 +528,29 @@ export const saveChatMessage = async (
   const lower = text.toLowerCase();
   const flagged = CRISIS_KEYWORDS.some(kw => lower.includes(kw));
   const ref = collection(db, 'peer_groups', groupId, 'chatMessages');
+  const msgTimestamp = Timestamp.now();
   const payload: Record<string, unknown> = {
     senderId,
     senderName,
     text,
-    timestamp: Timestamp.now(),
+    timestamp: msgTimestamp,
     flagged,
     reviewStatus: flagged ? 'pending' : 'not_required',
   };
   if (senderAvatarSeed) payload.senderAvatarSeed = senderAvatarSeed;
   const docRef = await addDoc(ref, payload);
-  return docRef.id;
+  const savedId = docRef.id;
+  // Run BERT on this message and persist the prediction — used later by support detection
+  predictText(text)
+    .then(result => updateDoc(
+      doc(db, 'peer_groups', groupId, 'chatMessages', savedId),
+      { bertPrediction: { label: result.prediction, confidence: result.confidence } },
+    ))
+    .catch(err => console.warn('[bert-msg] non-fatal:', err));
+  // Run detection in the background — never block the chat UI
+  evaluateSupportReply(groupId, savedId, senderId, text, msgTimestamp)
+    .catch(err => console.warn('[support-detect] non-fatal:', err));
+  return savedId;
 };
 
 export const subscribeGroupMessages = (
@@ -1615,6 +1630,7 @@ export const updateQuestionnaireProfile = async (
     recommendationSource: 'questionnaire',
     userStatus,
   }, { merge: true });
+  unlockDass21Badge(userId).catch(err => console.warn('[gamify] non-fatal:', err));
 };
 
 // Updates the recommendation profile when a new ML result arrives.

@@ -219,8 +219,6 @@ const GroupCallScreen: React.FC = () => {
 
         // Token generation is delegated to ZegoUIKitPrebuilt.generateKitTokenForTest()
         // inside the HTML — no custom HMAC needed on the React Native side.
-        const avatarUrl = user?.profileImageUrl ?? '';
-
         const html = buildZegoCallHtml({
           appID,
           serverSecret,
@@ -228,7 +226,6 @@ const GroupCallScreen: React.FC = () => {
           userID,
           userName:  userNickname ?? user?.name ?? 'Student',
           callTitle,
-          avatarUrl,
         });
 
         // Write to a temp file so the WebView loads via file:// URI.

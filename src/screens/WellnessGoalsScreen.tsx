@@ -10,6 +10,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
+import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { db } from '../services/firebaseConfig';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
 import {
@@ -20,6 +22,7 @@ import {
   calculateWellnessScore,
 } from '../services/dataService';
 import { MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
+import { SupportScoreCard } from '../components/SupportScoreCard';
 // DEV-only dashboard — tree-shaken in production by the __DEV__ guard below
 import { MLDiagnosticDashboard } from '../components/DevDashboard/MLDiagnosticDashboard';
 
@@ -45,6 +48,8 @@ export const WellnessGoalsScreen = () => {
   const [mlInsight, setMlInsight] = useState<MlMentalHealthProfile | null>(null);
   const [insightLoading, setInsightLoading] = useState(true);
   const [recommendationProfile, setRecommendationProfile] = useState<MentalHealthRecommendationProfile | null>(null);
+  const [supportScore, setSupportScore] = useState(0);
+  const [earnedBadges, setEarnedBadges] = useState<string[]>([]);
 
   // ── DEV dashboard toggle (only wired up when __DEV__ is true) ─────────────
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
@@ -71,6 +76,27 @@ export const WellnessGoalsScreen = () => {
     const unsub = subscribeToMlMentalHealthProfile(user.id, (profile) => {
       setMlInsight(profile);
       setInsightLoading(false);
+    });
+    return unsub;
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    const userRef = doc(db, 'users', user.id);
+    const unsub = onSnapshot(userRef, snap => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      const score: number = typeof data.supportScore === 'number' ? data.supportScore : 0;
+      const badges: string[] = Array.isArray(data.earnedBadges) ? data.earnedBadges : [];
+      setSupportScore(score);
+      setEarnedBadges(badges);
+      // Initialize missing fields without overwriting existing values
+      const init: Record<string, unknown> = {};
+      if (data.supportScore === undefined) init.supportScore = 0;
+      if (data.earnedBadges === undefined) init.earnedBadges = [];
+      if (Object.keys(init).length > 0) {
+        updateDoc(userRef, init).catch(() => {});
+      }
     });
     return unsub;
   }, [user?.id]);
@@ -187,6 +213,9 @@ export const WellnessGoalsScreen = () => {
           </Card>
         );
       })()}
+
+      {/* Support Score Card */}
+      <SupportScoreCard supportScore={supportScore} earnedBadges={earnedBadges} />
 
       {/* ── DEV Dashboard — visible only in __DEV__ builds ─────────────────── */}
       {__DEV__ && isDashboardOpen && user && (

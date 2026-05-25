@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -29,6 +29,8 @@ import { UpcomingCallsCard } from '../components/UpcomingCallsCard';
 import { RootStackParamList } from '../navigation';
 import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
 import { GroupCall } from '../types/groupCall';
+import { SvgXml } from 'react-native-svg';
+import multiavatar from '@multiavatar/multiavatar';
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
@@ -36,6 +38,10 @@ export const HomeScreen = () => {
   const { user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup, isRestricted } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [joiningId, setJoiningId] = useState<string | null>(null);
+  const avatarSvg = useMemo(
+    () => (user?.avatarSeed ? multiavatar(user.avatarSeed) : null),
+    [user?.avatarSeed],
+  );
 
   // Realtime wellbeing insight (journal-based ML profile on user doc)
   const [mlInsight, setMlInsight] = useState<MlMentalHealthProfile | null>(null);
@@ -187,15 +193,28 @@ export const HomeScreen = () => {
     >
       {/* Header */}
       <View style={styles.header}>
-        <View>
-          <Text style={styles.greeting}>Hello, {user?.name} {user?.nickname ? `(${user.nickname}) ` : ''}👋</Text>
-          <Text style={styles.subGreeting}>How are you feeling today?</Text>
-        </View>
         <Image
           source={require('../assets/logo.png')}
           style={styles.logo}
           resizeMode="contain"
         />
+        <View style={styles.headerRight}>
+          <View style={styles.headerGreetingBlock}>
+            <Text style={styles.greeting}>Hello, {user?.name} {user?.nickname ? `(${user.nickname}) ` : ''}👋</Text>
+            <Text style={styles.subGreeting}>How are you feeling today?</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.headerProfilePic}
+            onPress={() => navigation.navigate('Profile')}
+            activeOpacity={0.8}
+          >
+            {user?.profileImageUrl
+              ? <Image source={{ uri: user.profileImageUrl }} style={styles.headerAvatar} />
+              : avatarSvg
+                ? <SvgXml xml={avatarSvg} width={36} height={36} />
+                : <Ionicons name="person" size={20} color="white" />}
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Combined Daily Card */}
@@ -289,7 +308,7 @@ export const HomeScreen = () => {
             )}
           </View>
           {!isAdvisorRequired && !isRestricted && (
-            <TouchableOpacity onPress={() => navigation.navigate('Main')}>
+            <TouchableOpacity onPress={() => (navigation as any).navigate('Groups')}>
               <Text style={styles.seeAll}>See All</Text>
             </TouchableOpacity>
           )}
@@ -477,15 +496,31 @@ export const HomeScreen = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
-  content: { padding: 24, paddingBottom: 100, gap: 24 },
+  content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 100, gap: 24 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  greeting: { fontSize: 22, fontWeight: 'bold', color: COLORS.text },
-  subGreeting: { fontSize: 13, color: COLORS.muted, marginTop: 2 },
-  logo: { width: 80, height: 36 },
+  logo: { width: 100, height: 44 },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerGreetingBlock: { alignItems: 'flex-end' },
+  greeting: { fontSize: 14, fontWeight: 'bold', color: COLORS.text },
+  subGreeting: { fontSize: 10, color: COLORS.muted, marginTop: 1 },
+  headerProfilePic: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  headerAvatar: { width: 36, height: 36, borderRadius: 18 },
   dailyCard: {
     backgroundColor: COLORS.primary,
     borderRadius: 20,

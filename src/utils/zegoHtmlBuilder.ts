@@ -31,9 +31,8 @@ export function buildZegoCallHtml(params: {
   userID: string;
   userName: string;
   callTitle: string;
-  avatarUrl: string;
 }): string {
-  const { appID, serverSecret, roomID, userID, userName, callTitle, avatarUrl } = params;
+  const { appID, serverSecret, roomID, userID, userName, callTitle } = params;
   const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
   const CDN_PRIMARY =
@@ -365,7 +364,6 @@ export function buildZegoCallHtml(params: {
         // Honour the user's toggle choices from the pre-join screen.
         turnOnCameraWhenJoining:    cameraEnabled,
         turnOnMicrophoneWhenJoining: micEnabled,
-        userAvatarUrl: avatarUrl || undefined,
         useFrontFacingCamera: true,
 
         // UI chrome
@@ -395,7 +393,6 @@ export function buildZegoCallHtml(params: {
         var roomID       = '${esc(roomID)}';
         var userID       = '${esc(userID)}';
         var userName     = '${esc(userName)}';
-        var avatarUrl    = '${esc(avatarUrl)}';
 
         var kitToken = ZegoUIKitPrebuilt.generateKitTokenForTest(
           appID, serverSecret, roomID, userID, userName
