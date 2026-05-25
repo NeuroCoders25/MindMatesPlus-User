@@ -31,8 +31,9 @@ export function buildZegoCallHtml(params: {
   userID: string;
   userName: string;
   callTitle: string;
+  avatarUrl: string;
 }): string {
-  const { appID, serverSecret, roomID, userID, userName, callTitle } = params;
+  const { appID, serverSecret, roomID, userID, userName, callTitle, avatarUrl } = params;
   const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
   const CDN_PRIMARY =
@@ -131,22 +132,24 @@ export function buildZegoCallHtml(params: {
 
     /* Device toggles */
     .device-row {
-      display:flex; gap:24px;
-      padding:18px 0 16px;
+      display:flex; gap:32px;
+      padding:14px 0 16px;
+      justify-content:center;
     }
     .dev-btn {
-      display:flex; flex-direction:column; align-items:center; gap:6px;
+      display:flex; flex-direction:column; align-items:center; gap:5px;
       background:none; border:none; cursor:pointer; color:#fff;
+      -webkit-tap-highlight-color:transparent;
     }
     .dev-icon {
-      width:52px; height:52px; border-radius:50%;
+      width:48px; height:48px; border-radius:50%;
       display:flex; align-items:center; justify-content:center;
-      font-size:22px;
-      background:rgba(255,255,255,0.12);
-      transition:background 0.2s;
+      background:rgba(255,255,255,0.15);
+      transition:background 0.15s;
     }
-    .dev-icon.off { background:rgba(229,62,62,0.35); }
-    .dev-label { font-size:11px; opacity:0.6; }
+    .dev-icon svg { width:24px; height:24px; }
+    .dev-icon.off { background:rgba(229,62,62,0.4); }
+    .dev-label { font-size:12px; opacity:0.85; font-weight:500; }
 
     /* Join button */
     .join-btn {
@@ -197,12 +200,18 @@ export function buildZegoCallHtml(params: {
 
     <div class="device-row">
       <button class="dev-btn" id="mic-btn" onclick="toggleMic()">
-        <div class="dev-icon" id="mic-icon-wrap">🎤</div>
-        <span class="dev-label" id="mic-label">Mic on</span>
+        <div class="dev-icon" id="mic-icon-wrap">
+          <svg id="mic-on-svg" viewBox="0 0 24 24" fill="white"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
+          <svg id="mic-off-svg" viewBox="0 0 24 24" fill="white" style="display:none"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
+        </div>
+        <span class="dev-label" id="mic-label">Mute</span>
       </button>
       <button class="dev-btn" id="cam-btn" onclick="toggleCamera()">
-        <div class="dev-icon" id="cam-icon-wrap">📷</div>
-        <span class="dev-label" id="cam-label">Camera on</span>
+        <div class="dev-icon" id="cam-icon-wrap">
+          <svg id="cam-on-svg" viewBox="0 0 24 24" fill="white"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+          <svg id="cam-off-svg" viewBox="0 0 24 24" fill="white" style="display:none"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z" opacity="0.5"/><line x1="2" y1="2" x2="22" y2="22" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>
+        </div>
+        <span class="dev-label" id="cam-label">Stop Video</span>
       </button>
     </div>
 
@@ -263,32 +272,40 @@ export function buildZegoCallHtml(params: {
     }
 
     function syncMicBtn() {
-      var wrap  = document.getElementById('mic-icon-wrap');
-      var label = document.getElementById('mic-label');
+      var wrap   = document.getElementById('mic-icon-wrap');
+      var label  = document.getElementById('mic-label');
+      var onSvg  = document.getElementById('mic-on-svg');
+      var offSvg = document.getElementById('mic-off-svg');
       if (micEnabled) {
-        wrap.textContent = '🎤';
-        wrap.className   = 'dev-icon';
-        label.textContent = 'Mic on';
+        onSvg.style.display  = 'block';
+        offSvg.style.display = 'none';
+        wrap.className        = 'dev-icon';
+        label.textContent     = 'Mute';
       } else {
-        wrap.textContent = '🔇';
-        wrap.className   = 'dev-icon off';
-        label.textContent = 'Muted';
+        onSvg.style.display  = 'none';
+        offSvg.style.display = 'block';
+        wrap.className        = 'dev-icon off';
+        label.textContent     = 'Unmute';
       }
     }
 
     function syncCamBtn() {
-      var wrap  = document.getElementById('cam-icon-wrap');
-      var label = document.getElementById('cam-label');
+      var wrap   = document.getElementById('cam-icon-wrap');
+      var label  = document.getElementById('cam-label');
+      var onSvg  = document.getElementById('cam-on-svg');
+      var offSvg = document.getElementById('cam-off-svg');
       if (cameraEnabled) {
-        wrap.textContent  = '📷';
-        wrap.className    = 'dev-icon';
-        label.textContent = 'Camera on';
+        onSvg.style.display  = 'block';
+        offSvg.style.display = 'none';
+        wrap.className        = 'dev-icon';
+        label.textContent     = 'Stop Video';
         document.getElementById('preview-video').style.display = 'block';
         document.getElementById('cam-off-cover').style.display = 'none';
       } else {
-        wrap.textContent  = '🚫';
-        wrap.className    = 'dev-icon off';
-        label.textContent = 'Camera off';
+        onSvg.style.display  = 'none';
+        offSvg.style.display = 'block';
+        wrap.className        = 'dev-icon off';
+        label.textContent     = 'Start Video';
         document.getElementById('preview-video').style.display = 'none';
         document.getElementById('cam-off-cover').style.display = 'flex';
       }
@@ -348,6 +365,7 @@ export function buildZegoCallHtml(params: {
         // Honour the user's toggle choices from the pre-join screen.
         turnOnCameraWhenJoining:    cameraEnabled,
         turnOnMicrophoneWhenJoining: micEnabled,
+        userAvatarUrl: avatarUrl || undefined,
         useFrontFacingCamera: true,
 
         // UI chrome
@@ -377,6 +395,7 @@ export function buildZegoCallHtml(params: {
         var roomID       = '${esc(roomID)}';
         var userID       = '${esc(userID)}';
         var userName     = '${esc(userName)}';
+        var avatarUrl    = '${esc(avatarUrl)}';
 
         var kitToken = ZegoUIKitPrebuilt.generateKitTokenForTest(
           appID, serverSecret, roomID, userID, userName
