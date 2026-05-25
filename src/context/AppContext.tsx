@@ -122,11 +122,13 @@ const getRuleBasedReply = (text: string, result: Dass21Result | null): string =>
   return "I understand. It's important to acknowledge those feelings. Would you like to try a quick breathing exercise?";
 };
 
-const mapFirebaseUser = (fbUser: FirebaseUser, nickname?: string): User => ({
+const mapFirebaseUser = (fbUser: FirebaseUser, nickname?: string, avatarSeed?: string, profileImageUrl?: string): User => ({
   id: fbUser.uid,
   name: decryptName(fbUser.displayName || '') || fbUser.email?.split('@')[0] || 'User',
   nickname: nickname,
   email: fbUser.email || '',
+  avatarSeed: avatarSeed,
+  profileImageUrl: profileImageUrl,
 });
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -174,7 +176,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             getDoc(doc(db, 'users', fbUser.uid)),
           ]);
           const nickname = userSnap.exists() ? userSnap.data()?.nickname : undefined;
-          setUser(mapFirebaseUser(fbUser, nickname));
+          const avatarSeed = userSnap.exists() ? userSnap.data()?.avatarSeed : undefined;
+          const profileImageUrl = userSnap.exists() ? userSnap.data()?.profileImageUrl : undefined;
+          setUser(mapFirebaseUser(fbUser, nickname, avatarSeed, profileImageUrl));
           setJournalEntries(entries);
           setPeerGroups(groups);
           setJoinedGroupIds(joinedIds);
@@ -417,7 +421,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const sendGroupMessage = async (groupId: string, text: string) => {
     if (!user) return;
-    await saveChatMessage(groupId, user.id, user.name, text);
+    await saveChatMessage(groupId, user.id, user.name, text, user.avatarSeed);
     runMlAnalysisForText(user.id, text, 'group_chat').catch(() => {});
   };
 

@@ -13,7 +13,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "MindMates+ needs camera access for peer group calls",
+        "NSMicrophoneUsageDescription": "MindMates+ needs microphone access for peer group calls"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -22,7 +26,12 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.MindMatesPlusRN"
+      "package": "com.anonymous.MindMatesPlusRN",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

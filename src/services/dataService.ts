@@ -1,5 +1,6 @@
 import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor, PrivateThreadMessage } from '../types';
-import { db } from './firebaseConfig';
+import { db, storage } from './firebaseConfig';
+import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
@@ -58,6 +59,27 @@ export const saveFeedback = async (
     date: Timestamp.fromDate(feedback.date),
   });
   return docRef.id;
+};
+
+// ─── Profile Image Upload ─────────────────────────────────────────────────────
+
+/**
+ * Uploads a profile image to Firebase Storage and saves the URL to Firestore.
+ * Returns the public download URL.
+ */
+export const uploadProfileImage = async (
+  userId: string,
+  imageUri: string,
+): Promise<string> => {
+  // Fetch the image and convert to blob
+  const response = await fetch(imageUri);
+  const blob = await response.blob();
+  const fileRef = storageRef(storage, `profileImages/${userId}`);
+  await uploadBytes(fileRef, blob);
+  const downloadUrl = await getDownloadURL(fileRef);
+  // Persist to Firestore user document
+  await setDoc(doc(db, 'users', userId), { profileImageUrl: downloadUrl }, { merge: true });
+  return downloadUrl;
 };
 
 // ─── Peer Group Firestore Functions ──────────────────────────────────────────
@@ -497,19 +519,22 @@ export const saveChatMessage = async (
   groupId: string,
   senderId: string,
   senderName: string,
-  text: string
+  text: string,
+  senderAvatarSeed?: string,
 ): Promise<string> => {
   const lower = text.toLowerCase();
   const flagged = CRISIS_KEYWORDS.some(kw => lower.includes(kw));
   const ref = collection(db, 'peer_groups', groupId, 'chatMessages');
-  const docRef = await addDoc(ref, {
+  const payload: Record<string, unknown> = {
     senderId,
     senderName,
     text,
     timestamp: Timestamp.now(),
     flagged,
     reviewStatus: flagged ? 'pending' : 'not_required',
-  });
+  };
+  if (senderAvatarSeed) payload.senderAvatarSeed = senderAvatarSeed;
+  const docRef = await addDoc(ref, payload);
   return docRef.id;
 };
 
@@ -531,6 +556,7 @@ export const subscribeGroupMessages = (
         sender: 'peer',
         senderId: d.data().senderId as string,
         senderName: d.data().senderName as string,
+        senderAvatarSeed: d.data().senderAvatarSeed as string | undefined,
         timestamp: (d.data().timestamp as Timestamp).toDate(),
         flagged: d.data().flagged ?? false,
         reviewStatus: d.data().reviewStatus ?? 'not_required',
@@ -552,6 +578,17 @@ export const deleteGroupMessage = async (
   messageId: string,
 ): Promise<void> => {
   await deleteDoc(doc(db, 'peer_groups', groupId, 'chatMessages', messageId));
+};
+
+export const fetchUserProfile = async (
+  userId: string,
+): Promise<{ avatarSeed?: string; profileImageUrl?: string }> => {
+  const snap = await getDoc(doc(db, 'users', userId));
+  if (!snap.exists()) return {};
+  return {
+    avatarSeed: snap.data().avatarSeed as string | undefined,
+    profileImageUrl: snap.data().profileImageUrl as string | undefined,
+  };
 };
 
 // Subscribes to the private advisor thread for a specific flagged message.
@@ -2252,18 +2289,63 @@ export const saveMlAnalysisHistory = async (
   return docRef.id;
 };
 
+// Consecutive high-confidence predictions pointing in the same direction required
+// before resourceRecommendationCategory moves one level. Lighter than the
+// peer-group threshold (5) since resources update more frequently.
+const RESOURCE_STABILITY_THRESHOLD = 3;
+
 // Updates resourceRecommendationCategory on the profile in real-time.
 // Called on every ML result — does NOT touch peerGroupRecommendationCategory.
+// Moves the category one level at a time toward the ML-suggested target instead
+// of jumping directly, matching the smooth-transition behaviour of the peer-group
+// recommendation pipeline. Requires RESOURCE_STABILITY_THRESHOLD consecutive
+// high-confidence predictions in the same direction before each single-level move.
 export const updateResourceRecommendationFromLatestMl = async (
   userId: string,
   mlResult: MlPredictResponse
 ): Promise<void> => {
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
-  await setDoc(
-    profileRef,
-    { resourceRecommendationCategory: ML_TO_PRIMARY_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving' },
-    { merge: true }
-  );
+  const snap = await getDoc(profileRef);
+  const data = snap.exists() ? snap.data() : null;
+
+  // Where does ML want us to go? (the far-end target, never jumped to directly)
+  const suggestedCategory: GroupCategory =
+    ML_TO_PRIMARY_CATEGORY[mlResult.prediction] ?? 'Wellness - Thriving';
+
+  // Current resource category — fall back to questionnaire baseline when not yet set.
+  const currentCategory: GroupCategory =
+    (data?.resourceRecommendationCategory as GroupCategory | undefined) ??
+    (data?.baselineRecommendationCategory as GroupCategory | undefined) ??
+    'Wellness - Thriving';
+
+  // Track a lightweight stability counter specific to the resource feed.
+  const rawCounter = data?.resourceStabilityCounter as
+    | { lastPrediction: string; repeatedCount: number } | undefined;
+  const isSame = rawCounter?.lastPrediction === mlResult.prediction;
+  const newCount = isSame ? (rawCounter!.repeatedCount + 1) : 1;
+
+  const update: Record<string, any> = {
+    resourceStabilityCounter: {
+      lastPrediction: mlResult.prediction,
+      repeatedCount: newCount,
+      lastUpdatedAt: Timestamp.now(),
+    },
+  };
+
+  // Only move one level once the stability threshold is reached.
+  // This prevents a single journal entry or chat message from jumping the
+  // resource feed across multiple levels (e.g. Wellness-Thriving → Moderate Support).
+  if (newCount >= RESOURCE_STABILITY_THRESHOLD && currentCategory !== suggestedCategory) {
+    const newCategory = moveOneLevelToward(currentCategory, suggestedCategory);
+    update['resourceRecommendationCategory'] = newCategory;
+    // Reset the counter so the next move requires another full threshold run.
+    update['resourceStabilityCounter'].repeatedCount = 0;
+  } else if (!snap.exists() || !data?.resourceRecommendationCategory) {
+    // First-time setup — seed from baseline without requiring the threshold.
+    update['resourceRecommendationCategory'] = currentCategory;
+  }
+
+  await setDoc(profileRef, update, { merge: true });
 };
 
 // Moves currentCategory exactly one step toward suggestedCategory in

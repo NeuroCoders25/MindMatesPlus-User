@@ -1,14 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  Alert, Image, Modal, StatusBar, Dimensions,
+  Alert, Image, Modal, StatusBar, Dimensions, ActivityIndicator,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
+import { SvgXml } from 'react-native-svg';
+import multiavatar from '@multiavatar/multiavatar';
+import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { COLORS, callKnnAndWriteResult, listenToUserSavedResources } from '../services/dataService';
+import { COLORS, listenToUserSavedResources, uploadProfileImage } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Resource } from '../types';
 import { ResourcePostCard } from '../components/ResourcePostCard';
@@ -54,22 +57,106 @@ export const ProfileScreen = () => {
   const [savedResources, setSavedResources] = useState<Resource[]>([]);
   const [savedTab, setSavedTab] = useState(false);
   const [previewResource, setPreviewResource] = useState<Resource | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+
+  const avatarSvg = useMemo(
+    () => (user?.avatarSeed ? multiavatar(user.avatarSeed) : null),
+    [user?.avatarSeed],
+  );
+
+  const handleEditPhoto = () => {
+    Alert.alert(
+      'Profile Photo',
+      'Choose how to update your photo',
+      [
+        {
+          text: 'Choose from Library',
+          onPress: pickFromLibrary,
+        },
+        {
+          text: 'Take Photo',
+          onPress: takePhoto,
+        },
+        ...(user?.profileImageUrl
+          ? [{ text: 'Remove Photo', style: 'destructive' as const, onPress: removePhoto }]
+          : []),
+        { text: 'Cancel', style: 'cancel' as const },
+      ],
+    );
+  };
+
+  const pickFromLibrary = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow access to your photo library.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      await doUpload(result.assets[0].uri);
+    }
+  };
+
+  const takePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow camera access.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      await doUpload(result.assets[0].uri);
+    }
+  };
+
+  const doUpload = async (uri: string) => {
+    if (!user) return;
+    setUploadingPhoto(true);
+    try {
+      const url = await uploadProfileImage(user.id, uri);
+      setUser({ ...user, profileImageUrl: url });
+    } catch (e) {
+      Alert.alert('Upload failed', 'Could not update your photo. Please try again.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const removePhoto = async () => {
+    if (!user) return;
+    const { doc, setDoc } = await import('firebase/firestore');
+    const { db } = await import('../services/firebaseConfig');
+    await setDoc(doc(db, 'users', user.id), { profileImageUrl: null }, { merge: true });
+    setUser({ ...user, profileImageUrl: undefined });
+  };
+
+  const handleShuffleAvatar = async () => {
+    if (!user) return;
+    const newSeed = Math.random().toString(36).substring(2, 10);
+    try {
+      const { doc, setDoc } = await import('firebase/firestore');
+      const { db } = await import('../services/firebaseConfig');
+      await setDoc(doc(db, 'users', user.id), { avatarSeed: newSeed }, { merge: true });
+      setUser({ ...user, avatarSeed: newSeed });
+    } catch {
+      Alert.alert('Error', 'Could not shuffle avatar. Please try again.');
+    }
+  };
 
   useEffect(() => {
     if (!user) return;
     return listenToUserSavedResources(user.id, setSavedResources);
   }, [user]);
-
-  const handleDevTestKnn = async () => {
-    if (!user) { Alert.alert('KNN Test', 'No user logged in'); return; }
-    Alert.alert('[DEV] KNN Test', `Triggering KNN for user: ${user.id}`);
-    try {
-      await callKnnAndWriteResult(user.id);
-      Alert.alert('[DEV] KNN Test', '✅ callKnnAndWriteResult completed.');
-    } catch (e) {
-      Alert.alert('[DEV] KNN Test', `❌ Error: ${e}`);
-    }
-  };
 
   const handleLogout = () => {
     setUser(null);
@@ -77,8 +164,9 @@ export const ProfileScreen = () => {
   };
 
   const settings = [
-    { icon: 'bell' as const,           label: 'Notifications', color: '#3B82F6', onPress: () => {} },
+    { icon: 'bell' as const,           label: 'Notifications',  color: '#3B82F6', onPress: () => {} },
     { icon: 'heart' as const,          label: 'Wellness Goals', color: '#EC4899', onPress: () => navigation.navigate('WellnessGoals') },
+    { icon: 'bookmark' as const,       label: `Saved${savedResources.length > 0 ? ` (${savedResources.length})` : ''}`, color: '#F59E0B', onPress: () => setSavedTab(true) },
     { icon: 'message-square' as const, label: 'Feedback',       color: '#7C3AED', onPress: () => navigation.navigate('Feedback') },
   ];
 
@@ -92,31 +180,46 @@ export const ProfileScreen = () => {
     <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       {/* Avatar */}
       <View style={styles.avatarSection}>
-        <View style={styles.avatar}>
-          <Ionicons name="person" size={48} color="white" />
-        </View>
+        {/* Tapping the avatar itself opens the photo picker */}
+        <TouchableOpacity onPress={handleEditPhoto} activeOpacity={0.85} style={styles.avatarWrapper}>
+          <View style={[
+            styles.avatar,
+            (avatarSvg && !user?.profileImageUrl) && { backgroundColor: 'transparent', shadowOpacity: 0, elevation: 0 },
+          ]}>
+            {user?.profileImageUrl
+              ? <Image source={{ uri: user.profileImageUrl }} style={styles.avatarImage} />
+              : avatarSvg
+                ? <SvgXml xml={avatarSvg} width={96} height={96} />
+                : <Ionicons name="person" size={48} color="white" />}
+          </View>
+
+          {/* Edit / Shuffle badge — bottom-right, replaces camera icon */}
+          <TouchableOpacity
+            style={[styles.editBadge, isEditing && styles.editBadgeShuffle]}
+            onPress={() => isEditing ? handleShuffleAvatar() : setIsEditing(true)}
+            activeOpacity={0.8}
+          >
+            {uploadingPhoto
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Feather name={isEditing ? 'shuffle' : 'edit-2'} size={14} color="#fff" />}
+          </TouchableOpacity>
+        </TouchableOpacity>
+
         <Text style={styles.userName}>{user?.name}{user?.nickname ? ` (${user.nickname})` : ''}</Text>
         <Text style={styles.userEmail}>{user?.email}</Text>
         <View style={styles.riskBadge}>
           <Text style={styles.riskText}>Risk Level: {user?.riskLevel || 'Not Assessed'}</Text>
         </View>
+
+        {/* Done — center aligned, just below risk badge, only visible in edit mode */}
+        {isEditing && (
+          <TouchableOpacity style={styles.doneCenter} onPress={() => setIsEditing(false)} activeOpacity={0.8}>
+            <Text style={styles.doneCenterText}>Done</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* Tabs */}
-      <View style={styles.tabRow}>
-        <TouchableOpacity style={[styles.tab, !savedTab && styles.activeTab]} onPress={() => setSavedTab(false)}>
-          <Feather name="settings" size={15} color={!savedTab ? COLORS.accent : COLORS.muted} />
-          <Text style={[styles.tabText, !savedTab && styles.activeTabText]}>Settings</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.tab, savedTab && styles.activeTab]} onPress={() => setSavedTab(true)}>
-          <Ionicons name={savedTab ? 'bookmark' : 'bookmark-outline'} size={15} color={savedTab ? COLORS.accent : COLORS.muted} />
-          <Text style={[styles.tabText, savedTab && styles.activeTabText]}>
-            Saved{savedResources.length > 0 ? ` (${savedResources.length})` : ''}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Settings tab */}
+      {/* Settings */}
       {!savedTab && (
         <View style={styles.settingsSection}>
           <Text style={styles.settingsLabel}>SETTINGS</Text>
@@ -129,12 +232,6 @@ export const ProfileScreen = () => {
               <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
             </Card>
           ))}
-          {__DEV__ && (
-            <TouchableOpacity onPress={handleDevTestKnn} style={styles.devTestRow}>
-              <View style={styles.devTestIcon}><Feather name="cpu" size={18} color="#7C3AED" /></View>
-              <Text style={styles.devTestText}>[DEV] Test KNN Recommendation</Text>
-            </TouchableOpacity>
-          )}
           <TouchableOpacity onPress={handleLogout} style={styles.logoutRow}>
             <View style={styles.logoutIcon}><Feather name="log-out" size={18} color="#EF4444" /></View>
             <Text style={styles.logoutText}>Sign Out</Text>
@@ -142,9 +239,13 @@ export const ProfileScreen = () => {
         </View>
       )}
 
-      {/* Saved collection tab */}
+      {/* Saved collection */}
       {savedTab && (
         <View style={styles.savedSection}>
+          <TouchableOpacity onPress={() => setSavedTab(false)} style={styles.savedBackRow}>
+            <Ionicons name="arrow-back" size={20} color={COLORS.accent} />
+            <Text style={styles.savedBackText}>Back to Settings</Text>
+          </TouchableOpacity>
           {savedResources.length === 0 ? (
             <View style={styles.emptyState}>
               <Ionicons name="bookmark-outline" size={44} color={COLORS.muted} />
@@ -192,22 +293,40 @@ const styles = StyleSheet.create({
   content: { padding: 24, paddingBottom: 100, gap: 24 },
 
   avatarSection: { alignItems: 'center', paddingTop: 20, gap: 8 },
+  avatarWrapper: { position: 'relative' },
   avatar: {
-    width: 96, height: 96, backgroundColor: COLORS.accent, borderRadius: 32,
+    width: 96, height: 96, borderRadius: 32, overflow: 'hidden',
     alignItems: 'center', justifyContent: 'center',
+    backgroundColor: COLORS.accent,
     shadowColor: COLORS.accent, shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25, shadowRadius: 16, elevation: 8,
   },
+  avatarImage: { width: 96, height: 96, borderRadius: 32 },
+  // Default state: edit-2 icon circle. Shuffle state: expands into a pill.
+  editBadge: {
+    position: 'absolute', bottom: -4, right: -4,
+    minWidth: 28, height: 28, borderRadius: 14,
+    backgroundColor: '#6366F1',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: COLORS.background,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
+  },
+  editBadgeShuffle: {
+    backgroundColor: COLORS.accent,
+  },
+
+  doneCenter: {
+    paddingVertical: 8, paddingHorizontal: 28, borderRadius: 20,
+    borderWidth: 1.5, borderColor: COLORS.accent,
+    backgroundColor: COLORS.white,
+  },
+  doneCenterText: { fontSize: 14, fontWeight: '700', color: COLORS.accent },
+
   userName: { fontSize: 22, fontWeight: 'bold', color: COLORS.text, marginTop: 8 },
   userEmail: { fontSize: 13, color: COLORS.muted },
   riskBadge: { backgroundColor: '#EFF6FF', borderRadius: 24, paddingHorizontal: 16, paddingVertical: 6 },
   riskText: { fontSize: 11, fontWeight: '700', color: COLORS.accent, textTransform: 'uppercase', letterSpacing: 0.5 },
-
-  tabRow: { flexDirection: 'row', backgroundColor: 'rgba(219,234,254,0.3)', borderRadius: 12, padding: 4, gap: 4 },
-  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 9, borderRadius: 8, gap: 6 },
-  activeTab: { backgroundColor: COLORS.white, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
-  tabText: { fontSize: 13, fontWeight: '600', color: COLORS.muted },
-  activeTabText: { color: COLORS.accent },
 
   settingsSection: { gap: 10 },
   settingsLabel: { fontSize: 11, fontWeight: '700', color: COLORS.muted, letterSpacing: 1, paddingHorizontal: 4 },
@@ -222,11 +341,10 @@ const styles = StyleSheet.create({
   logoutRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 24, marginTop: 4 },
   logoutIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center' },
   logoutText: { fontSize: 15, fontWeight: '700', color: '#EF4444' },
-  devTestRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 24, marginTop: 4, borderWidth: 1, borderColor: '#EDE9FE', backgroundColor: '#F5F3FF' },
-  devTestIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#EDE9FE', alignItems: 'center', justifyContent: 'center' },
-  devTestText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#7C3AED' },
 
   savedSection: { gap: 12 },
+  savedBackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  savedBackText: { fontSize: 14, fontWeight: '600', color: COLORS.accent },
   collectionLabel: { fontSize: 11, fontWeight: '700', color: COLORS.muted, letterSpacing: 1, paddingHorizontal: 2 },
   gridRow: { flexDirection: 'row', gap: 4 },
   gridItem: {

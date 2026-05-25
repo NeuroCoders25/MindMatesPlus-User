@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import {
   View,
   Text,
@@ -14,14 +14,51 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { SvgXml } from 'react-native-svg';
+import multiavatar from '@multiavatar/multiavatar';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
-import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply } from '../services/dataService';
+import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply, fetchUserProfile } from '../services/dataService';
 import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
 import { Message, ReviewStatus, PrivateThreadMessage } from '../types';
+import { subscribeGroupCalls } from '../services/groupCallService';
+import { LiveCallBanner } from '../components/LiveCallBanner';
+import { GroupCall } from '../types/groupCall';
+
+// ─── Message avatar ───────────────────────────────────────────────────────────
+const MessageAvatar = memo(({ seed, name, imageUrl }: { seed?: string; name?: string; imageUrl?: string }) => {
+  const svg = useMemo(() => (!imageUrl && seed ? multiavatar(seed) : null), [seed, imageUrl]);
+  if (imageUrl) {
+    return (
+      <View style={msgAvatarStyles.wrap}>
+        <Image source={{ uri: imageUrl }} style={msgAvatarStyles.img} resizeMode="cover" />
+      </View>
+    );
+  }
+  if (svg) {
+    return (
+      <View style={msgAvatarStyles.wrap}>
+        <SvgXml xml={svg} width={32} height={32} />
+      </View>
+    );
+  }
+  const initials = (name ?? '?').charAt(0).toUpperCase();
+  return (
+    <View style={[msgAvatarStyles.wrap, msgAvatarStyles.fallback]}>
+      <Text style={msgAvatarStyles.initials}>{initials}</Text>
+    </View>
+  );
+});
+
+const msgAvatarStyles = StyleSheet.create({
+  wrap: { width: 32, height: 32, borderRadius: 16, overflow: 'hidden', marginTop: 2 },
+  fallback: { backgroundColor: '#DBEAFE', alignItems: 'center', justifyContent: 'center' },
+  initials: { fontSize: 13, fontWeight: '700', color: '#2563EB' },
+  img: { width: 32, height: 32, borderRadius: 16 },
+});
 
 // ─── Review-status helpers ─────────────────────────────────────────────────────
 
@@ -59,6 +96,9 @@ export const ChatScreen = () => {
   const [menuVisible, setMenuVisible] = useState(false);
   const [infoVisible, setInfoVisible] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Group call state — live + scheduled calls for this group
+  const [activeCalls, setActiveCalls] = useState<GroupCall[]>([]);
+
   // { flaggedMessageId, advisorId, advisorName } set when user taps "Reply privately"
   const [replyingToPrivate, setReplyingToPrivate] = useState<{
     flaggedMessageId: string;
@@ -70,6 +110,9 @@ export const ChatScreen = () => {
   const listRef = useRef<FlatList>(null);
   // Holds unsubscribe functions for active privateThread listeners; cleaned up on unmount / group change
   const privateThreadUnsubs = useRef<Record<string, () => void>>({});
+  // Live avatarSeed + profileImageUrl fetched from users/{senderId} — keyed by userId
+  const [userProfiles, setUserProfiles] = useState<Record<string, { avatarSeed?: string; profileImageUrl?: string }>>({});
+  const fetchedUserIds = useRef<Set<string>>(new Set());
 
   const handleExitGroup = () => {
     setMenuVisible(false);
@@ -142,8 +185,30 @@ export const ChatScreen = () => {
       Object.values(privateThreadUnsubs.current).forEach(u => u());
       privateThreadUnsubs.current = {};
       setPrivateThreads({});
+      // Reset profile cache on group change so fresh data is fetched
+      fetchedUserIds.current = new Set();
+      setUserProfiles({});
     };
   }, [groupId, isAI, user?.id]);
+
+  // Fetch live avatarSeed + profileImageUrl for each unique sender in the group
+  useEffect(() => {
+    if (isAI || groupMessages.length === 0) return;
+    const newIds = [...new Set(
+      groupMessages.map(m => m.senderId).filter((id): id is string => !!id)
+    )].filter(id => !fetchedUserIds.current.has(id));
+    if (newIds.length === 0) return;
+    newIds.forEach(id => fetchedUserIds.current.add(id));
+    Promise.all(newIds.map(id => fetchUserProfile(id).then(profile => ({ id, profile }))))
+      .then(results => {
+        setUserProfiles(prev => {
+          const next = { ...prev };
+          results.forEach(({ id, profile }) => { next[id] = profile; });
+          return next;
+        });
+      })
+      .catch(() => {});
+  }, [groupMessages, isAI]);
 
   // Subscribe to privateThread subcollections for the current user's own flagged messages.
   //
@@ -167,6 +232,13 @@ export const ChatScreen = () => {
         privateThreadUnsubs.current[msg.id] = unsub;
       });
   }, [groupMessages, groupId, isAI, user?.id]);
+
+  // Subscribe to live / scheduled group calls for this group
+  useEffect(() => {
+    if (isAI || !groupId) return;
+    const unsubscribe = subscribeGroupCalls(groupId, setActiveCalls);
+    return unsubscribe;
+  }, [groupId, isAI]);
 
   useEffect(() => {
     if (!isAI && groupId) {
@@ -235,6 +307,10 @@ export const ChatScreen = () => {
       setSending(false);
     }
   };
+
+  // Derived call state — filter by status for conditional rendering
+  const liveCall = activeCalls.find(c => c.status === 'live');
+  const scheduledCalls = activeCalls.filter(c => c.status === 'scheduled');
 
   return (
     <SafeAreaView style={styles.container}>
@@ -348,6 +424,16 @@ export const ChatScreen = () => {
         )}
       </View>
 
+      {/* Live / scheduled call banners — group chat only */}
+      {!isAI && (liveCall || scheduledCalls.length > 0) && (
+        <View style={styles.callBannersContainer}>
+          {liveCall && <LiveCallBanner call={liveCall} />}
+          {scheduledCalls.map(c => (
+            <LiveCallBanner key={c.id} call={c} />
+          ))}
+        </View>
+      )}
+
       {/* Messages */}
       <FlatList
         ref={listRef}
@@ -361,24 +447,41 @@ export const ChatScreen = () => {
           if (msg.deletedByAdvisor) {
             const deletedIsOwn = msg.sender === 'user';
             return (
-              <View style={[styles.msgWrapper, deletedIsOwn ? styles.userSide : styles.otherSide]}>
-                {msg.senderName && (
-                  <Text style={styles.senderName}>{msg.senderName}</Text>
+              <View style={[styles.msgRow, deletedIsOwn ? styles.msgRowUser : styles.msgRowOther]}>
+                {!deletedIsOwn && (
+                  <MessageAvatar
+                    seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
+                    name={msg.senderName}
+                    imageUrl={userProfiles[msg.senderId ?? '']?.profileImageUrl}
+                  />
                 )}
-                <View style={styles.deletedBubble}>
-                  <Text style={styles.deletedBubbleText}>
-                    🗑 This message was deleted by the advisor.
+                <View style={[styles.msgWrapper, deletedIsOwn ? styles.userSide : styles.otherSide]}>
+                  {(deletedIsOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
+                    <Text style={styles.senderName}>
+                      {deletedIsOwn ? (user?.nickname ?? user?.name) : msg.senderName}
+                    </Text>
+                  ) : null}
+                  <View style={styles.deletedBubble}>
+                    <Text style={styles.deletedBubbleText}>
+                      🗑 This message was deleted by the advisor.
+                    </Text>
+                  </View>
+                  <Text style={styles.timestamp}>
+                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </Text>
                 </View>
-                <Text style={styles.timestamp}>
-                  {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </Text>
+                {deletedIsOwn && (
+                  <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
+                )}
               </View>
             );
           }
 
           const status = effectiveStatus(msg);
           const isOwn = msg.sender === 'user';
+          const isModerator = !isOwn &&
+            !!group?.moderatorName &&
+            msg.senderName?.trim().toLowerCase() === group.moderatorName.trim().toLowerCase();
           const isRejected = isOwn && status === 'rejected';
           const isPending = isOwn && status === 'pending';
           const canDelete = !isAI && isOwn && !isRejected;
@@ -390,56 +493,77 @@ export const ChatScreen = () => {
           return (
             <View>
               {/* Original message bubble */}
-              <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
-                {msg.senderName && (
-                  <Text style={styles.senderName}>{msg.senderName}</Text>
+              <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
+                {!isOwn && (
+                  <MessageAvatar
+                    seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
+                    name={msg.senderName}
+                    imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
+                  />
                 )}
-                <TouchableOpacity
-                  onLongPress={canDelete ? () => handleDeleteMessage(msg) : undefined}
-                  delayLongPress={400}
-                  activeOpacity={canDelete ? 0.8 : 1}
-                  disabled={deletingId === msg.id || isRejected}
-                >
-                  <View
-                    style={[
-                      styles.bubble,
-                      isOwn ? styles.userBubble : styles.otherBubble,
-                      deletingId === msg.id && styles.bubbleDeleting,
-                      isRejected && styles.bubbleRejected,
-                    ]}
+                <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
+                  {(isOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
+                    <View style={styles.senderNameRow}>
+                      <Text style={styles.senderName}>
+                        {isOwn ? (user?.nickname ?? user?.name) : msg.senderName}
+                      </Text>
+                      {isModerator && (
+                        <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
+                      )}
+                    </View>
+                  ) : null}
+                  <TouchableOpacity
+                    onLongPress={canDelete ? () => handleDeleteMessage(msg) : undefined}
+                    delayLongPress={400}
+                    activeOpacity={canDelete ? 0.8 : 1}
+                    disabled={deletingId === msg.id || isRejected}
                   >
-                    {isPending && (
-                      <View style={styles.reviewBadge}>
-                        <Ionicons name="time-outline" size={10} color="#D97706" />
-                        <Text style={styles.reviewBadgeText}>Under review</Text>
-                      </View>
-                    )}
-                    {isRejected && (
-                      <View style={styles.removedBadge}>
-                        <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
-                        <Text style={styles.removedBadgeText}>Removed by moderator</Text>
-                      </View>
-                    )}
-                    {!isPending && !isRejected && status !== 'approved' && msg.flagged && (
-                      <View style={styles.flaggedBadge}>
-                        <Ionicons name="warning-outline" size={10} color="#F87171" />
-                        <Text style={styles.flaggedText}>Flagged</Text>
-                      </View>
-                    )}
-                    <Text
+                    <View
                       style={[
-                        styles.bubbleText,
-                        isOwn ? styles.userBubbleText : styles.otherBubbleText,
-                        isRejected && styles.rejectedBubbleText,
+                        styles.bubble,
+                        isOwn ? styles.userBubble : styles.otherBubble,
+                        isModerator && styles.moderatorBubble,
+                        deletingId === msg.id && styles.bubbleDeleting,
+                        isRejected && styles.bubbleRejected,
                       ]}
                     >
-                      {msg.text}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-                <Text style={styles.timestamp}>
-                  {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </Text>
+                      {isPending && (
+                        <View style={styles.reviewBadge}>
+                          <Ionicons name="time-outline" size={10} color="#D97706" />
+                          <Text style={styles.reviewBadgeText}>Under review</Text>
+                        </View>
+                      )}
+                      {isRejected && (
+                        <View style={styles.removedBadge}>
+                          <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
+                          <Text style={styles.removedBadgeText}>Removed by moderator</Text>
+                        </View>
+                      )}
+                      {!isPending && !isRejected && status !== 'approved' && msg.flagged && (
+                        <View style={styles.flaggedBadge}>
+                          <Ionicons name="warning-outline" size={10} color="#F87171" />
+                          <Text style={styles.flaggedText}>Flagged</Text>
+                        </View>
+                      )}
+                      <Text
+                        style={[
+                          styles.bubbleText,
+                          isOwn ? styles.userBubbleText : styles.otherBubbleText,
+                          isModerator && styles.moderatorBubbleText,
+                          isRejected && styles.rejectedBubbleText,
+                        ]}
+                      >
+                        {msg.text}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  <Text style={styles.timestamp}>
+                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+                {isOwn && (
+                  <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
+                )}
               </View>
 
               {/* Inline private advisor thread — only rendered for the message sender */}
@@ -623,17 +747,33 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   headerTitle: { fontSize: 15, fontWeight: 'bold', color: COLORS.text },
+  callBannersContainer: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+    backgroundColor: COLORS.white,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EFF6FF',
+  },
   messageList: { flex: 1, backgroundColor: COLORS.background },
   messageContent: { padding: 20, gap: 12 },
-  msgWrapper: { maxWidth: '80%' },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  msgRowUser: { justifyContent: 'flex-end' },
+  msgRowOther: { justifyContent: 'flex-start' },
+  msgWrapper: { maxWidth: '75%' },
   userSide: { alignSelf: 'flex-end', alignItems: 'flex-end' },
   otherSide: { alignSelf: 'flex-start', alignItems: 'flex-start' },
+  senderNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+    marginLeft: 4,
+  },
   senderName: {
     fontSize: 10,
     fontWeight: '700',
     color: COLORS.muted,
-    marginBottom: 4,
-    marginLeft: 4,
   },
   bubble: { padding: 14, borderRadius: 20 },
   bubbleDeleting: { opacity: 0.35 },
@@ -1046,4 +1186,12 @@ const styles = StyleSheet.create({
     color: '#7C3AED',
     fontWeight: '600',
   },
+  // ── Moderator message ──────────────────────────────────────────────────────
+  moderatorBubble: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderTopLeftRadius: 4,
+  },
+  moderatorBubbleText: { color: '#14532D' },
 });
