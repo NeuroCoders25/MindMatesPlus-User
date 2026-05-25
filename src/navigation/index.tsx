@@ -27,6 +27,7 @@ import { FeedbackScreen } from '../screens/FeedbackScreen';
 import { WellnessGoalsScreen } from '../screens/WellnessGoalsScreen';
 import { ForgotPasswordScreen } from '../screens/ForgotPasswordScreen';
 import { RecoverPasswordScreen } from '../screens/RecoverPasswordScreen';
+import GroupCallScreen from '../screens/GroupCallScreen';
 
 // ─── Route Types ─────────────────────────────────────────────────────────────
 
@@ -43,6 +44,14 @@ export type RootStackParamList = {
   AdvisorChat: { advisor: Advisor };
   Main: undefined;
   GroupChat: { groupId: string; groupName: string };
+  GroupCall: {
+    roomUrl: string;
+    callTitle: string;
+    advisorName: string;
+    userNickname: string;
+    groupId: string;
+    callId: string;
+  };
   Feedback: undefined;
   WellnessGoals: undefined;
 };
@@ -180,6 +189,15 @@ export const Navigation = () => (
       />
       <RootStack.Screen name="Feedback" component={FeedbackScreen} />
       <RootStack.Screen name="WellnessGoals" component={WellnessGoalsScreen} />
+      <RootStack.Screen
+        name="GroupCall"
+        component={GroupCallScreen}
+        options={{
+          headerShown: false,
+          gestureEnabled: false,
+          animation: 'slide_from_bottom',
+        }}
+      />
     </RootStack.Navigator>
   </NavigationContainer>
 );

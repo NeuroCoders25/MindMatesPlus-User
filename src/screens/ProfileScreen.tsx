@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  Alert, Image, Modal, StatusBar, Dimensions,
+  Alert, Image, Modal, StatusBar, Dimensions, ActivityIndicator,
 } from 'react-native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
+import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
-import { COLORS, listenToUserSavedResources } from '../services/dataService';
+import { COLORS, listenToUserSavedResources, uploadProfileImage } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Resource } from '../types';
 import { ResourcePostCard } from '../components/ResourcePostCard';
@@ -56,11 +57,101 @@ export const ProfileScreen = () => {
   const [savedResources, setSavedResources] = useState<Resource[]>([]);
   const [savedTab, setSavedTab] = useState(false);
   const [previewResource, setPreviewResource] = useState<Resource | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
   const avatarSvg = useMemo(
     () => (user?.avatarSeed ? multiavatar(user.avatarSeed) : null),
     [user?.avatarSeed],
   );
+
+  const handleEditPhoto = () => {
+    Alert.alert(
+      'Profile Photo',
+      'Choose how to update your photo',
+      [
+        {
+          text: 'Choose from Library',
+          onPress: pickFromLibrary,
+        },
+        {
+          text: 'Take Photo',
+          onPress: takePhoto,
+        },
+        ...(user?.profileImageUrl
+          ? [{ text: 'Remove Photo', style: 'destructive' as const, onPress: removePhoto }]
+          : []),
+        { text: 'Cancel', style: 'cancel' as const },
+      ],
+    );
+  };
+
+  const pickFromLibrary = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow access to your photo library.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      await doUpload(result.assets[0].uri);
+    }
+  };
+
+  const takePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow camera access.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      await doUpload(result.assets[0].uri);
+    }
+  };
+
+  const doUpload = async (uri: string) => {
+    if (!user) return;
+    setUploadingPhoto(true);
+    try {
+      const url = await uploadProfileImage(user.id, uri);
+      setUser({ ...user, profileImageUrl: url });
+    } catch (e) {
+      Alert.alert('Upload failed', 'Could not update your photo. Please try again.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
+
+  const removePhoto = async () => {
+    if (!user) return;
+    const { doc, setDoc } = await import('firebase/firestore');
+    const { db } = await import('../services/firebaseConfig');
+    await setDoc(doc(db, 'users', user.id), { profileImageUrl: null }, { merge: true });
+    setUser({ ...user, profileImageUrl: undefined });
+  };
+
+  const handleShuffleAvatar = async () => {
+    if (!user) return;
+    const newSeed = Math.random().toString(36).substring(2, 10);
+    try {
+      const { doc, setDoc } = await import('firebase/firestore');
+      const { db } = await import('../services/firebaseConfig');
+      await setDoc(doc(db, 'users', user.id), { avatarSeed: newSeed }, { merge: true });
+      setUser({ ...user, avatarSeed: newSeed });
+    } catch {
+      Alert.alert('Error', 'Could not shuffle avatar. Please try again.');
+    }
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -89,16 +180,43 @@ export const ProfileScreen = () => {
     <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       {/* Avatar */}
       <View style={styles.avatarSection}>
-        <View style={[styles.avatar, avatarSvg && { backgroundColor: 'transparent', shadowOpacity: 0, elevation: 0 }]}>
-          {avatarSvg
-            ? <SvgXml xml={avatarSvg} width={96} height={96} />
-            : <Ionicons name="person" size={48} color="white" />}
-        </View>
+        {/* Tapping the avatar itself opens the photo picker */}
+        <TouchableOpacity onPress={handleEditPhoto} activeOpacity={0.85} style={styles.avatarWrapper}>
+          <View style={[
+            styles.avatar,
+            (avatarSvg && !user?.profileImageUrl) && { backgroundColor: 'transparent', shadowOpacity: 0, elevation: 0 },
+          ]}>
+            {user?.profileImageUrl
+              ? <Image source={{ uri: user.profileImageUrl }} style={styles.avatarImage} />
+              : avatarSvg
+                ? <SvgXml xml={avatarSvg} width={96} height={96} />
+                : <Ionicons name="person" size={48} color="white" />}
+          </View>
+
+          {/* Edit / Shuffle badge — bottom-right, replaces camera icon */}
+          <TouchableOpacity
+            style={[styles.editBadge, isEditing && styles.editBadgeShuffle]}
+            onPress={() => isEditing ? handleShuffleAvatar() : setIsEditing(true)}
+            activeOpacity={0.8}
+          >
+            {uploadingPhoto
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Feather name={isEditing ? 'shuffle' : 'edit-2'} size={14} color="#fff" />}
+          </TouchableOpacity>
+        </TouchableOpacity>
+
         <Text style={styles.userName}>{user?.name}{user?.nickname ? ` (${user.nickname})` : ''}</Text>
         <Text style={styles.userEmail}>{user?.email}</Text>
         <View style={styles.riskBadge}>
           <Text style={styles.riskText}>Risk Level: {user?.riskLevel || 'Not Assessed'}</Text>
         </View>
+
+        {/* Done — center aligned, just below risk badge, only visible in edit mode */}
+        {isEditing && (
+          <TouchableOpacity style={styles.doneCenter} onPress={() => setIsEditing(false)} activeOpacity={0.8}>
+            <Text style={styles.doneCenterText}>Done</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* Settings */}
@@ -175,6 +293,7 @@ const styles = StyleSheet.create({
   content: { padding: 24, paddingBottom: 100, gap: 24 },
 
   avatarSection: { alignItems: 'center', paddingTop: 20, gap: 8 },
+  avatarWrapper: { position: 'relative' },
   avatar: {
     width: 96, height: 96, borderRadius: 32, overflow: 'hidden',
     alignItems: 'center', justifyContent: 'center',
@@ -182,11 +301,32 @@ const styles = StyleSheet.create({
     shadowColor: COLORS.accent, shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25, shadowRadius: 16, elevation: 8,
   },
+  avatarImage: { width: 96, height: 96, borderRadius: 32 },
+  // Default state: edit-2 icon circle. Shuffle state: expands into a pill.
+  editBadge: {
+    position: 'absolute', bottom: -4, right: -4,
+    minWidth: 28, height: 28, borderRadius: 14,
+    backgroundColor: '#6366F1',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: COLORS.background,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
+  },
+  editBadgeShuffle: {
+    backgroundColor: COLORS.accent,
+  },
+
+  doneCenter: {
+    paddingVertical: 8, paddingHorizontal: 28, borderRadius: 20,
+    borderWidth: 1.5, borderColor: COLORS.accent,
+    backgroundColor: COLORS.white,
+  },
+  doneCenterText: { fontSize: 14, fontWeight: '700', color: COLORS.accent },
+
   userName: { fontSize: 22, fontWeight: 'bold', color: COLORS.text, marginTop: 8 },
   userEmail: { fontSize: 13, color: COLORS.muted },
   riskBadge: { backgroundColor: '#EFF6FF', borderRadius: 24, paddingHorizontal: 16, paddingVertical: 6 },
   riskText: { fontSize: 11, fontWeight: '700', color: COLORS.accent, textTransform: 'uppercase', letterSpacing: 0.5 },
-
 
   settingsSection: { gap: 10 },
   settingsLabel: { fontSize: 11, fontWeight: '700', color: COLORS.muted, letterSpacing: 1, paddingHorizontal: 4 },

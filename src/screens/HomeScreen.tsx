@@ -23,8 +23,12 @@ import {
   calculateWellnessScore,
   continueAfterAdvisorApproval,
 } from '../services/dataService';
+import { subscribeAllGroupCalls } from '../services/groupCallService';
+import { LiveCallBanner } from '../components/LiveCallBanner';
+import { UpcomingCallsCard } from '../components/UpcomingCallsCard';
 import { RootStackParamList } from '../navigation';
 import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
+import { GroupCall } from '../types/groupCall';
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
@@ -47,6 +51,16 @@ export const HomeScreen = () => {
   // Advisor approval modal
   const [showApprovalModal, setShowApprovalModal] = useState(false);
 
+  // Group call state — keyed by groupId
+  const [callsByGroup, setCallsByGroup] = useState<Record<string, GroupCall[]>>({});
+
+
+  // Subscribe to all group calls across every group the user has joined.
+  // Re-runs when joinedGroupIds changes (join / leave events).
+  useEffect(() => {
+    const unsubscribe = subscribeAllGroupCalls(joinedGroupIds, setCallsByGroup);
+    return unsubscribe;
+  }, [joinedGroupIds]);
 
   useEffect(() => {
     if (!user) return;
@@ -240,6 +254,28 @@ export const HomeScreen = () => {
           );
         })()}
       </View>
+
+      {/* ── Live & Scheduled Group Calls ─────────────────────────────────────── */}
+      {(() => {
+        const allLiveCalls = Object.values(callsByGroup).flat().filter(c => c.status === 'live');
+        const allScheduled = Object.values(callsByGroup).flat().filter(c => c.status === 'scheduled');
+        if (allLiveCalls.length === 0 && allScheduled.length === 0) return null;
+        return (
+          <View style={styles.callsSection}>
+            {allLiveCalls.map(c => (
+              <LiveCallBanner key={c.id} call={c} />
+            ))}
+            {allScheduled.length > 0 && (
+              <View style={styles.upcomingSection}>
+                <Text style={styles.sectionTitle}>Upcoming group calls</Text>
+                {allScheduled.map(c => (
+                  <UpcomingCallsCard key={c.id} calls={[c]} groupName={c.groupId} />
+                ))}
+              </View>
+            )}
+          </View>
+        );
+      })()}
 
       {/* Recommended Groups */}
       <View style={styles.section}>
@@ -553,6 +589,8 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     flexShrink: 1,
   },
+  callsSection: { gap: 10 },
+  upcomingSection: { gap: 10 },
   section: { gap: 14 },
   sectionHeader: {
     flexDirection: 'row',

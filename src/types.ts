@@ -8,6 +8,7 @@ export interface User {
   age?: number;
   riskLevel?: 'low' | 'moderate' | 'severe';
   avatarSeed?: string;
+  profileImageUrl?: string;
 }
 
 export type GroupCategory =

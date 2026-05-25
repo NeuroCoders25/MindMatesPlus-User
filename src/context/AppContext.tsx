@@ -122,12 +122,13 @@ const getRuleBasedReply = (text: string, result: Dass21Result | null): string =>
   return "I understand. It's important to acknowledge those feelings. Would you like to try a quick breathing exercise?";
 };
 
-const mapFirebaseUser = (fbUser: FirebaseUser, nickname?: string, avatarSeed?: string): User => ({
+const mapFirebaseUser = (fbUser: FirebaseUser, nickname?: string, avatarSeed?: string, profileImageUrl?: string): User => ({
   id: fbUser.uid,
   name: decryptName(fbUser.displayName || '') || fbUser.email?.split('@')[0] || 'User',
   nickname: nickname,
   email: fbUser.email || '',
   avatarSeed: avatarSeed,
+  profileImageUrl: profileImageUrl,
 });
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -176,7 +177,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ]);
           const nickname = userSnap.exists() ? userSnap.data()?.nickname : undefined;
           const avatarSeed = userSnap.exists() ? userSnap.data()?.avatarSeed : undefined;
-          setUser(mapFirebaseUser(fbUser, nickname, avatarSeed));
+          const profileImageUrl = userSnap.exists() ? userSnap.data()?.profileImageUrl : undefined;
+          setUser(mapFirebaseUser(fbUser, nickname, avatarSeed, profileImageUrl));
           setJournalEntries(entries);
           setPeerGroups(groups);
           setJoinedGroupIds(joinedIds);

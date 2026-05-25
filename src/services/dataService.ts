@@ -1,5 +1,6 @@
 import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor, PrivateThreadMessage } from '../types';
-import { db } from './firebaseConfig';
+import { db, storage } from './firebaseConfig';
+import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
@@ -58,6 +59,27 @@ export const saveFeedback = async (
     date: Timestamp.fromDate(feedback.date),
   });
   return docRef.id;
+};
+
+// ─── Profile Image Upload ─────────────────────────────────────────────────────
+
+/**
+ * Uploads a profile image to Firebase Storage and saves the URL to Firestore.
+ * Returns the public download URL.
+ */
+export const uploadProfileImage = async (
+  userId: string,
+  imageUri: string,
+): Promise<string> => {
+  // Fetch the image and convert to blob
+  const response = await fetch(imageUri);
+  const blob = await response.blob();
+  const fileRef = storageRef(storage, `profileImages/${userId}`);
+  await uploadBytes(fileRef, blob);
+  const downloadUrl = await getDownloadURL(fileRef);
+  // Persist to Firestore user document
+  await setDoc(doc(db, 'users', userId), { profileImageUrl: downloadUrl }, { merge: true });
+  return downloadUrl;
 };
 
 // ─── Peer Group Firestore Functions ──────────────────────────────────────────
@@ -556,6 +578,17 @@ export const deleteGroupMessage = async (
   messageId: string,
 ): Promise<void> => {
   await deleteDoc(doc(db, 'peer_groups', groupId, 'chatMessages', messageId));
+};
+
+export const fetchUserProfile = async (
+  userId: string,
+): Promise<{ avatarSeed?: string; profileImageUrl?: string }> => {
+  const snap = await getDoc(doc(db, 'users', userId));
+  if (!snap.exists()) return {};
+  return {
+    avatarSeed: snap.data().avatarSeed as string | undefined,
+    profileImageUrl: snap.data().profileImageUrl as string | undefined,
+  };
 };
 
 // Subscribes to the private advisor thread for a specific flagged message.

@@ -20,10 +20,13 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
-import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply } from '../services/dataService';
+import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply, fetchUserProfile } from '../services/dataService';
 import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
 import { Message, ReviewStatus, PrivateThreadMessage } from '../types';
+import { subscribeGroupCalls } from '../services/groupCallService';
+import { LiveCallBanner } from '../components/LiveCallBanner';
+import { GroupCall } from '../types/groupCall';
 
 // ─── Message avatar ───────────────────────────────────────────────────────────
 const MessageAvatar = memo(({ seed, name, imageUrl }: { seed?: string; name?: string; imageUrl?: string }) => {
@@ -93,6 +96,9 @@ export const ChatScreen = () => {
   const [menuVisible, setMenuVisible] = useState(false);
   const [infoVisible, setInfoVisible] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Group call state — live + scheduled calls for this group
+  const [activeCalls, setActiveCalls] = useState<GroupCall[]>([]);
+
   // { flaggedMessageId, advisorId, advisorName } set when user taps "Reply privately"
   const [replyingToPrivate, setReplyingToPrivate] = useState<{
     flaggedMessageId: string;
@@ -104,6 +110,9 @@ export const ChatScreen = () => {
   const listRef = useRef<FlatList>(null);
   // Holds unsubscribe functions for active privateThread listeners; cleaned up on unmount / group change
   const privateThreadUnsubs = useRef<Record<string, () => void>>({});
+  // Live avatarSeed + profileImageUrl fetched from users/{senderId} — keyed by userId
+  const [userProfiles, setUserProfiles] = useState<Record<string, { avatarSeed?: string; profileImageUrl?: string }>>({});
+  const fetchedUserIds = useRef<Set<string>>(new Set());
 
   const handleExitGroup = () => {
     setMenuVisible(false);
@@ -176,8 +185,30 @@ export const ChatScreen = () => {
       Object.values(privateThreadUnsubs.current).forEach(u => u());
       privateThreadUnsubs.current = {};
       setPrivateThreads({});
+      // Reset profile cache on group change so fresh data is fetched
+      fetchedUserIds.current = new Set();
+      setUserProfiles({});
     };
   }, [groupId, isAI, user?.id]);
+
+  // Fetch live avatarSeed + profileImageUrl for each unique sender in the group
+  useEffect(() => {
+    if (isAI || groupMessages.length === 0) return;
+    const newIds = [...new Set(
+      groupMessages.map(m => m.senderId).filter((id): id is string => !!id)
+    )].filter(id => !fetchedUserIds.current.has(id));
+    if (newIds.length === 0) return;
+    newIds.forEach(id => fetchedUserIds.current.add(id));
+    Promise.all(newIds.map(id => fetchUserProfile(id).then(profile => ({ id, profile }))))
+      .then(results => {
+        setUserProfiles(prev => {
+          const next = { ...prev };
+          results.forEach(({ id, profile }) => { next[id] = profile; });
+          return next;
+        });
+      })
+      .catch(() => {});
+  }, [groupMessages, isAI]);
 
   // Subscribe to privateThread subcollections for the current user's own flagged messages.
   //
@@ -201,6 +232,13 @@ export const ChatScreen = () => {
         privateThreadUnsubs.current[msg.id] = unsub;
       });
   }, [groupMessages, groupId, isAI, user?.id]);
+
+  // Subscribe to live / scheduled group calls for this group
+  useEffect(() => {
+    if (isAI || !groupId) return;
+    const unsubscribe = subscribeGroupCalls(groupId, setActiveCalls);
+    return unsubscribe;
+  }, [groupId, isAI]);
 
   useEffect(() => {
     if (!isAI && groupId) {
@@ -269,6 +307,10 @@ export const ChatScreen = () => {
       setSending(false);
     }
   };
+
+  // Derived call state — filter by status for conditional rendering
+  const liveCall = activeCalls.find(c => c.status === 'live');
+  const scheduledCalls = activeCalls.filter(c => c.status === 'scheduled');
 
   return (
     <SafeAreaView style={styles.container}>
@@ -382,6 +424,16 @@ export const ChatScreen = () => {
         )}
       </View>
 
+      {/* Live / scheduled call banners — group chat only */}
+      {!isAI && (liveCall || scheduledCalls.length > 0) && (
+        <View style={styles.callBannersContainer}>
+          {liveCall && <LiveCallBanner call={liveCall} />}
+          {scheduledCalls.map(c => (
+            <LiveCallBanner key={c.id} call={c} />
+          ))}
+        </View>
+      )}
+
       {/* Messages */}
       <FlatList
         ref={listRef}
@@ -397,7 +449,11 @@ export const ChatScreen = () => {
             return (
               <View style={[styles.msgRow, deletedIsOwn ? styles.msgRowUser : styles.msgRowOther]}>
                 {!deletedIsOwn && (
-                  <MessageAvatar seed={msg.senderAvatarSeed} name={msg.senderName} />
+                  <MessageAvatar
+                    seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
+                    name={msg.senderName}
+                    imageUrl={userProfiles[msg.senderId ?? '']?.profileImageUrl}
+                  />
                 )}
                 <View style={[styles.msgWrapper, deletedIsOwn ? styles.userSide : styles.otherSide]}>
                   {(deletedIsOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
@@ -415,7 +471,7 @@ export const ChatScreen = () => {
                   </Text>
                 </View>
                 {deletedIsOwn && (
-                  <MessageAvatar seed={msg.senderAvatarSeed ?? user?.avatarSeed} name={user?.name} />
+                  <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
                 )}
               </View>
             );
@@ -440,9 +496,9 @@ export const ChatScreen = () => {
               <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
                 {!isOwn && (
                   <MessageAvatar
-                    seed={msg.senderAvatarSeed}
+                    seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
                     name={msg.senderName}
-                    imageUrl={isModerator ? group?.moderatorImageUrl : undefined}
+                    imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
                   />
                 )}
                 <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
@@ -506,7 +562,7 @@ export const ChatScreen = () => {
                   </Text>
                 </View>
                 {isOwn && (
-                  <MessageAvatar seed={msg.senderAvatarSeed ?? user?.avatarSeed} name={user?.name} />
+                  <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
                 )}
               </View>
 
@@ -691,6 +747,14 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   headerTitle: { fontSize: 15, fontWeight: 'bold', color: COLORS.text },
+  callBannersContainer: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+    backgroundColor: COLORS.white,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EFF6FF',
+  },
   messageList: { flex: 1, backgroundColor: COLORS.background },
   messageContent: { padding: 20, gap: 12 },
   msgRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
