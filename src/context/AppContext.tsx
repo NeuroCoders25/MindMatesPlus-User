@@ -25,7 +25,9 @@ import {
   continueAfterAdvisorApproval,
   runWeeklyKnnRecommendation,
   callKnnAndWriteResult,
+  hasUserRatedAdvisor,
 } from '../services/dataService';
+import { AdvisorRatingModal } from '../components/AdvisorRatingModal';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
 import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
@@ -157,6 +159,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [advisorApprovalNotification, setAdvisorApprovalNotification] = useState<string | null>(null);
   const [showAdvisorApprovalModal, setShowAdvisorApprovalModal] = useState(false);
   const [advisorApprovedCategory, setAdvisorApprovedCategory] = useState('');
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [ratingAdvisorId, setRatingAdvisorId] = useState('');
+  const [ratingAdvisorName, setRatingAdvisorName] = useState('');
+  const [ratingConnectionId, setRatingConnectionId] = useState('');
   const prevConnectionStatuses = useRef<Record<string, string>>({});
   // Ensures weekly KNN fires at most once per app session per user
   const knnTriggeredRef = useRef(false);
@@ -302,6 +308,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.log('[ApprovalPopup] approvalMessageSeen updated');
       } catch (err) {
         console.error('[ApprovalPopup] Failed to update approvalMessageSeen:', err);
+      }
+
+      // Offer rating if the user hasn't rated this connection yet
+      const advisorId = recommendationProfile?.approvedByAdvisorId;
+      const connectionId = recommendationProfile?.advisorConnectionId;
+      if (advisorId && connectionId) {
+        try {
+          const alreadyRated = await hasUserRatedAdvisor(user.id, advisorId, connectionId);
+          if (!alreadyRated) {
+            const advisorSnap = await getDoc(doc(db, 'advisors', advisorId));
+            const name = advisorSnap.exists()
+              ? (advisorSnap.data().name as string | undefined) ?? 'your advisor'
+              : 'your advisor';
+            setRatingAdvisorId(advisorId);
+            setRatingAdvisorName(name);
+            setRatingConnectionId(connectionId);
+            setShowRatingModal(true);
+          }
+        } catch (err) {
+          console.warn('[Rating] Could not check rating status:', err);
+        }
       }
     }
     if (navigationRef.isReady()) {
@@ -549,6 +576,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           </View>
         </View>
       </Modal>
+
+      {/* Post-approval rating prompt */}
+      {showRatingModal && (
+        <AdvisorRatingModal
+          visible={showRatingModal}
+          advisorName={ratingAdvisorName}
+          advisorId={ratingAdvisorId}
+          connectionId={ratingConnectionId}
+          onClose={() => setShowRatingModal(false)}
+          onSubmitted={() => console.log('[Rating] Advisor rated from approval flow')}
+        />
+      )}
     </AppContext.Provider>
   );
 };

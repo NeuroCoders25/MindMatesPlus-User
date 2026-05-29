@@ -4,7 +4,7 @@ import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
-  setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp,
+  setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp, runTransaction,
 } from 'firebase/firestore';
 import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService';
 import { awardJournalPoints, unlockDass21Badge } from './gamificationService';
@@ -114,13 +114,16 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
     getDocs(collection(db, 'advisors')),
   ]);
 
-  // Build name → imageUrl lookup from advisors collection
+  // Build name → imageUrl and name → availability lookups from advisors collection
   const advisorImageMap: Record<string, string> = {};
+  const advisorAvailabilityMap: Record<string, string> = {};
   advisorsSnap.docs.forEach(d => {
     const a = d.data();
     const name = (a.name ?? '').toLowerCase().trim();
     const img: string | undefined = a.profileImageUrl ?? a.imageUrl;
     if (name && img) advisorImageMap[name] = img;
+    const avail: string | undefined = a.availability;
+    if (name && avail) advisorAvailabilityMap[name] = avail;
   });
 
   return groupsSnap.docs.map(d => {
@@ -129,9 +132,9 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
     const imageUrl: string | undefined = data.group_image_url ?? data.imageUrl;
     const moderatorName: string | undefined =
       data.group_moderator ?? data.moderator_name ?? data.moderatorName ?? undefined;
-    const moderatorImageUrl: string | undefined = moderatorName
-      ? advisorImageMap[moderatorName.toLowerCase().trim()]
-      : undefined;
+    const key = moderatorName?.toLowerCase().trim();
+    const moderatorImageUrl: string | undefined = key ? advisorImageMap[key] : undefined;
+    const moderatorAvailability: string | undefined = key ? advisorAvailabilityMap[key] : undefined;
     return {
       id: d.id,
       name: data.group_name ?? data.name ?? '',
@@ -141,6 +144,7 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
       image: imageUrl ? { uri: imageUrl } : (GROUP_IMAGE_MAP[category] ?? GROUP_IMAGE_MAP['Wellness - Thriving']),
       moderatorName,
       moderatorImageUrl,
+      moderatorAvailability,
     };
   });
 };
@@ -718,7 +722,7 @@ export const fetchAdvisors = async (): Promise<Advisor[]> => {
     id: (d.data().uid || d.id) as string,
     name: d.data().name as string,
     specialty: (d.data().specialty || d.data().role) as string,
-    rating: d.data().rating as number,
+    rating: (d.data().averageRating ?? d.data().rating) as number | undefined,
     availability: d.data().availability as string,
     imageUrl: (d.data().profileImageUrl || d.data().imageUrl) as string | undefined,
     experience: d.data().experience as string | undefined,
@@ -871,6 +875,100 @@ export const updateUserAdvisorStatus = async (
     userStatus: 'under_review',
   }, { merge: true });
 };
+
+// ─── Advisor Rating Functions ─────────────────────────────────────────────────
+
+// Returns true when this user has already submitted a rating for the given connection.
+// Uses a deterministic doc ID so the check is a single point-read with no duplication.
+// Never throws — returns false on any error so the UI degrades gracefully.
+export async function hasUserRatedAdvisor(
+  userId: string,
+  advisorId: string,
+  connectionId: string,
+): Promise<boolean> {
+  try {
+    const snap = await getDoc(
+      doc(db, 'advisors', advisorId, 'ratings', `${userId}_${connectionId}`),
+    );
+    return snap.exists();
+  } catch {
+    return false;
+  }
+}
+
+interface SubmitRatingParams {
+  userId: string;
+  userNickname: string;
+  advisorId: string;
+  connectionId: string;
+  rating: number;
+  comment?: string;
+}
+
+// Writes a rating record and atomically updates the advisor's aggregate score.
+// The deterministic doc ID `${userId}_${connectionId}` prevents duplicate ratings.
+// Never throws — returns a result object so the caller can branch on success/failure.
+export async function submitAdvisorRating(
+  params: SubmitRatingParams,
+): Promise<{ success: boolean; alreadyRated?: boolean }> {
+  const { userId, userNickname, advisorId, connectionId, rating, comment } = params;
+
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return { success: false };
+  }
+
+  const ratingDocRef = doc(db, 'advisors', advisorId, 'ratings', `${userId}_${connectionId}`);
+  const advisorRef = doc(db, 'advisors', advisorId);
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const existingRating = await tx.get(ratingDocRef);
+      if (existingRating.exists()) {
+        throw { code: 'ALREADY_RATED' };
+      }
+
+      const advisorSnap = await tx.get(advisorRef);
+      const data = advisorSnap.exists() ? advisorSnap.data() : {};
+      const prevSum = typeof data['ratingSum'] === 'number' ? data['ratingSum'] : 0;
+      const prevCount = typeof data['ratingCount'] === 'number' ? data['ratingCount'] : 0;
+
+      const newSum = prevSum + rating;
+      const newCount = prevCount + 1;
+      const newAverage = Math.round((newSum / newCount) * 10) / 10;
+
+      tx.set(ratingDocRef, {
+        userId,
+        userNickname: userNickname ?? 'Anonymous',
+        advisorId,
+        connectionId,
+        rating,
+        comment: comment ?? '',
+        createdAt: serverTimestamp(),
+      });
+
+      tx.set(advisorRef, {
+        ratingSum: newSum,
+        ratingCount: newCount,
+        averageRating: newAverage,
+      }, { merge: true });
+    });
+
+    // Mark the connection so the rating prompt doesn't reappear
+    await setDoc(
+      doc(db, 'advisorConnections', connectionId),
+      { userRated: true },
+      { merge: true },
+    );
+
+    return { success: true };
+  } catch (err: unknown) {
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'ALREADY_RATED') {
+      return { success: false, alreadyRated: true };
+    }
+    console.warn('[Rating] submitAdvisorRating failed:', err);
+    return { success: false };
+  }
+}
 
 // ─── Advisor Chat Functions ───────────────────────────────────────────────────
 
@@ -1741,6 +1839,8 @@ export const subscribeToRecommendationProfile = (
       advisorConnectionStatus: raw.advisorConnectionStatus as string | undefined,
       approvedCategory: raw.approvedCategory as GroupCategory | undefined,
       approvalMessageSeen: raw.approvalMessageSeen as boolean | undefined,
+      approvedByAdvisorId: raw.approvedByAdvisorId as string | undefined,
+      advisorConnectionId: raw.advisorConnectionId as string | undefined,
       peerGroupRecommendationCategory: raw.peerGroupRecommendationCategory as GroupCategory | undefined,
       resourceRecommendationCategory: raw.resourceRecommendationCategory as GroupCategory | undefined,
       wellnessScore: typeof raw.wellnessScore === 'number' ? raw.wellnessScore : undefined,

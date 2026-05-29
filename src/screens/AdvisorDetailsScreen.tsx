@@ -14,6 +14,16 @@ const FALLBACK_AVATARS: Record<string, any> = {
   default: require('../assets/group_image5.png'),
 };
 
+const AVAILABILITY: Record<string, { label: string; color: string }> = {
+  online:  { label: 'Online',  color: '#10B981' },
+  busy:    { label: 'Busy',    color: '#F59E0B' },
+  away:    { label: 'Away',    color: '#6B7280' },
+  offline: { label: 'Offline', color: '#9CA3AF' },
+};
+
+const getAvailability = (raw: string | undefined) =>
+  AVAILABILITY[(raw ?? '').toLowerCase()] ?? { label: 'Online', color: '#10B981' };
+
 export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => {
   const { advisor } = route.params;
   const avatar = advisor.imageUrl ? { uri: advisor.imageUrl } : (FALLBACK_AVATARS[advisor.specialty] || FALLBACK_AVATARS['default']);
@@ -43,7 +53,10 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
                 <Ionicons name="person" size={60} color="#9CA3AF" />
               </View>
             )}
-            <View style={styles.onlineDot} />
+            <View style={[
+              styles.onlineDot,
+              { backgroundColor: getAvailability(advisor.availability).color },
+            ]} />
           </View>
           <Text style={styles.name}>{advisor.name}</Text>
           <Text style={styles.specialty}>{advisor.specialty}</Text>
@@ -71,8 +84,16 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
 
         <View style={styles.availabilityCard}>
           <View>
-            <Text style={styles.availabilityLabel}>NEXT AVAILABILITY</Text>
-            <Text style={styles.availabilityValue}>{advisor.availability ?? ''}</Text>
+            <Text style={styles.availabilityLabel}>AVAILABILITY</Text>
+            <View style={styles.availabilityRow}>
+              <View style={[
+                styles.availabilityDot,
+                { backgroundColor: getAvailability(advisor.availability).color },
+              ]} />
+              <Text style={styles.availabilityValue}>
+                {getAvailability(advisor.availability).label}
+              </Text>
+            </View>
           </View>
           <View style={styles.clockIconWrapper}>
             <Ionicons name="time-outline" size={24} color={COLORS.accentLight} />
@@ -159,7 +180,6 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: '#22C55E',
     borderWidth: 3,
     borderColor: COLORS.white,
   },
@@ -242,6 +262,16 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+  availabilityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  availabilityDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   availabilityValue: {
     fontSize: 16,

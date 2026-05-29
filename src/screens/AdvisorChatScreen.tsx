@@ -20,8 +20,10 @@ import {
   findAdvisorConnection,
   listenToAdvisorConnectionMessages,
   sendUserAdvisorMessage,
+  hasUserRatedAdvisor,
 } from '../services/dataService';
 import { useApp } from '../context/AppContext';
+import { AdvisorRatingModal } from '../components/AdvisorRatingModal';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AdvisorChat'>;
 
@@ -37,6 +39,8 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [loadingConnection, setLoadingConnection] = useState(true);
+  const [canRate, setCanRate] = useState(false);
+  const [showRating, setShowRating] = useState(false);
   const listRef = useRef<FlatList>(null);
 
   useEffect(() => {
@@ -54,6 +58,14 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
       .catch(err => console.error('[AdvisorChat] Failed to load connection:', err))
       .finally(() => setLoadingConnection(false));
   }, [user, advisor.id]);
+
+  // Check once per mount whether the user can still rate this connection
+  useEffect(() => {
+    if (!user || !connectionId) return;
+    hasUserRatedAdvisor(user.id, advisor.id, connectionId)
+      .then(rated => setCanRate(!rated))
+      .catch(() => setCanRate(false));
+  }, [user, advisor.id, connectionId]);
 
   useEffect(() => {
     if (!connectionId) return;
@@ -142,6 +154,16 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
           )}
         </View>
       </View>
+      {canRate && connectionId && connectionStatus !== 'pending' && (
+        <TouchableOpacity
+          style={styles.rateBtn}
+          onPress={() => setShowRating(true)}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="star-outline" size={16} color="#F59E0B" />
+          <Text style={styles.rateBtnText}>Rate</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 
@@ -251,6 +273,17 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
         )}
       </KeyboardAvoidingView>
+
+      {showRating && connectionId && (
+        <AdvisorRatingModal
+          visible={showRating}
+          advisorName={advisor.name}
+          advisorId={advisor.id}
+          connectionId={connectionId}
+          onClose={() => setShowRating(false)}
+          onSubmitted={() => setCanRate(false)}
+        />
+      )}
     </SafeAreaView>
   );
 };
@@ -415,4 +448,16 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   goBackBtnText: { color: 'white', fontWeight: '700', fontSize: 14 },
+  rateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    backgroundColor: '#FFFBEB',
+  },
+  rateBtnText: { fontSize: 12, color: '#D97706', fontWeight: '600' },
 });

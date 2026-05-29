@@ -29,6 +29,7 @@ export interface Group {
   image: any;
   moderatorName?: string;
   moderatorImageUrl?: string;
+  moderatorAvailability?: string;
 }
 
 // Advisor-review lifecycle for flagged group chat messages.
@@ -231,6 +232,8 @@ export interface MentalHealthRecommendationProfile {
   advisorConnectionStatus?: string;
   approvedCategory?: GroupCategory;
   approvalMessageSeen?: boolean;
+  approvedByAdvisorId?: string;
+  advisorConnectionId?: string;
   peerGroupRecommendationCategory?: GroupCategory;
   resourceRecommendationCategory?: GroupCategory;
   wellnessScore?: number;
@@ -253,7 +256,7 @@ export interface Advisor {
   id: string;
   name: string;
   specialty: string;
-  rating: number;
+  rating?: number;
   availability: string;
   imageUrl?: string;
   experience?: string;

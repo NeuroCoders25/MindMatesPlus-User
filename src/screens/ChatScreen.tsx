@@ -21,6 +21,15 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
 import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply, fetchUserProfile } from '../services/dataService';
+
+const AVAILABILITY: Record<string, { color: string }> = {
+  online:  { color: '#10B981' },
+  busy:    { color: '#F59E0B' },
+  away:    { color: '#6B7280' },
+  offline: { color: '#9CA3AF' },
+};
+const getModeratorStatusColor = (raw: string | undefined) =>
+  (AVAILABILITY[(raw ?? '').toLowerCase()] ?? AVAILABILITY['online']).color;
 import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
 import { Message, ReviewStatus, PrivateThreadMessage } from '../types';
@@ -352,9 +361,13 @@ export const ChatScreen = () => {
                       <Ionicons name="person" size={16} color="#2563EB" />
                     </View>
                   )}
-                  {/* Green verified badge pinned to bottom-right of avatar */}
+                  {/* Availability status badge pinned to bottom-right of avatar */}
                   <View style={styles.moderatorVerifiedBadge}>
-                    <Ionicons name="checkmark-circle" size={14} color="#16A34A" />
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={14}
+                      color={getModeratorStatusColor(group?.moderatorAvailability)}
+                    />
                   </View>
                 </View>
 

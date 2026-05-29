@@ -49,6 +49,18 @@ const getBtnConfig = (
   }
 };
 
+// ─── Availability config ──────────────────────────────────────────────────────
+
+const AVAILABILITY: Record<string, { label: string; color: string }> = {
+  online:  { label: 'Online',  color: '#10B981' },
+  busy:    { label: 'Busy',    color: '#F59E0B' },
+  away:    { label: 'Away',    color: '#6B7280' },
+  offline: { label: 'Offline', color: '#9CA3AF' },
+};
+
+const getAvailability = (raw: string | undefined) =>
+  AVAILABILITY[(raw ?? '').toLowerCase()] ?? { label: 'Online', color: '#10B981' };
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
@@ -147,7 +159,9 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
                     <Text style={styles.name}>{advisor.name ?? ''}</Text>
                     <View style={styles.ratingBox}>
                       <Ionicons name="star" size={12} color="#FACC15" />
-                      <Text style={styles.ratingText}>{advisor.rating ?? '5.0'}</Text>
+                      <Text style={styles.ratingText}>
+                        {advisor.rating != null ? String(advisor.rating) : '-'}
+                      </Text>
                     </View>
                   </View>
 
@@ -166,8 +180,15 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
 
                   <View style={styles.cardFooter}>
                     <View style={styles.availabilityRow}>
-                      <View style={styles.onlineDot} />
-                      <Text style={styles.availabilityText}>Available</Text>
+                      {(() => {
+                        const avail = getAvailability(advisor.availability);
+                        return (
+                          <>
+                            <View style={[styles.onlineDot, { backgroundColor: avail.color }]} />
+                            <Text style={styles.availabilityText}>{avail.label}</Text>
+                          </>
+                        );
+                      })()}
                     </View>
 
                     <TouchableOpacity
@@ -309,7 +330,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   availabilityRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  onlineDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' },
+  onlineDot: { width: 8, height: 8, borderRadius: 4 },
   availabilityText: { fontSize: 12, color: COLORS.muted, fontWeight: '500' },
 
   connectBtn: {
