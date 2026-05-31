@@ -50,6 +50,8 @@ module.exports = {
     extra: {
       zegoAppId: process.env.ZEGO_APP_ID,
       zegoServerSecret: process.env.ZEGO_SERVER_SECRET,
+      alertApiUrl: process.env.ALERT_API_URL,
+      mlApiUrl: process.env.ML_API_URL,
     },
   },
 };

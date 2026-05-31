@@ -22,12 +22,14 @@ import {
   updatePeerGroupRecommendationFromWeeklyTrend,
   listenToMentalHealthProfile, isUserRestricted,
   listenToAdvisorConnectionsWithNames,
+  listenToUserListenerConnections, ListenerConnection,
   continueAfterAdvisorApproval,
   runWeeklyKnnRecommendation,
   callKnnAndWriteResult,
   hasUserRatedAdvisor,
 } from '../services/dataService';
 import { AdvisorRatingModal } from '../components/AdvisorRatingModal';
+import { ListenerAcceptedToast } from '../components/ListenerAcceptedToast';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
 import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
@@ -68,6 +70,10 @@ interface AppContextType {
   setShowCrisisAlert: (show: boolean) => void;
   visitedGroupIds: string[];
   markGroupAsVisited: (groupId: string) => void;
+  listenerConnections: ListenerConnection[];
+  listenerAcceptedNotice: ListenerConnection | null;
+  clearListenerAcceptedNotice: () => void;
+  dataAccessBlocked: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -164,8 +170,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [ratingAdvisorName, setRatingAdvisorName] = useState('');
   const [ratingConnectionId, setRatingConnectionId] = useState('');
   const prevConnectionStatuses = useRef<Record<string, string>>({});
+  const [listenerConnections, setListenerConnections] = useState<ListenerConnection[]>([]);
+  const [listenerAcceptedNotice, setListenerAcceptedNotice] = useState<ListenerConnection | null>(null);
+  const prevListenerStatuses = useRef<Record<string, string>>({});
+  const isFirstListenerSnapshot = useRef(true);
+  const [dataAccessBlocked, setDataAccessBlocked] = useState(false);
   // Ensures weekly KNN fires at most once per app session per user
   const knnTriggeredRef = useRef(false);
+
+  const handleFirestoreError = (label: string) => (code: string) => {
+    if (code === 'permission-denied') {
+      console.warn('[Firestore] permission denied for', label);
+      setDataAccessBlocked(true);
+    } else {
+      console.warn('[Firestore] listener error for', label, '— code:', code);
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
@@ -191,7 +211,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setMentalHealthProfile(profile);
           console.log('[Firestore] Initial data loaded for user:', fbUser.uid);
         } catch (err) {
-          console.error('[Firestore] Failed to load initial data — operating offline:', err);
+          const code = (err as { code?: string })?.code;
+          if (code === 'permission-denied') {
+            console.warn('[Firestore] permission denied reading initial user data');
+            setDataAccessBlocked(true);
+          } else {
+            console.warn('[Firestore] Failed to load initial data — operating offline:', err);
+          }
           // Still set the user so the app is usable; data will be empty until Firestore reconnects
           setUser(mapFirebaseUser(fbUser));
         } finally {
@@ -227,10 +253,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const updated: Record<string, string> = {};
       connections.forEach(({ advisorId, status }) => { updated[advisorId] = status; });
       prevConnectionStatuses.current = updated;
-    });
+    }, handleFirestoreError('advisorConnections'));
     return () => {
       console.log('[Listener] Unsubscribed advisor connections for user:', user.id);
       unsub();
+    };
+  }, [user?.id]);
+
+  // ─── Listener expert connection tracking ──────────────────────────────────────
+  // Detects pending→accepted transitions and fires a non-blocking toast.
+  // Pre-existing accepted connections on launch are seeded silently (no notice).
+  useEffect(() => {
+    if (!user?.id) return;
+    isFirstListenerSnapshot.current = true;
+    const unsub = listenToUserListenerConnections(user.id, conns => {
+      if (isFirstListenerSnapshot.current) {
+        // Seed without firing any notices — connections were already accepted before launch
+        conns.forEach(c => { prevListenerStatuses.current[c.id] = c.status; });
+        isFirstListenerSnapshot.current = false;
+      } else {
+        conns.forEach(c => {
+          const prev = prevListenerStatuses.current[c.id];
+          if (prev === 'pending' && c.status === 'accepted') {
+            setListenerAcceptedNotice(c);
+          }
+          prevListenerStatuses.current[c.id] = c.status;
+        });
+      }
+      setListenerConnections(conns);
+    }, handleFirestoreError('listenerConnections'));
+    return () => {
+      unsub();
+      isFirstListenerSnapshot.current = true;
     };
   }, [user?.id]);
 
@@ -290,7 +344,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAdvisorApprovedCategory(category);
         setShowAdvisorApprovalModal(true);
       }
-    });
+    }, handleFirestoreError('mentalHealthProfile'));
     return () => {
       console.log('[Listener] Unsubscribed mental health profile for user:', user.id);
       unsub();
@@ -510,6 +564,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         aiMessages, sendAiMessage, sendGroupMessage,
         showCrisisAlert, setShowCrisisAlert,
         visitedGroupIds, markGroupAsVisited,
+        listenerConnections,
+        listenerAcceptedNotice,
+        clearListenerAcceptedNotice: () => setListenerAcceptedNotice(null),
+        dataAccessBlocked,
       }}
     >
       {children}
@@ -584,8 +642,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           advisorName={ratingAdvisorName}
           advisorId={ratingAdvisorId}
           connectionId={ratingConnectionId}
+          userId={user?.id ?? ''}
+          userNickname={user?.nickname ?? user?.name ?? 'Anonymous'}
           onClose={() => setShowRatingModal(false)}
           onSubmitted={() => console.log('[Rating] Advisor rated from approval flow')}
+        />
+      )}
+
+      {/* Listener expert accepted — non-blocking slide-down toast */}
+      {listenerAcceptedNotice && (
+        <ListenerAcceptedToast
+          visible
+          advisorName={listenerAcceptedNotice.advisorName ?? 'Your expert'}
+          onChat={() => {
+            const conn = listenerAcceptedNotice;
+            setListenerAcceptedNotice(null);
+            if (navigationRef.isReady()) {
+              navigationRef.navigate('AdvisorChat' as never, {
+                advisor: {
+                  id: conn.advisorId,
+                  name: conn.advisorName ?? 'Expert',
+                  specialty: '',
+                  availability: '',
+                },
+              } as never);
+            }
+          }}
+          onDismiss={() => setListenerAcceptedNotice(null)}
         />
       )}
     </AppContext.Provider>

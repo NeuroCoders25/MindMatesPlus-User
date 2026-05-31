@@ -9,13 +9,14 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { submitAdvisorRating } from '../services/dataService';
-import { useApp } from '../context/AppContext';
 
 interface Props {
   visible: boolean;
   advisorName: string;
   advisorId: string;
   connectionId: string;
+  userId: string;
+  userNickname: string;
   onClose: () => void;
   onSubmitted: () => void;
 }
@@ -27,10 +28,11 @@ export const AdvisorRatingModal: React.FC<Props> = ({
   advisorName,
   advisorId,
   connectionId,
+  userId,
+  userNickname,
   onClose,
   onSubmitted,
 }) => {
-  const { user } = useApp();
   const [stars, setStars] = useState(0);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -40,8 +42,8 @@ export const AdvisorRatingModal: React.FC<Props> = ({
     if (stars === 0) { setError('Please select a rating'); return; }
     setSubmitting(true);
     const result = await submitAdvisorRating({
-      userId: user?.id ?? '',
-      userNickname: user?.nickname ?? user?.name ?? 'Anonymous',
+      userId,
+      userNickname,
       advisorId,
       connectionId,
       rating: stars,

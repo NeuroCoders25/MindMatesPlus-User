@@ -13,7 +13,7 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -69,6 +69,27 @@ const msgAvatarStyles = StyleSheet.create({
   img: { width: 32, height: 32, borderRadius: 16 },
 });
 
+// ─── Mindy AI avatar ──────────────────────────────────────────────────────────
+const MindyAvatar = memo(() => (
+  <View style={mindyAvatarStyles.wrap}>
+    <MaterialCommunityIcons name="robot" size={18} color="#7C3AED" />
+  </View>
+));
+
+const mindyAvatarStyles = StyleSheet.create({
+  wrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#EDE9FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+  },
+});
+
 // ─── Review-status helpers ─────────────────────────────────────────────────────
 
 // Treat missing reviewStatus (older messages) as 'not_required'.
@@ -86,7 +107,7 @@ const isMessageVisible = (msg: Message, viewerId: string | undefined): boolean =
   return msg.senderId === viewerId;
 };
 
-export const ChatScreen = () => {
+export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
   const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited, isRestricted } = useApp();
@@ -321,8 +342,10 @@ export const ChatScreen = () => {
   const liveCall = activeCalls.find(c => c.status === 'live');
   const scheduledCalls = activeCalls.filter(c => c.status === 'scheduled');
 
+  const Wrapper = embedded ? View : SafeAreaView;
+
   return (
-    <SafeAreaView style={styles.container}>
+    <Wrapper style={styles.container}>
       {/* Group Info Modal */}
       <Modal visible={infoVisible} transparent animationType="fade" onRequestClose={() => setInfoVisible(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setInfoVisible(false)}>
@@ -406,7 +429,8 @@ export const ChatScreen = () => {
         </TouchableOpacity>
       </Modal>
 
-      {/* Header */}
+      {/* Header — hidden when embedded inside ListenerScreen */}
+      {!embedded && (
       <View style={styles.header}>
         {!isAI && (
           <TouchableOpacity
@@ -436,6 +460,7 @@ export const ChatScreen = () => {
           </TouchableOpacity>
         )}
       </View>
+      )}
 
       {/* Live / scheduled call banners — group chat only */}
       {!isAI && (liveCall || scheduledCalls.length > 0) && (
@@ -508,11 +533,13 @@ export const ChatScreen = () => {
               {/* Original message bubble */}
               <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
                 {!isOwn && (
-                  <MessageAvatar
-                    seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
-                    name={msg.senderName}
-                    imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
-                  />
+                  msg.sender === 'ai'
+                    ? <MindyAvatar />
+                    : <MessageAvatar
+                        seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
+                        name={msg.senderName}
+                        imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
+                      />
                 )}
                 <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
                   {(isOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
@@ -722,7 +749,7 @@ export const ChatScreen = () => {
           </View>
         </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </Wrapper>
   );
 };
 

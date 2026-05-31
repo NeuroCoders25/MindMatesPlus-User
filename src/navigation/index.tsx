@@ -4,7 +4,7 @@ import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import { navigationRef } from './navigationRef';
 import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useApp } from '../context/AppContext';
 import { COLORS } from '../services/dataService';
@@ -21,6 +21,7 @@ import { AdvisorChatScreen } from '../screens/AdvisorChatScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { GroupsScreen } from '../screens/GroupsScreen';
 import { ChatScreen } from '../screens/ChatScreen';
+import { ListenerScreen } from '../screens/ListenerScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { FeedbackScreen } from '../screens/FeedbackScreen';
@@ -59,7 +60,7 @@ export type RootStackParamList = {
 export type MainTabParamList = {
   Home: undefined;
   Groups: undefined;
-  AIChat: undefined;
+  Listener: undefined;
   Journal: undefined;
   Profile: undefined;
 };
@@ -76,7 +77,6 @@ type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
 const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
   Home: ['home', 'home-outline'],
   Groups: ['people', 'people-outline'],
-  AIChat: ['chatbubble', 'chatbubble-outline'],
   Journal: ['book', 'book-outline'],
   Profile: ['person', 'person-outline'],
 };
@@ -126,9 +126,14 @@ const MainTabs = () => {
         <MainTab.Screen name="Home" component={HomeScreen} />
         <MainTab.Screen name="Groups" component={GroupsScreen} />
         <MainTab.Screen
-          name="AIChat"
-          component={ChatScreen}
-          options={{ tabBarLabel: 'AI Chat' }}
+          name="Listener"
+          component={ListenerScreen}
+          options={{
+            tabBarLabel: 'Listener',
+            tabBarIcon: ({ color, size }) => (
+              <MaterialCommunityIcons name="face-agent" size={size} color={color} />
+            ),
+          }}
         />
         <MainTab.Screen name="Journal" component={JournalScreen} />
         <MainTab.Screen name="Profile" component={ProfileScreen} />

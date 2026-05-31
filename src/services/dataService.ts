@@ -1,12 +1,14 @@
 import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor, PrivateThreadMessage } from '../types';
-import { db, storage } from './firebaseConfig';
+import { db, auth, storage } from './firebaseConfig';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
   setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp, runTransaction,
 } from 'firebase/firestore';
-import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService';
+import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService'
+import { encryptText, decryptBatch, EncryptedMessage } from './cryptoService'
+import { triggerCriticalAlertEmail } from './criticalAlertService';
 import { awardJournalPoints, unlockDass21Badge } from './gamificationService';
 import { evaluateSupportReply } from './supportDetectionService';
 
@@ -529,14 +531,16 @@ export const saveChatMessage = async (
   text: string,
   senderAvatarSeed?: string,
 ): Promise<string> => {
+  // Moderation and ML run on plaintext BEFORE encryption
   const lower = text.toLowerCase();
   const flagged = CRISIS_KEYWORDS.some(kw => lower.includes(kw));
   const ref = collection(db, 'peer_groups', groupId, 'chatMessages');
   const msgTimestamp = Timestamp.now();
+  const encryptedText = await encryptText(text);
   const payload: Record<string, unknown> = {
     senderId,
     senderName,
-    text,
+    text: encryptedText,
     timestamp: msgTimestamp,
     flagged,
     reviewStatus: flagged ? 'pending' : 'not_required',
@@ -544,14 +548,14 @@ export const saveChatMessage = async (
   if (senderAvatarSeed) payload.senderAvatarSeed = senderAvatarSeed;
   const docRef = await addDoc(ref, payload);
   const savedId = docRef.id;
-  // Run BERT on this message and persist the prediction — used later by support detection
+  // BERT runs on plaintext — never on ciphertext
   predictText(text)
     .then(result => updateDoc(
       doc(db, 'peer_groups', groupId, 'chatMessages', savedId),
       { bertPrediction: { label: result.prediction, confidence: result.confidence } },
     ))
     .catch(err => console.warn('[bert-msg] non-fatal:', err));
-  // Run detection in the background — never block the chat UI
+  // Support detection runs on plaintext
   evaluateSupportReply(groupId, savedId, senderId, text, msgTimestamp)
     .catch(err => console.warn('[support-detect] non-fatal:', err));
   return savedId;
@@ -566,28 +570,38 @@ export const subscribeGroupMessages = (
     collection(db, 'peer_groups', groupId, 'chatMessages'),
     orderBy('timestamp', 'asc')
   );
+  let decryptInFlight = false;
   return onSnapshot(
     q,
-    snapshot => {
-      const messages: Message[] = snapshot.docs.map(d => ({
-        id: d.id,
-        text: d.data().text,
-        sender: 'peer',
-        senderId: d.data().senderId as string,
-        senderName: d.data().senderName as string,
-        senderAvatarSeed: d.data().senderAvatarSeed as string | undefined,
-        timestamp: (d.data().timestamp as Timestamp).toDate(),
-        flagged: d.data().flagged ?? false,
-        reviewStatus: d.data().reviewStatus ?? 'not_required',
-        reviewedBy: d.data().reviewedBy ?? null,
-        reviewedAt: d.data().reviewedAt ? (d.data().reviewedAt as Timestamp).toDate() : null,
-        deletedByAdvisor: d.data().deletedByAdvisor ?? false,
-        hasPrivateThread: d.data().hasPrivateThread ?? false,
-      }));
-      callback(messages);
+    async snapshot => {
+      if (decryptInFlight) return;
+      decryptInFlight = true;
+      try {
+        const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+        const texts = docs.map(d => d.data.text as EncryptedMessage | string);
+        const plain = await decryptBatch(texts);
+        const messages: Message[] = docs.map((d, i) => ({
+          id: d.id,
+          text: plain[i],
+          sender: 'peer',
+          senderId: d.data.senderId as string,
+          senderName: d.data.senderName as string,
+          senderAvatarSeed: d.data.senderAvatarSeed as string | undefined,
+          timestamp: (d.data.timestamp as Timestamp).toDate(),
+          flagged: (d.data.flagged as boolean) ?? false,
+          reviewStatus: (d.data.reviewStatus as string) ?? 'not_required',
+          reviewedBy: (d.data.reviewedBy as string | null) ?? null,
+          reviewedAt: d.data.reviewedAt ? (d.data.reviewedAt as Timestamp).toDate() : null,
+          deletedByAdvisor: (d.data.deletedByAdvisor as boolean) ?? false,
+          hasPrivateThread: (d.data.hasPrivateThread as boolean) ?? false,
+        }));
+        callback(messages);
+      } finally {
+        decryptInFlight = false;
+      }
     },
     err => {
-      console.error('[Firestore] subscribeGroupMessages error:', err);
+      console.warn('[Firestore] subscribeGroupMessages error:', err.code);
     }
   );
 };
@@ -627,29 +641,39 @@ export const subscribePrivateThread = (
     collection(db, 'peer_groups', groupId, 'chatMessages', flaggedMessageId, 'privateThread'),
     where('visibleTo', 'array-contains', userId),
   );
+  let decryptInFlight = false;
   return onSnapshot(
     q,
-    snapshot => {
-      const messages: PrivateThreadMessage[] = snapshot.docs
-        .map(d => ({
-          id: d.id,
-          senderId: d.data().senderId as string,
-          senderName: d.data().senderName as string,
-          senderRole: d.data().senderRole as 'user' | 'advisor',
-          receiverId: d.data().receiverId as string,
-          receiverName: d.data().receiverName as string,
-          text: d.data().text as string,
-          timestamp: (d.data().timestamp as Timestamp).toDate(),
-          isPrivate: d.data().isPrivate ?? true,
-          threadType: d.data().threadType as 'advisor_private_message' | 'user_private_reply',
-          flaggedMessageRef: d.data().flaggedMessageRef as string,
-          visibleTo: d.data().visibleTo as string[],
-        }))
-        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      callback(messages);
+    async snapshot => {
+      if (decryptInFlight) return;
+      decryptInFlight = true;
+      try {
+        const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+        const texts = docs.map(d => d.data.text as EncryptedMessage | string);
+        const plain = await decryptBatch(texts);
+        const messages: PrivateThreadMessage[] = docs
+          .map((d, i) => ({
+            id: d.id,
+            senderId: d.data.senderId as string,
+            senderName: d.data.senderName as string,
+            senderRole: d.data.senderRole as 'user' | 'advisor',
+            receiverId: d.data.receiverId as string,
+            receiverName: d.data.receiverName as string,
+            text: plain[i],
+            timestamp: (d.data.timestamp as Timestamp).toDate(),
+            isPrivate: (d.data.isPrivate as boolean) ?? true,
+            threadType: d.data.threadType as 'advisor_private_message' | 'user_private_reply',
+            flaggedMessageRef: d.data.flaggedMessageRef as string,
+            visibleTo: d.data.visibleTo as string[],
+          }))
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        callback(messages);
+      } finally {
+        decryptInFlight = false;
+      }
     },
     err => {
-      console.error('[Firestore] subscribePrivateThread error:', err);
+      console.warn('[Firestore] subscribePrivateThread error:', err.code);
     },
   );
 };
@@ -666,6 +690,7 @@ export const sendPrivateThreadReply = async (
   advisorName: string,
   text: string,
 ): Promise<string> => {
+  const encryptedText = await encryptText(text);
   const ref = collection(
     db, 'peer_groups', groupId, 'chatMessages', flaggedMessageId, 'privateThread',
   );
@@ -675,7 +700,7 @@ export const sendPrivateThreadReply = async (
     senderRole: 'user',
     receiverId: advisorId,
     receiverName: advisorName,
-    text,
+    text: encryptedText,
     timestamp: Timestamp.now(),
     isPrivate: true,
     threadType: 'user_private_reply',
@@ -767,7 +792,7 @@ export const listenToUserAdvisorConnections = (
       callback(connections);
     },
     err => {
-      console.error('[Firestore] listenToUserAdvisorConnections error:', err);
+      console.warn('[Firestore] listenToUserAdvisorConnections error:', err.code);
     }
   );
 };
@@ -776,7 +801,8 @@ export const listenToUserAdvisorConnections = (
 // Used by the global approval notification in AppContext.
 export const listenToAdvisorConnectionsWithNames = (
   userId: string,
-  callback: (connections: Array<{ advisorId: string; advisorName: string; status: AdvisorConnectionStatusValue }>) => void
+  callback: (connections: Array<{ advisorId: string; advisorName: string; status: AdvisorConnectionStatusValue }>) => void,
+  onError?: (code: string) => void,
 ): (() => void) => {
   const q = query(collection(db, 'advisorConnections'), where('userId', '==', userId));
   return onSnapshot(
@@ -792,10 +818,94 @@ export const listenToAdvisorConnectionsWithNames = (
       callback(connections);
     },
     err => {
-      console.error('[Firestore] listenToAdvisorConnectionsWithNames error:', err);
+      console.warn('[Firestore] listenToAdvisorConnectionsWithNames error:', err.code);
+      onError?.(err.code);
+      callback([]);
     }
   );
 };
+
+// ─── Listener Expert Connection Listener ─────────────────────────────────────
+
+export interface ListenerConnection {
+  id: string;
+  advisorId: string;
+  advisorName?: string;
+  userMentalHealthCategory?: string;
+  status: string;
+  createdAt: unknown;
+  acceptedAt?: unknown;
+}
+
+const advisorNameCache = new Map<string, string>();
+
+export function listenToUserListenerConnections(
+  userId: string,
+  callback: (connections: ListenerConnection[]) => void,
+  onError?: (code: string) => void,
+): () => void {
+  const q = query(
+    collection(db, 'advisorConnections'),
+    where('userId', '==', userId),
+    where('caseType', '==', 'listener_support'),
+  );
+
+  return onSnapshot(
+    q,
+    async snapshot => {
+      try {
+        // Resolve advisor names, using cache to avoid repeated reads
+        const advisorIds = [...new Set(
+          snapshot.docs.map(d => d.data().advisorId as string).filter(Boolean)
+        )];
+        await Promise.all(
+          advisorIds
+            .filter(id => !advisorNameCache.has(id))
+            .map(async id => {
+              try {
+                const snap = await getDoc(doc(db, 'advisors', id));
+                if (snap.exists()) {
+                  advisorNameCache.set(id, (snap.data().name as string) ?? id);
+                }
+              } catch {
+                // leave cache empty for this id; name will fall back to undefined
+              }
+            })
+        );
+
+        const connections: ListenerConnection[] = snapshot.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            advisorId: data.advisorId as string,
+            advisorName: advisorNameCache.get(data.advisorId as string) ?? data.advisorName as string | undefined,
+            userMentalHealthCategory: data.userMentalHealthCategory as string | undefined,
+            status: (data.status as string) ?? 'pending',
+            createdAt: data.createdAt,
+            acceptedAt: data.acceptedAt,
+          };
+        });
+
+        // Sort descending by createdAt client-side (avoids composite index)
+        connections.sort((a, b) => {
+          const ta = (a.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+          const tb = (b.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+          return tb - ta;
+        });
+
+        callback(connections);
+      } catch (err) {
+        console.warn('[listenToUserListenerConnections] Error processing snapshot:', err);
+        callback([]);
+      }
+    },
+    err => {
+      console.warn('[listenToUserListenerConnections] Snapshot error:', err.code);
+      onError?.(err.code);
+      callback([]);
+    }
+  );
+}
 
 // Returns the active connection status (pending/accepted) for an advisor,
 // or null if there is no active connection. Approved/reviewed/closed are treated
@@ -860,8 +970,146 @@ export const connectToAdvisor = async (
     userStatus: 'under_review',
   }, { merge: true });
 
+  console.log('[connectToAdvisor] Created connection, triggering alert email for:', docRef.id);
+  void triggerCriticalAlertEmail(docRef.id);
+
   return docRef.id;
 };
+
+// ─── Listener Expert Connection ───────────────────────────────────────────────
+
+// Routes a listener-tab expert request by the user's risk category.
+// - Normal / moderate → caseType: "listener_support" (no access restriction)
+// - Severe / critical  → caseType: "critical_case"  (sets userStatus to "under_review")
+//
+// REQUIRED Firestore rule (firestore.rules):
+// match /advisorConnections/{id} {
+//   allow create: if request.auth != null
+//                 && request.resource.data.userId == request.auth.uid;
+//   allow read:   if request.auth != null
+//                 && (resource.data.userId == request.auth.uid
+//                  || resource.data.advisorId == request.auth.uid);
+//   allow update: if request.auth != null
+//                 && (resource.data.userId == request.auth.uid
+//                  || resource.data.advisorId == request.auth.uid);
+// }
+export async function requestExpertListener(params: {
+  userId: string;
+  userNickname: string;
+  advisorId: string;
+}): Promise<
+  | { success: true; caseType: string; connectionId: string }
+  | { success: false; alreadyConnected: true }
+  | { success: false }
+> {
+  const { userId: paramUserId, userNickname, advisorId } = params;
+
+  // Confirm auth state — prefer the live Firebase auth uid over the context value
+  const uid = auth.currentUser?.uid ?? paramUserId;
+  if (!uid) {
+    console.error('[requestExpertListener] No authenticated user — cannot create connection');
+    return { success: false };
+  }
+  const userId = uid;
+
+  console.log('[requestExpertListener] Called with:', { userId, advisorId, userNickname });
+
+  try {
+    // Read mental health profile
+    const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+    const profileSnap = await getDoc(profileRef);
+    const profileData = profileSnap.exists() ? profileSnap.data() : null;
+
+    // Determine risk category (priority order: active → baseline → initial); fallback so
+    // a missing profile never blocks the connection
+    const activeCat    = profileData?.activeRecommendationCategory   as string | undefined;
+    const baselineCat  = profileData?.baselineRecommendationCategory as string | undefined;
+    const initialCat   = profileData?.initialQuestionnaireScore?.category as string | undefined;
+    const riskCategory = activeCat ?? baselineCat ?? initialCat ?? 'Normal';
+
+    const isCritical = riskCategory.toLowerCase().includes('severe') ||
+                       riskCategory.toLowerCase().includes('critical');
+    const caseType   = isCritical ? 'critical_case' : 'listener_support';
+
+    console.log('[requestExpertListener] riskCategory:', riskCategory, '| caseType:', caseType);
+
+    // Duplicate check — scoped to same advisor + listener_support + this user only.
+    // We query without a status filter (avoids composite index) and filter active
+    // statuses client-side so terminal ones (approved/reviewed/ended) never block.
+    const connectionsRef = collection(db, 'advisorConnections');
+    const dupQuery = query(
+      connectionsRef,
+      where('userId',    '==', userId),
+      where('advisorId', '==', advisorId),
+      where('caseType',  '==', 'listener_support'),
+    );
+    const dupSnap = await getDocs(dupQuery);
+
+    console.log(
+      '[requestExpertListener] Duplicate check — docs found:', dupSnap.size,
+      dupSnap.docs.map(d => ({
+        id: d.id,
+        status: d.data().status,
+        caseType: d.data().caseType,
+        advisorId: d.data().advisorId,
+      })),
+    );
+
+    const activeDup = dupSnap.docs.find(d => {
+      const s = ((d.data().status as string) ?? '').toLowerCase();
+      return s === 'pending' || s === 'accepted';
+    });
+
+    if (activeDup) {
+      console.log('[requestExpertListener] Duplicate active connection found:',
+        activeDup.id, activeDup.data().status);
+      return { success: false, alreadyConnected: true };
+    }
+
+    // Create the connection — every field must be non-undefined for Firestore addDoc
+    console.log('[requestExpertListener] CREATING connection for advisorId:', advisorId);
+    const docRef = await addDoc(connectionsRef, {
+      userId,
+      advisorId,
+      userNickname:             userNickname ?? 'Student',
+      status:                   'pending',
+      caseType,
+      source:                   'listener_expert',
+      userMentalHealthCategory: riskCategory,
+      reason:                   'User requested expert listener support',
+      createdAt:                serverTimestamp(),
+      lastMessage:              '',
+      lastMessageAt:            null,
+    });
+    console.log('[requestExpertListener] CREATED connection:', docRef.id);
+
+    if (isCritical) {
+      console.log('[requestExpertListener] Critical case — triggering alert email for:', docRef.id);
+      void triggerCriticalAlertEmail(docRef.id);
+    }
+
+    // Only restrict access for critical cases — never for listener_support
+    if (isCritical) {
+      await updateDoc(
+        doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile'),
+        { userStatus: 'under_review' },
+      );
+    }
+
+    return { success: true, caseType, connectionId: docRef.id };
+  } catch (err: unknown) {
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'permission-denied') {
+      console.error(
+        '[requestExpertListener] PERMISSION DENIED — check firestore.rules for ' +
+        'advisorConnections create/read permissions',
+        err,
+      );
+    } else {
+      console.error('[requestExpertListener] FAILED to create connection:', err);
+    }
+    return { success: false };
+  }
+}
 
 export const updateUserAdvisorStatus = async (
   userId: string,
@@ -1031,27 +1279,33 @@ export const listenToAdvisorConnectionMessages = (
     collection(db, 'advisorConnections', connectionId, 'messages'),
     orderBy('createdAt', 'asc')
   );
+  let decryptInFlight = false;
   return onSnapshot(
     q,
-    snapshot => {
-      callback(
-        snapshot.docs.map(d => {
-          const data = d.data();
-          return {
-            id: d.id,
-            senderId: data.senderId as string,
-            senderRole: data.senderRole as 'user' | 'advisor',
-            receiverId: data.receiverId as string,
-            messageText: data.messageText as string,
-            messageType: data.messageType ?? 'text',
-            createdAt: data.createdAt?.toDate() ?? new Date(),
-            isRead: data.isRead ?? false,
-          };
-        })
-      );
+    async snapshot => {
+      if (decryptInFlight) return;
+      decryptInFlight = true;
+      try {
+        const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+        const texts = docs.map(d => d.data.messageText as EncryptedMessage | string);
+        const plain = await decryptBatch(texts);
+        const messages: AdvisorMessage[] = docs.map((d, i) => ({
+          id: d.id,
+          senderId: d.data.senderId as string,
+          senderRole: d.data.senderRole as 'user' | 'advisor',
+          receiverId: d.data.receiverId as string,
+          messageText: plain[i],
+          messageType: (d.data.messageType as string) ?? 'text',
+          createdAt: d.data.createdAt?.toDate() ?? new Date(),
+          isRead: (d.data.isRead as boolean) ?? false,
+        }));
+        callback(messages);
+      } finally {
+        decryptInFlight = false;
+      }
     },
     err => {
-      console.error('[Firestore] listenToAdvisorConnectionMessages error:', err);
+      console.warn('[Firestore] listenToAdvisorConnectionMessages error:', err.code);
     }
   );
 };
@@ -1075,16 +1329,18 @@ export const sendUserAdvisorMessage = async (
   advisorId: string,
   text: string
 ): Promise<void> => {
+  const encryptedText = await encryptText(text);
   await addDoc(collection(db, 'advisorConnections', connectionId, 'messages'), {
     senderId: userId,
     senderRole: 'user',
     receiverId: advisorId,
-    messageText: text,
+    messageText: encryptedText,
     messageType: 'text',
     createdAt: serverTimestamp(),
     isRead: false,
   });
-  console.log('[AdvisorChat] Message sent:', text);
+  console.log('[AdvisorChat] Message sent');
+  // lastMessage preview stays plaintext — it is connection metadata, not a stored message
   await updateAdvisorConnectionLastMessage(connectionId, text, userId);
 };
 
@@ -1314,7 +1570,7 @@ export const listenToUserRecommendationCategory = (
       });
     },
     err => {
-      console.error('[Firestore] listenToUserRecommendationCategory error:', err);
+      console.warn('[Firestore] listenToUserRecommendationCategory error:', err.code);
       callback({ active: null, baseline: null });
     }
   );
@@ -1429,7 +1685,7 @@ export const subscribeToMlMentalHealthProfile = (
       });
     },
     err => {
-      console.error('[Firestore] subscribeToMlMentalHealthProfile error:', err);
+      console.warn('[Firestore] subscribeToMlMentalHealthProfile error:', err.code);
       callback(null);
     }
   );
@@ -1794,7 +2050,8 @@ export const updateMlEmotionProfile = async (
 // Returns an unsubscribe function — call it in a useEffect cleanup.
 export const subscribeToRecommendationProfile = (
   userId: string,
-  callback: (profile: MentalHealthRecommendationProfile | null) => void
+  callback: (profile: MentalHealthRecommendationProfile | null) => void,
+  onError?: (code: string) => void,
 ): (() => void) => {
   console.log('[Firestore] Subscribing recommendation profile for user:', userId);
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
@@ -1846,7 +2103,8 @@ export const subscribeToRecommendationProfile = (
       wellnessScore: typeof raw.wellnessScore === 'number' ? raw.wellnessScore : undefined,
     });
   }, err => {
-    console.error('[Firestore] subscribeToRecommendationProfile error:', err);
+    console.warn('[Firestore] subscribeToRecommendationProfile error:', err.code);
+    onError?.(err.code);
     callback(null);
   });
 };
@@ -1854,8 +2112,9 @@ export const subscribeToRecommendationProfile = (
 // Alias for subscribeToRecommendationProfile — preferred name for feature code.
 export const listenToMentalHealthProfile = (
   userId: string,
-  callback: (profile: MentalHealthRecommendationProfile | null) => void
-): (() => void) => subscribeToRecommendationProfile(userId, callback);
+  callback: (profile: MentalHealthRecommendationProfile | null) => void,
+  onError?: (code: string) => void,
+): (() => void) => subscribeToRecommendationProfile(userId, callback, onError);
 
 // Marks the advisor approval message as seen so it is not shown again.
 // Called when the user taps "Continue to App" on the approval modal.
@@ -2038,11 +2297,11 @@ export const fetchUserGroupChatTexts = async (userId: string): Promise<string[]>
     )
   );
 
-  const texts = results.flatMap(snap =>
-    snap.docs
-      .map(d => (d.data().text as string | undefined)?.trim() ?? '')
-      .filter(t => t.length >= 3)
+  const rawTexts = results.flatMap(snap =>
+    snap.docs.map(d => d.data().text as EncryptedMessage | string)
   );
+  const plain = await decryptBatch(rawTexts);
+  const texts = plain.filter(t => t.trim().length >= 3);
   console.log('[ML] Group messages found:', texts.length);
   return texts;
 };
@@ -2056,17 +2315,18 @@ export const fetchUserAiChatTexts = async (userId: string): Promise<string[]> =>
   );
   const snap = await getDocs(q);
   // Only analyze the user's own messages — not the AI bot's responses.
-  const texts = snap.docs
-    .filter(d => d.data().sender === 'user')
-    .map(d => (d.data().text as string | undefined)?.trim() ?? '')
-    .filter(t => t.length >= 3);
+  const userDocs = snap.docs.filter(d => d.data().sender === 'user');
+  const rawTexts = userDocs.map(d => d.data().text as EncryptedMessage | string);
+  const plain = await decryptBatch(rawTexts);
+  const texts = plain.filter(t => t.trim().length >= 3);
   console.log('[ML] AI messages found:', texts.length);
   return texts;
 };
 
 export const saveAiChatMessage = async (userId: string, text: string): Promise<void> => {
+  const encryptedText = await encryptText(text);
   await addDoc(collection(db, 'users', userId, 'aiChatMessages'), {
-    text,
+    text: encryptedText,
     timestamp: Timestamp.now(),
     sender: 'user',
   });
