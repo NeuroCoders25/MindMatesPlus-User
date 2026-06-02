@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation';
 import {
   COLORS,
@@ -21,6 +22,8 @@ import {
   listenToAdvisorConnectionMessages,
   sendUserAdvisorMessage,
   hasUserRatedAdvisor,
+  markChatRead,
+  getLastReadAt,
 } from '../services/dataService';
 import { useApp } from '../context/AppContext';
 import { AdvisorRatingModal } from '../components/AdvisorRatingModal';
@@ -42,6 +45,11 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [canRate, setCanRate] = useState(false);
   const [showRating, setShowRating] = useState(false);
   const listRef = useRef<FlatList>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [firstUnreadIndex, setFirstUnreadIndex] = useState<number | null>(null);
+  const lastReadAtRef = useRef<Date | null>(null);
+  const initializedRef = useRef(false);
+  const hasScrolledRef = useRef(false);
 
   useEffect(() => {
     if (!user) return;
@@ -69,12 +77,59 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   useEffect(() => {
     if (!connectionId) return;
-    const unsubscribe = listenToAdvisorConnectionMessages(connectionId, incoming => {
-      setMessages(incoming);
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
-    });
-    return unsubscribe;
+
+    lastReadAtRef.current = null;
+    initializedRef.current = false;
+    hasScrolledRef.current = false;
+    setUnreadCount(0);
+    setFirstUnreadIndex(null);
+
+    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
+
+    (async () => {
+      lastReadAtRef.current = await getLastReadAt(connectionId, 'advisor');
+      if (cancelled) return;
+
+      unsubscribe = listenToAdvisorConnectionMessages(connectionId, incoming => {
+        setMessages(incoming);
+
+        if (!initializedRef.current) {
+          const lastRead = lastReadAtRef.current;
+          if (lastRead) {
+            let idx = -1;
+            let count = 0;
+            incoming.forEach((m, i) => {
+              if (m.createdAt > lastRead && m.senderRole === 'advisor') {
+                if (idx === -1) idx = i;
+                count++;
+              }
+            });
+            setUnreadCount(count);
+            setFirstUnreadIndex(idx >= 0 ? idx : null);
+          }
+          initializedRef.current = true;
+        }
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      initializedRef.current = false;
+      hasScrolledRef.current = false;
+    };
   }, [connectionId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (connectionId) {
+          markChatRead(connectionId, 'advisor');
+        }
+      };
+    }, [connectionId]),
+  );
 
   const handleSend = async () => {
     const text = input.trim();
@@ -113,19 +168,31 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
     return null;
   };
 
-  const renderMessage = ({ item }: { item: AdvisorMessage }) => {
+  const renderMessage = ({ item, index }: { item: AdvisorMessage; index: number }) => {
+    const showDivider = firstUnreadIndex === index && unreadCount > 0;
     const isUser = item.senderRole === 'user';
     return (
-      <View style={[styles.msgWrapper, isUser ? styles.userSide : styles.advisorSide]}>
-        {!isUser && <Text style={styles.senderLabel}>{advisor.name}</Text>}
-        <View style={[styles.bubble, isUser ? styles.userBubble : styles.advisorBubble]}>
-          <Text style={isUser ? styles.userText : styles.advisorText}>
-            {item.messageText}
+      <View>
+        {showDivider && (
+          <View style={styles.unreadDivider}>
+            <View style={styles.unreadLine} />
+            <Text style={styles.unreadLabel}>
+              {unreadCount} new message{unreadCount > 1 ? 's' : ''}
+            </Text>
+            <View style={styles.unreadLine} />
+          </View>
+        )}
+        <View style={[styles.msgWrapper, isUser ? styles.userSide : styles.advisorSide]}>
+          {!isUser && <Text style={styles.senderLabel}>{advisor.name}</Text>}
+          <View style={[styles.bubble, isUser ? styles.userBubble : styles.advisorBubble]}>
+            <Text style={isUser ? styles.userText : styles.advisorText}>
+              {item.messageText}
+            </Text>
+          </View>
+          <Text style={styles.timestamp}>
+            {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </Text>
         </View>
-        <Text style={styles.timestamp}>
-          {item.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        </Text>
       </View>
     );
   };
@@ -169,7 +236,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   if (loadingConnection) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
         {renderHeader(false)}
         <View style={styles.centeredState}>
           <ActivityIndicator size="large" color={COLORS.primary} />
@@ -180,7 +247,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   if (!connectionId) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={['top']}>
         {renderHeader(false)}
         <View style={styles.centeredState}>
           <Ionicons name="link-outline" size={48} color={COLORS.muted} />
@@ -197,7 +264,7 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
       {renderHeader()}
       {renderStatusBanner()}
 
@@ -213,7 +280,36 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
           renderItem={renderMessage}
           contentContainerStyle={styles.messageList}
           showsVerticalScrollIndicator={false}
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+          onContentSizeChange={() => {
+            if (!initializedRef.current) return;
+            if (!hasScrolledRef.current) {
+              hasScrolledRef.current = true;
+              if (firstUnreadIndex !== null && firstUnreadIndex >= 0) {
+                listRef.current?.scrollToIndex({
+                  index: firstUnreadIndex,
+                  animated: false,
+                  viewPosition: 0.1,
+                });
+              } else {
+                listRef.current?.scrollToEnd({ animated: false });
+              }
+            } else {
+              listRef.current?.scrollToEnd({ animated: true });
+            }
+          }}
+          onScrollToIndexFailed={info => {
+            listRef.current?.scrollToOffset({
+              offset: info.averageItemLength * info.index,
+              animated: false,
+            });
+            setTimeout(() => {
+              listRef.current?.scrollToIndex({
+                index: info.index,
+                animated: false,
+                viewPosition: 0.1,
+              });
+            }, 200);
+          }}
           ListEmptyComponent={
             <View style={styles.emptyChat}>
               <Ionicons name="chatbubbles-outline" size={40} color={COLORS.muted} />
@@ -460,4 +556,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFBEB',
   },
   rateBtnText: { fontSize: 12, color: '#D97706', fontWeight: '600' },
+  // ── Unread messages divider ────────────────────────────────────────────────
+  unreadDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 12,
+    paddingHorizontal: 16,
+  },
+  unreadLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E53E3E',
+  },
+  unreadLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#E53E3E',
+  },
 });

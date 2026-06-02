@@ -8,6 +8,7 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -185,7 +186,7 @@ export const HomeScreen = () => {
     'General Wellbeing';
 
   return (
-    <View style={{ flex: 1 }}>
+    <SafeAreaView style={{ flex: 1 }} edges={['top']}>
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
@@ -490,7 +491,7 @@ export const HomeScreen = () => {
         </View>
       </View>
     )}
-    </View>
+    </SafeAreaView>
   );
 };
 

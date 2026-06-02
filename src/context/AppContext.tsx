@@ -65,7 +65,7 @@ interface AppContextType {
   isRestricted: boolean;
   aiMessages: Message[];
   sendAiMessage: (text: string) => Promise<void>;
-  sendGroupMessage: (groupId: string, text: string) => Promise<void>;
+  sendGroupMessage: (groupId: string, text: string, replyTo?: { id: string; text: string; senderName: string }) => Promise<void>;
   showCrisisAlert: boolean;
   setShowCrisisAlert: (show: boolean) => void;
   visitedGroupIds: string[];
@@ -500,9 +500,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAiMessages(seeded);
   };
 
-  const sendGroupMessage = async (groupId: string, text: string) => {
+  const sendGroupMessage = async (groupId: string, text: string, replyTo?: { id: string; text: string; senderName: string }) => {
     if (!user) return;
-    await saveChatMessage(groupId, user.id, user.name, text, user.avatarSeed);
+    await saveChatMessage(groupId, user.id, user.name, text, user.avatarSeed, replyTo);
     runMlAnalysisForText(user.id, text, 'group_chat').catch(() => {});
   };
 

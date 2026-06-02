@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -33,9 +34,9 @@ export const ResultScreen: React.FC<Props> = ({ navigation }) => {
 
   if (!dass21Result) {
     return (
-      <View style={[styles.container, { justifyContent: 'center' }]}>
+      <SafeAreaView style={[styles.scroll, { justifyContent: 'center' }]} edges={['top']}>
         <Text style={{ color: COLORS.muted, textAlign: 'center' }}>No result available.</Text>
-      </View>
+      </SafeAreaView>
     );
   }
 
@@ -56,8 +57,9 @@ export const ResultScreen: React.FC<Props> = ({ navigation }) => {
   const iconBg   = group <= 2 ? '#FEF2F2' : group === 3 ? '#FFF3E0' : '#F1F8E9';
 
   return (
+    <SafeAreaView style={styles.scroll} edges={['top']}>
     <ScrollView
-      style={styles.scroll}
+      style={{ flex: 1 }}
       contentContainerStyle={styles.container}
       showsVerticalScrollIndicator={false}
     >
@@ -93,6 +95,7 @@ export const ResultScreen: React.FC<Props> = ({ navigation }) => {
         {ctaLabel}
       </Button>
     </ScrollView>
+    </SafeAreaView>
   );
 };
 

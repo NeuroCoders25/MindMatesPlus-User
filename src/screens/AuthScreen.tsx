@@ -9,6 +9,7 @@ import {
   Platform,
   Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
 import { ScrollView } from 'react-native-gesture-handler';
@@ -345,8 +346,9 @@ const avatarSvg = useMemo(
   };
 
   return (
+    <SafeAreaView style={styles.outer} edges={['top']}>
     <KeyboardAvoidingView
-      style={styles.outer}
+      style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView
@@ -554,6 +556,7 @@ const avatarSvg = useMemo(
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
@@ -562,7 +565,7 @@ const styles = StyleSheet.create({
   container: { flexGrow: 1 },
   poster: { width: '100%', height: 260 },
   logoWrap: {
-    paddingTop: 56,
+    paddingTop: 20,
     alignItems: 'center',
     paddingBottom: 4,
     backgroundColor: COLORS.background,

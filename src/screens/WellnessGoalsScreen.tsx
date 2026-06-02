@@ -8,6 +8,7 @@ import {
   TouchableOpacity,
   Animated,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
@@ -110,8 +111,9 @@ export const WellnessGoalsScreen = () => {
   }, [user?.id]);
 
   return (
+    <SafeAreaView style={styles.container} edges={['top']}>
     <ScrollView
-      style={styles.container}
+      style={{ flex: 1 }}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
@@ -130,90 +132,6 @@ export const WellnessGoalsScreen = () => {
         )}
       </View>
 
-      {/* Wellbeing Insight Card */}
-      {insightLoading ? (
-        <Card style={styles.insightCard}>
-          <ActivityIndicator size="small" color={COLORS.accent} />
-          <Text style={styles.insightLoadingText}>Loading insight…</Text>
-        </Card>
-      ) : !mlInsight ? (
-        <Card style={styles.insightCard}>
-          <Ionicons name="sparkles-outline" size={22} color={COLORS.muted} />
-          <Text style={styles.insightEmptyText}>No journal insights yet</Text>
-          <Text style={styles.insightEmptySubText}>
-            Write a journal entry to see your emotion pattern here.
-          </Text>
-        </Card>
-      ) : (() => {
-        const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
-        const categoryLbl = ML_CATEGORY_MAP[mlInsight.latestPrediction] ?? mlInsight.latestPrediction;
-        const dominantLabel = ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? mlInsight.dominantCategory;
-        const activeCategory = recommendationProfile?.activeRecommendationCategory;
-        const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
-        return (
-          <Card style={[styles.insightCard, { borderLeftColor: palette.border, borderLeftWidth: 4 }]}>
-            <View style={styles.insightHeader}>
-              <View style={styles.insightHeaderLeft}>
-                <Ionicons name="sparkles" size={14} color={palette.accent} />
-                <Text style={[styles.insightTitle, { color: palette.accent }]}>WELLBEING INSIGHT</Text>
-              </View>
-              <Text style={styles.insightTime}>{formatRelativeTime(mlInsight.lastUpdated)}</Text>
-            </View>
-
-            {wellnessScore !== null && (
-              <View style={styles.wellnessScoreRow}>
-                <View style={styles.wellnessScoreLeft}>
-                  <Text style={styles.insightFieldLabel}>Mental Wellness Score</Text>
-                  <Text style={[styles.wellnessScoreValue, { color: palette.accent }]}>
-                    {wellnessScore}%
-                  </Text>
-                </View>
-                <View style={styles.wellnessScoreRight}>
-                  <Text style={styles.insightFieldLabel}>Category</Text>
-                  <Text style={[styles.dominantValue, { color: palette.accent }]} numberOfLines={2}>
-                    {activeCategory}
-                  </Text>
-                </View>
-              </View>
-            )}
-
-            <View style={styles.insightMainRow}>
-              <View style={styles.insightMainLeft}>
-                <Text style={styles.insightFieldLabel}>Latest Emotion</Text>
-                <View style={[styles.emotionBadge, { backgroundColor: palette.bg }]}>
-                  <Text style={[styles.emotionBadgeText, { color: palette.accent }]}>
-                    {categoryLbl}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.insightMainRight}>
-                <Text style={styles.insightFieldLabel}>Dominant Pattern</Text>
-                <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
-              </View>
-            </View>
-
-            <View style={styles.countsRow}>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Depression</Text>
-                <Text style={[styles.countChipValue, { color: '#EF4444' }]}>{mlInsight.depressionCount}</Text>
-              </View>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(245,158,11,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Anxiety</Text>
-                <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>{mlInsight.anxietyCount}</Text>
-              </View>
-              <View style={[styles.countChip, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
-                <Text style={styles.countChipLabel}>Normal</Text>
-                <Text style={[styles.countChipValue, { color: '#22C55E' }]}>{mlInsight.normalCount}</Text>
-              </View>
-            </View>
-
-            <Text style={styles.insightDisclaimer}>
-              AI suggestion only — not professional advice
-            </Text>
-          </Card>
-        );
-      })()}
-
       {/* Support Score Card */}
       <SupportScoreCard supportScore={supportScore} earnedBadges={earnedBadges} />
 
@@ -225,10 +143,95 @@ export const WellnessGoalsScreen = () => {
             transform: [{ translateY: slideAnim }],
           }}
         >
+          {/* Wellbeing Insight Card (DEV only) */}
+          {insightLoading ? (
+            <Card style={styles.insightCard}>
+              <ActivityIndicator size="small" color={COLORS.accent} />
+              <Text style={styles.insightLoadingText}>Loading insight…</Text>
+            </Card>
+          ) : !mlInsight ? (
+            <Card style={styles.insightCard}>
+              <Ionicons name="sparkles-outline" size={22} color={COLORS.muted} />
+              <Text style={styles.insightEmptyText}>No journal insights yet</Text>
+              <Text style={styles.insightEmptySubText}>
+                Write a journal entry to see your emotion pattern here.
+              </Text>
+            </Card>
+          ) : (() => {
+            const palette = INSIGHT_COLORS[mlInsight.dominantCategory] ?? INSIGHT_COLORS['normal'];
+            const categoryLbl = ML_CATEGORY_MAP[mlInsight.latestPrediction] ?? mlInsight.latestPrediction;
+            const dominantLabel = ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? mlInsight.dominantCategory;
+            const activeCategory = recommendationProfile?.activeRecommendationCategory;
+            const wellnessScore = activeCategory ? calculateWellnessScore(activeCategory) : null;
+            return (
+              <Card style={[styles.insightCard, { borderLeftColor: palette.border, borderLeftWidth: 4 }]}>
+                <View style={styles.insightHeader}>
+                  <View style={styles.insightHeaderLeft}>
+                    <Ionicons name="sparkles" size={14} color={palette.accent} />
+                    <Text style={[styles.insightTitle, { color: palette.accent }]}>WELLBEING INSIGHT</Text>
+                  </View>
+                  <Text style={styles.insightTime}>{formatRelativeTime(mlInsight.lastUpdated)}</Text>
+                </View>
+
+                {wellnessScore !== null && (
+                  <View style={styles.wellnessScoreRow}>
+                    <View style={styles.wellnessScoreLeft}>
+                      <Text style={styles.insightFieldLabel}>Mental Wellness Score</Text>
+                      <Text style={[styles.wellnessScoreValue, { color: palette.accent }]}>
+                        {wellnessScore}%
+                      </Text>
+                    </View>
+                    <View style={styles.wellnessScoreRight}>
+                      <Text style={styles.insightFieldLabel}>Category</Text>
+                      <Text style={[styles.dominantValue, { color: palette.accent }]} numberOfLines={2}>
+                        {activeCategory}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+
+                <View style={styles.insightMainRow}>
+                  <View style={styles.insightMainLeft}>
+                    <Text style={styles.insightFieldLabel}>Latest Emotion</Text>
+                    <View style={[styles.emotionBadge, { backgroundColor: palette.bg }]}>
+                      <Text style={[styles.emotionBadgeText, { color: palette.accent }]}>
+                        {categoryLbl}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.insightMainRight}>
+                    <Text style={styles.insightFieldLabel}>Dominant Pattern</Text>
+                    <Text style={[styles.dominantValue, { color: palette.accent }]}>{dominantLabel}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.countsRow}>
+                  <View style={[styles.countChip, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
+                    <Text style={styles.countChipLabel}>Depression</Text>
+                    <Text style={[styles.countChipValue, { color: '#EF4444' }]}>{mlInsight.depressionCount}</Text>
+                  </View>
+                  <View style={[styles.countChip, { backgroundColor: 'rgba(245,158,11,0.08)' }]}>
+                    <Text style={styles.countChipLabel}>Anxiety</Text>
+                    <Text style={[styles.countChipValue, { color: '#F59E0B' }]}>{mlInsight.anxietyCount}</Text>
+                  </View>
+                  <View style={[styles.countChip, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
+                    <Text style={styles.countChipLabel}>Normal</Text>
+                    <Text style={[styles.countChipValue, { color: '#22C55E' }]}>{mlInsight.normalCount}</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.insightDisclaimer}>
+                  AI suggestion only — not professional advice
+                </Text>
+              </Card>
+            );
+          })()}
+
           <MLDiagnosticDashboard uid={user.id} />
         </Animated.View>
       )}
     </ScrollView>
+    </SafeAreaView>
   );
 };
 

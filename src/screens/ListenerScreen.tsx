@@ -11,7 +11,7 @@ export const ListenerScreen: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('mindy');
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Listener</Text>
         <Text style={styles.headerSubtitle}>Someone to talk to, whenever you need</Text>

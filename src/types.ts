@@ -58,6 +58,11 @@ export interface Message {
   /** Set by the advisor portal when a privateThread subcollection is started on this message.
    *  When true the app subscribes to chatMessages/{id}/privateThread for the message sender. */
   hasPrivateThread?: boolean;
+  replyTo?: {
+    id: string;
+    text: string;
+    senderName: string;
+  };
 }
 
 // Stored at: peer_groups/{groupId}/chatMessages/{flaggedMsgId}/privateThread

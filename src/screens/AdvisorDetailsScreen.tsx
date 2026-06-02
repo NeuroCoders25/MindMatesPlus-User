@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Image } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -34,7 +35,7 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
   const aboutText = advisor.about || `Specializing in cognitive behavioral therapy and anxiety disorders. Dedicated to helping individuals find peace and resilience.`;
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
@@ -114,7 +115,7 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
           </View>
         </TouchableOpacity>
       </View>
-    </View>
+    </SafeAreaView>
   );
 };
 
@@ -127,7 +128,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 60,
+    paddingTop: 16,
     paddingHorizontal: 24,
     paddingBottom: 16,
   },

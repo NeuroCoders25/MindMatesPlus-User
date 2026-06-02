@@ -3,6 +3,7 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   Alert, Image, Modal, StatusBar, Dimensions, ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
@@ -177,7 +178,8 @@ export const ProfileScreen = () => {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       {/* Avatar */}
       <View style={styles.avatarSection}>
         {/* Tapping the avatar itself opens the photo picker */}
@@ -285,6 +287,7 @@ export const ProfileScreen = () => {
         </View>
       </Modal>
     </ScrollView>
+    </SafeAreaView>
   );
 };
 

@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Modal,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -115,9 +116,9 @@ export const JournalScreen = () => {
   };
 
   return (
-    <>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
-        style={styles.container}
+        style={{ flex: 1 }}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
@@ -365,6 +366,7 @@ export const JournalScreen = () => {
         </View>
       </ScrollView>
 
+
       {/* Entry Detail Modal */}
       <Modal visible={!!selectedEntry} transparent animationType="fade">
         <TouchableOpacity
@@ -403,7 +405,7 @@ export const JournalScreen = () => {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
-    </>
+    </SafeAreaView>
   );
 };
 

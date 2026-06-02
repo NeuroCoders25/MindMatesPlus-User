@@ -530,6 +530,7 @@ export const saveChatMessage = async (
   senderName: string,
   text: string,
   senderAvatarSeed?: string,
+  replyTo?: { id: string; text: string; senderName: string },
 ): Promise<string> => {
   // Moderation and ML run on plaintext BEFORE encryption
   const lower = text.toLowerCase();
@@ -546,6 +547,7 @@ export const saveChatMessage = async (
     reviewStatus: flagged ? 'pending' : 'not_required',
   };
   if (senderAvatarSeed) payload.senderAvatarSeed = senderAvatarSeed;
+  if (replyTo) payload.replyTo = replyTo;
   const docRef = await addDoc(ref, payload);
   const savedId = docRef.id;
   // BERT runs on plaintext — never on ciphertext
@@ -594,6 +596,7 @@ export const subscribeGroupMessages = (
           reviewedAt: d.data.reviewedAt ? (d.data.reviewedAt as Timestamp).toDate() : null,
           deletedByAdvisor: (d.data.deletedByAdvisor as boolean) ?? false,
           hasPrivateThread: (d.data.hasPrivateThread as boolean) ?? false,
+          replyTo: d.data.replyTo as { id: string; text: string; senderName: string } | undefined,
         }));
         callback(messages);
       } finally {
@@ -3211,3 +3214,131 @@ export const runWeeklyKnnRecommendation = async (userId: string): Promise<void> 
   // Persist to the KNN-owned recommendationState document.
   await saveKnnRecommendationState(userId, result.recommended_group, weeklyEmotion);
 };
+
+// ─── Chat Read State ──────────────────────────────────────────────────────────
+
+export async function markChatRead(
+  chatId: string,
+  type: 'group' | 'advisor',
+): Promise<void> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+  try {
+    if (type === 'group') {
+      await setDoc(
+        doc(db, 'users', uid, 'chatReadState', chatId),
+        { lastReadAt: serverTimestamp(), chatId, type: 'group' },
+        { merge: true },
+      );
+    } else {
+      await setDoc(
+        doc(db, 'advisorConnections', chatId),
+        { userLastReadAt: serverTimestamp() },
+        { merge: true },
+      );
+    }
+  } catch (e) {
+    console.warn('markChatRead failed:', e);
+  }
+}
+
+export async function getLastReadAt(
+  chatId: string,
+  type: 'group' | 'advisor',
+): Promise<Date | null> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return null;
+  try {
+    if (type === 'group') {
+      const snap = await getDoc(doc(db, 'users', uid, 'chatReadState', chatId));
+      const ts = snap.exists() ? snap.data().lastReadAt : null;
+      return ts?.toDate ? ts.toDate() : null;
+    } else {
+      const snap = await getDoc(doc(db, 'advisorConnections', chatId));
+      const ts = snap.exists() ? snap.data().userLastReadAt : null;
+      return ts?.toDate ? ts.toDate() : null;
+    }
+  } catch (e) {
+    console.warn('getLastReadAt failed:', e);
+    return null;
+  }
+}
+
+// Subscribes to both the chat's messages AND the user's lastReadAt document.
+// Fires callback(count) whenever either changes — so the badge updates the
+// moment markChatRead() writes to Firestore, without a screen reload.
+export function subscribeUnreadCount(
+  chatId: string,
+  type: 'group' | 'advisor',
+  callback: (count: number) => void,
+): () => void {
+  const uid = auth.currentUser?.uid;
+  if (!uid) {
+    callback(0);
+    return () => {};
+  }
+
+  let cancelled = false;
+  let lastReadAt: Date | null = null;
+  let msgDocs: { senderId: string; msgDate: Date | null }[] = [];
+
+  const tsField = type === 'group' ? 'timestamp' : 'createdAt';
+  const msgCollection =
+    type === 'group'
+      ? collection(db, 'peer_groups', chatId, 'chatMessages')
+      : collection(db, 'advisorConnections', chatId, 'messages');
+  const readStateRef =
+    type === 'group'
+      ? doc(db, 'users', uid, 'chatReadState', chatId)
+      : doc(db, 'advisorConnections', chatId);
+  const readField = type === 'group' ? 'lastReadAt' : 'userLastReadAt';
+
+  const recount = () => {
+    if (cancelled) return;
+    if (!lastReadAt) {
+      callback(0);
+      return;
+    }
+    const lr = lastReadAt;
+    const count = msgDocs.filter(
+      d => d.msgDate !== null && d.msgDate > lr && d.senderId !== uid,
+    ).length;
+    callback(count);
+  };
+
+  // Listener 1: watches the read-state doc so the badge clears as soon as
+  // markChatRead() writes — even while GroupsScreen is in the background.
+  const unsubReadState = onSnapshot(
+    readStateRef,
+    snap => {
+      if (cancelled) return;
+      const raw = snap.exists() ? (snap.data()[readField] as Timestamp | null) : null;
+      lastReadAt = raw?.toDate ? raw.toDate() : null;
+      recount();
+    },
+    () => {},
+  );
+
+  // Listener 2: watches the message collection.
+  const unsubMsgs = onSnapshot(
+    query(msgCollection, orderBy(tsField, 'asc')),
+    snapshot => {
+      if (cancelled) return;
+      msgDocs = snapshot.docs.map(d => {
+        const ts = d.data()[tsField] as Timestamp | null;
+        return {
+          senderId: d.data().senderId as string,
+          msgDate: ts?.toDate ? ts.toDate() : null,
+        };
+      });
+      recount();
+    },
+    () => callback(0),
+  );
+
+  return () => {
+    cancelled = true;
+    unsubReadState();
+    unsubMsgs();
+  };
+}

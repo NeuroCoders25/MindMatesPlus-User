@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,15 +12,16 @@ import {
   Alert,
   Image,
 } from 'react-native';
+import ReanimatedSwipeable, { SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
-import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply, fetchUserProfile } from '../services/dataService';
+import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply, fetchUserProfile, markChatRead, getLastReadAt } from '../services/dataService';
 
 const AVAILABILITY: Record<string, { color: string }> = {
   online:  { color: '#10B981' },
@@ -90,6 +91,49 @@ const mindyAvatarStyles = StyleSheet.create({
   },
 });
 
+// ─── Swipe-to-reply row wrapper ───────────────────────────────────────────────
+const SwipeableMessageRow = memo(({
+  onReply,
+  children,
+}: {
+  onReply: () => void;
+  children: React.ReactNode;
+}) => {
+  const swipeableRef = useRef<SwipeableMethods>(null);
+
+  const renderLeftActions = () => (
+    <View style={swipeReplyStyles.action}>
+      <Ionicons name="return-down-forward-outline" size={22} color="#2563EB" />
+    </View>
+  );
+
+  return (
+    <ReanimatedSwipeable
+      ref={swipeableRef}
+      renderLeftActions={renderLeftActions}
+      onSwipeableOpen={(direction) => {
+        if (direction === 'left') {
+          onReply();
+          swipeableRef.current?.close();
+        }
+      }}
+      friction={2}
+      leftThreshold={40}
+      overshootLeft={false}
+    >
+      {children}
+    </ReanimatedSwipeable>
+  );
+});
+
+const swipeReplyStyles = StyleSheet.create({
+  action: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+});
+
 // ─── Review-status helpers ─────────────────────────────────────────────────────
 
 // Treat missing reviewStatus (older messages) as 'not_required'.
@@ -138,6 +182,15 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
   // keyed by flaggedMessageId → sorted thread messages
   const [privateThreads, setPrivateThreads] = useState<Record<string, PrivateThreadMessage[]>>({});
   const listRef = useRef<FlatList>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [firstUnreadIndex, setFirstUnreadIndex] = useState<number | null>(null);
+  const firstUnreadIndexRef = useRef<number | null>(null);
+  const lastReadAtRef = useRef<Date | null>(null);
+  const initializedRef = useRef(false);
+  const initialScrollDoneRef = useRef(false);
+  const openTimeRef = useRef<number>(Date.now());
+  const userHasScrolledRef = useRef(false);
+  const prevLengthRef = useRef(0);
   // Holds unsubscribe functions for active privateThread listeners; cleaned up on unmount / group change
   const privateThreadUnsubs = useRef<Record<string, () => void>>({});
   // Live avatarSeed + profileImageUrl fetched from users/{senderId} — keyed by userId
@@ -197,20 +250,70 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
 
   const messages: Message[] = isAI ? aiMessages : groupMessages;
 
-  // Subscribe to real-time Firestore messages for group chats
+  // Subscribe to real-time Firestore messages for group chats.
+  // Loads lastReadAt first so the unread divider position is stable on open.
   useEffect(() => {
     if (isAI || !groupId) return;
-    const unsubscribe = subscribeGroupMessages(groupId, incoming => {
-      // Mark messages from current user as 'user', all others as 'peer'
-      const mapped: Message[] = incoming.map(msg => ({
-        ...msg,
-        sender: msg.senderId === user?.id ? 'user' : 'peer',
-        senderName: msg.senderId === user?.id ? undefined : msg.senderName,
-      }));
-      setGroupMessages(mapped.filter(msg => isMessageVisible(msg, user?.id)));
-    });
+
+    // Reset unread state when the group changes
+    lastReadAtRef.current = null;
+    initializedRef.current = false;
+    initialScrollDoneRef.current = false;
+    openTimeRef.current = Date.now();
+    userHasScrolledRef.current = false;
+    prevLengthRef.current = 0;
+    setUnreadCount(0);
+    setFirstUnreadIndex(null);
+    firstUnreadIndexRef.current = null;
+
+    let unsubscribeMessages: (() => void) | null = null;
+    let cancelled = false;
+
+    (async () => {
+      lastReadAtRef.current = await getLastReadAt(groupId, 'group');
+      if (cancelled) return;
+
+      unsubscribeMessages = subscribeGroupMessages(groupId, incoming => {
+        const mapped: Message[] = incoming.map(msg => ({
+          ...msg,
+          sender: msg.senderId === user?.id ? 'user' : 'peer',
+          senderName: msg.senderId === user?.id ? undefined : msg.senderName,
+        }));
+        const filtered = mapped.filter(msg => isMessageVisible(msg, user?.id));
+        setGroupMessages(filtered);
+
+        // Compute unread once on the first snapshot so the divider stays fixed
+        if (!initializedRef.current) {
+          const lastRead = lastReadAtRef.current;
+          if (lastRead) {
+            const uid = user?.id;
+            let idx = -1;
+            let count = 0;
+            filtered.forEach((m, i) => {
+              if (m.timestamp > lastRead && m.senderId !== uid) {
+                if (idx === -1) idx = i;
+                count++;
+              }
+            });
+            const firstUnread = idx >= 0 ? idx : null;
+            setUnreadCount(count);
+            setFirstUnreadIndex(firstUnread);
+            firstUnreadIndexRef.current = firstUnread;
+          }
+          initializedRef.current = true;
+        }
+      });
+    })();
+
     return () => {
-      unsubscribe();
+      cancelled = true;
+      unsubscribeMessages?.();
+      initializedRef.current = false;
+      initialScrollDoneRef.current = false;
+      openTimeRef.current = Date.now();
+      userHasScrolledRef.current = false;
+      prevLengthRef.current = 0;
+      firstUnreadIndexRef.current = null;
       // Also tear down all private-thread listeners when the group subscription resets
       Object.values(privateThreadUnsubs.current).forEach(u => u());
       privateThreadUnsubs.current = {};
@@ -276,11 +379,63 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
     }
   }, [groupId, isAI, markGroupAsVisited]);
 
-  useEffect(() => {
-    if (messages.length > 0) {
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+  const scrollToInitialPosition = useCallback((animated: boolean) => {
+    const idx = firstUnreadIndexRef.current;
+    if (idx !== null && idx >= 0) {
+      try {
+        listRef.current?.scrollToIndex({ index: idx, animated, viewPosition: 0.2 });
+      } catch {
+        listRef.current?.scrollToEnd({ animated });
+      }
+    } else {
+      listRef.current?.scrollToEnd({ animated });
     }
-  }, [messages.length]);
+  }, []);
+
+  // AI chat: keep scrolled to latest on every new message
+  useEffect(() => {
+    if (!isAI || messages.length === 0) return;
+    const t = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+    return () => clearTimeout(t);
+  }, [messages.length, isAI]);
+
+  // Group chat: re-pin to initial position at intervals to cover async decrypt + image loads
+  useEffect(() => {
+    if (isAI || groupMessages.length === 0) return;
+    if (userHasScrolledRef.current) return;
+    const timers = [150, 500, 1000].map(delay =>
+      setTimeout(() => {
+        if (!userHasScrolledRef.current) {
+          scrollToInitialPosition(false);
+        }
+      }, delay),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [groupMessages.length, isAI, scrollToInitialPosition]);
+
+  // Group chat: scroll to end when a new message arrives after initial positioning is done
+  useEffect(() => {
+    if (isAI || groupMessages.length === 0) return;
+    const grew = groupMessages.length > prevLengthRef.current;
+    prevLengthRef.current = groupMessages.length;
+    if (!grew) return;
+    if (!initialScrollDoneRef.current) return;
+    const t = setTimeout(() => {
+      listRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+    return () => clearTimeout(t);
+  }, [groupMessages.length, isAI]);
+
+  // Mark chat as read when the user leaves the screen
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (!isAI && groupId) {
+          markChatRead(groupId, 'group');
+        }
+      };
+    }, [groupId, isAI]),
+  );
 
   const handleSend = async () => {
     const text = inputText.trim();
@@ -343,9 +498,10 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
   const scheduledCalls = activeCalls.filter(c => c.status === 'scheduled');
 
   const Wrapper = embedded ? View : SafeAreaView;
+  const wrapperProps = embedded ? {} : { edges: ['top'] as const };
 
   return (
-    <Wrapper style={styles.container}>
+    <Wrapper style={styles.container} {...wrapperProps}>
       {/* Group Info Modal */}
       <Modal visible={infoVisible} transparent animationType="fade" onRequestClose={() => setInfoVisible(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setInfoVisible(false)}>
@@ -480,12 +636,62 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
         style={styles.messageList}
         contentContainerStyle={styles.messageContent}
         showsVerticalScrollIndicator={false}
-        renderItem={({ item: msg }) => {
+        onContentSizeChange={() => {
+          if (isAI) {
+            listRef.current?.scrollToEnd({ animated: false });
+            return;
+          }
+          if (userHasScrolledRef.current) return;
+          const sinceOpen = Date.now() - openTimeRef.current;
+          if (sinceOpen < 1500) {
+            scrollToInitialPosition(false);
+          } else if (!initialScrollDoneRef.current) {
+            scrollToInitialPosition(false);
+            initialScrollDoneRef.current = true;
+          }
+        }}
+        onScrollBeginDrag={() => {
+          userHasScrolledRef.current = true;
+          initialScrollDoneRef.current = true;
+        }}
+        onScrollToIndexFailed={(info) => {
+          listRef.current?.scrollToOffset({
+            offset: info.averageItemLength * info.index,
+            animated: false,
+          });
+          setTimeout(() => {
+            if (!userHasScrolledRef.current) {
+              try {
+                listRef.current?.scrollToIndex({
+                  index: info.index,
+                  animated: false,
+                  viewPosition: 0.2,
+                });
+              } catch {
+                listRef.current?.scrollToEnd({ animated: false });
+              }
+            }
+          }, 250);
+        }}
+        renderItem={({ item: msg, index }) => {
+          const showDivider = !isAI && firstUnreadIndex === index && unreadCount > 0;
+          const unreadDivider = showDivider ? (
+            <View style={styles.unreadDivider}>
+              <View style={styles.unreadLine} />
+              <Text style={styles.unreadLabel}>
+                {unreadCount} new message{unreadCount > 1 ? 's' : ''}
+              </Text>
+              <View style={styles.unreadLine} />
+            </View>
+          ) : null;
+
           // Advisor hard-deleted — replace bubble in its original position for everyone.
           if (msg.deletedByAdvisor) {
             const deletedIsOwn = msg.sender === 'user';
             return (
-              <View style={[styles.msgRow, deletedIsOwn ? styles.msgRowUser : styles.msgRowOther]}>
+              <View>
+                {unreadDivider}
+                <View style={[styles.msgRow, deletedIsOwn ? styles.msgRowUser : styles.msgRowOther]}>
                 {!deletedIsOwn && (
                   <MessageAvatar
                     seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
@@ -512,6 +718,7 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
                   <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
                 )}
               </View>
+              </View>
             );
           }
 
@@ -530,6 +737,7 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
 
           return (
             <View>
+              {unreadDivider}
               {/* Original message bubble */}
               <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
                 {!isOwn && (
@@ -1234,4 +1442,22 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 4,
   },
   moderatorBubbleText: { color: '#14532D' },
+  // ── Unread messages divider ────────────────────────────────────────────────
+  unreadDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 12,
+    paddingHorizontal: 16,
+  },
+  unreadLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#6C63FF',
+  },
+  unreadLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6C63FF',
+  },
 });
