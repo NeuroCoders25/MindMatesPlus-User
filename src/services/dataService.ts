@@ -746,7 +746,7 @@ export const getMlGroupCategory = (dominantCategory: string): GroupCategory =>
 
 export const fetchAdvisors = async (): Promise<Advisor[]> => {
   const snap = await getDocs(collection(db, 'advisors'));
-  return snap.docs.map(d => ({
+  const advisors = snap.docs.map(d => ({
     id: (d.data().uid || d.id) as string,
     name: d.data().name as string,
     specialty: (d.data().specialty || d.data().role) as string,
@@ -757,6 +757,17 @@ export const fetchAdvisors = async (): Promise<Advisor[]> => {
     sessions: d.data().sessions as string | undefined,
     about: d.data().about as string | undefined,
   }));
+
+  const getWeight = (status: string | undefined): number => {
+    const val = (status ?? '').toLowerCase().trim();
+    if (val === 'online') return 1;
+    if (val === 'busy') return 2;
+    if (val === 'away') return 3;
+    if (val === 'offline') return 4;
+    return 5;
+  };
+
+  return advisors.sort((a, b) => getWeight(a.availability) - getWeight(b.availability));
 };
 
 // ─── Advisor Connection Real-time Functions ───────────────────────────────────
