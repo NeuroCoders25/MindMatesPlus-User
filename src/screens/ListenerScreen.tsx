@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { ChatScreen } from './ChatScreen';
 import { ExpertListView } from '../components/ExpertListView';
+import { COLORS } from '../services/dataService';
 
 type Tab = 'mindy' | 'expert';
 
@@ -94,8 +95,8 @@ const styles = StyleSheet.create({
     borderRadius: 9,
   },
   segmentActive: {
-    backgroundColor: '#6C63FF',
-    shadowColor: '#6C63FF',
+    backgroundColor: COLORS.primary,
+    shadowColor: COLORS.primary,
     shadowOpacity: 0.3,
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 2 },

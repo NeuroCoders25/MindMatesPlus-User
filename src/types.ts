@@ -62,6 +62,7 @@ export interface Message {
     id: string;
     text: string;
     senderName: string;
+    senderId?: string;
   };
 }
 

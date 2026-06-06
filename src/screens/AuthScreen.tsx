@@ -17,6 +17,7 @@ import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { Input, Button } from '../components/UI';
+import { TermsModal } from '../components/TermsModal';
 import { useApp } from '../context/AppContext';
 import { auth, db } from '../services/firebaseConfig';
 import { COLORS } from '../services/dataService';
@@ -221,7 +222,8 @@ export const AuthScreen: React.FC<Props> = ({ navigation }) => {
   const [avatarSeed, setAvatarSeed] = useState<string>('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
   const [hasAttemptedRegistration, setHasAttemptedRegistration] = useState(false);
 
   const randomSeed = () => Math.random().toString(36).substring(2, 14);
@@ -274,11 +276,11 @@ const avatarSvg = useMemo(
     if (!isLogin) {
       setHasAttemptedRegistration(true);
       if (!allFieldsFilled) {
-        setError('');
+        setError('Please fill all the fields to complete registration');
         return;
       }
-      if (!acceptedPrivacy) {
-        setError('');
+      if (!agreedToTerms) {
+        setError('Please accept the Terms & Conditions.');
         return;
       }
       if (nickname.trim().toLowerCase() === name.trim().toLowerCase()) {
@@ -492,16 +494,20 @@ const avatarSvg = useMemo(
             )}
             {!isLogin && (
               <TouchableOpacity
-                style={styles.checkboxContainer}
-                onPress={() => setAcceptedPrivacy(!acceptedPrivacy)}
+                style={styles.checkboxRow}
+                onPress={() => {
+                  if (agreedToTerms) {
+                    setAgreedToTerms(false);
+                  } else {
+                    setShowTerms(true);
+                  }
+                }}
                 activeOpacity={0.7}
               >
-                <Ionicons
-                  name={acceptedPrivacy ? 'checkbox' : 'square-outline'}
-                  size={20}
-                  color={acceptedPrivacy ? COLORS.primary : COLORS.muted}
-                />
-                <Text style={styles.disclaimerText}>
+                <View style={[styles.checkbox, agreedToTerms && styles.checkboxChecked]}>
+                  {agreedToTerms && <Text style={styles.checkmark}>{'\u2713'}</Text>}
+                </View>
+                <Text style={styles.checkboxLabel}>
                   I agree that my data is collected solely for mental health wellness and is handled securely.
                 </Text>
               </TouchableOpacity>
@@ -509,11 +515,11 @@ const avatarSvg = useMemo(
             {error !== '' ? (
               <Text style={styles.errorText}>{error}</Text>
             ) : (!isLogin && hasAttemptedRegistration) ? (
-              (!allFieldsFilled || !acceptedPrivacy) && (
+              (!allFieldsFilled || !agreedToTerms) && (
                 <Text style={styles.errorText}>
                   {!allFieldsFilled
                     ? 'Please fill all the fields to complete registration'
-                    : 'Please read and accept the privacy policy.'}
+                    : 'Please accept the Terms & Conditions.'}
                 </Text>
               )
             ) : null}
@@ -543,7 +549,8 @@ const avatarSvg = useMemo(
               setNickname('');
               setGender('');
               setAvatarSeed('');
-              setAcceptedPrivacy(false);
+              setAgreedToTerms(false);
+              setShowTerms(false);
               setHasAttemptedRegistration(false);
             }}
           >
@@ -556,6 +563,21 @@ const avatarSvg = useMemo(
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
+    <TermsModal
+      visible={showTerms}
+      onAccept={() => {
+        setAgreedToTerms(true);
+        setShowTerms(false);
+        setError('');
+      }}
+      onDecline={() => {
+        setAgreedToTerms(false);
+        setShowTerms(false);
+      }}
+      onClose={() => {
+        setShowTerms(false);
+      }}
+    />
     </SafeAreaView>
   );
 };
@@ -578,14 +600,32 @@ const styles = StyleSheet.create({
   form: { gap: 16 },
   authBtn: { marginTop: 8 },
   errorText: { color: '#EF4444', fontSize: 13, textAlign: 'center', marginTop: -4 },
-  checkboxContainer: {
+  checkboxRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     paddingHorizontal: 4,
     marginTop: 4,
     gap: 8,
   },
-  disclaimerText: { color: COLORS.muted, fontSize: 12, flex: 1, lineHeight: 16 },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 5,
+    borderWidth: 1.5,
+    borderColor: '#9CA3AF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: {
+    backgroundColor: '#1E3A8A',
+    borderColor: '#1E3A8A',
+  },
+  checkmark: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  checkboxLabel: { color: COLORS.muted, fontSize: 12, flex: 1, lineHeight: 16 },
   forgotBtn: { alignItems: 'center', paddingVertical: 4 },
   forgotText: { color: COLORS.muted, fontWeight: '500', fontSize: 13 },
   toggleBtn: { marginTop: 40, alignItems: 'center' },

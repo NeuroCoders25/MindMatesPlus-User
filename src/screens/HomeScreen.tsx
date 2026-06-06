@@ -205,6 +205,13 @@ export const HomeScreen = () => {
             <Text style={styles.subGreeting}>How are you feeling today?</Text>
           </View>
           <TouchableOpacity
+            style={styles.notificationBell}
+            onPress={() => {}}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="notifications-outline" size={24} color="#1a1a2e" />
+          </TouchableOpacity>
+          <TouchableOpacity
             style={styles.headerProfilePic}
             onPress={() => navigation.navigate('Profile')}
             activeOpacity={0.8}
@@ -510,8 +517,18 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   headerGreetingBlock: { alignItems: 'flex-end' },
-  greeting: { fontSize: 14, fontWeight: 'bold', color: COLORS.text },
-  subGreeting: { fontSize: 10, color: COLORS.muted, marginTop: 1 },
+  greeting: { fontSize: 16, fontWeight: 'bold', color: COLORS.text },
+  subGreeting: { fontSize: 11, color: COLORS.muted, marginTop: 1 },
+  notificationBell: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#f0f0f5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 6,
+    marginRight: 2,
+  },
   headerProfilePic: {
     width: 36,
     height: 36,
@@ -650,7 +667,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   smallTabActive: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: COLORS.primary,
   },
   seeAll: { fontSize: 13, color: COLORS.accent, fontWeight: '600' },
   groupsRow: { gap: 12, paddingRight: 4 },

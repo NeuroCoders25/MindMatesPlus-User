@@ -135,7 +135,7 @@ export const ExpertListView: React.FC = () => {
     >
       {/* Intro banner */}
       <View style={styles.introBanner}>
-        <Ionicons name="shield-checkmark-outline" size={20} color="#6C63FF" />
+        <Ionicons name="shield-checkmark-outline" size={20} color={COLORS.primary} />
         <Text style={styles.introText}>
           Talk to a real counselor. Connect with a verified expert for one-on-one support.
           Response times vary by availability.
@@ -195,7 +195,7 @@ export const ExpertListView: React.FC = () => {
                     activeOpacity={0.8}
                   >
                     {connectingId === advisor.id ? (
-                      <ActivityIndicator size="small" color="#6366F1" />
+                      <ActivityIndicator size="small" color={COLORS.primary} />
                     ) : (
                       <Text style={[
                         styles.connectBtnText,
@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
   introText: {
     flex: 1,
     fontSize: 13,
-    color: '#4338CA',
+    color: COLORS.primary,
     lineHeight: 19,
   },
 
@@ -316,13 +316,13 @@ const styles = StyleSheet.create({
   availabilityText: { fontSize: 12, color: COLORS.muted, fontWeight: '500' },
 
   connectBtn: {
-    backgroundColor: '#6366F1',
+    backgroundColor: COLORS.primary,
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 12,
     minWidth: 82,
     alignItems: 'center',
-    shadowColor: '#6366F1',
+    shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
     shadowRadius: 4,

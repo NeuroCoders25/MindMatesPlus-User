@@ -39,6 +39,15 @@ module.exports = {
         'android.permission.INTERNET',
       ],
     },
+    androidStatusBar: {
+      backgroundColor: '#F8F9FF',
+      barStyle: 'dark-content',
+      translucent: false,
+    },
+    androidNavigationBar: {
+      backgroundColor: '#F8F9FF',
+      barStyle: 'dark-content',
+    },
     web: {
       favicon: './assets/favicon.png',
     },

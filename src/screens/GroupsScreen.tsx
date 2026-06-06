@@ -151,7 +151,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title: { fontSize: 22, fontWeight: 'bold', color: COLORS.text },
   countBadge: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: COLORS.primary,
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 2,
@@ -185,7 +185,7 @@ const styles = StyleSheet.create({
   },
   categoryBadgeText: {
     fontSize: 9,
-    color: COLORS.accent,
+    color: COLORS.primary,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
@@ -199,7 +199,7 @@ const styles = StyleSheet.create({
   membersRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   membersText: { fontSize: 10, color: COLORS.muted, fontWeight: '500' },
   openBtn: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: COLORS.primary,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 6,

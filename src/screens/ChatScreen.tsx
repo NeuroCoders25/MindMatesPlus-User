@@ -94,16 +94,20 @@ const mindyAvatarStyles = StyleSheet.create({
 // ─── Swipe-to-reply row wrapper ───────────────────────────────────────────────
 const SwipeableMessageRow = memo(({
   onReply,
+  enabled = true,
   children,
 }: {
   onReply: () => void;
+  enabled?: boolean;
   children: React.ReactNode;
 }) => {
   const swipeableRef = useRef<SwipeableMethods>(null);
 
+  if (!enabled) return <>{children}</>;
+
   const renderLeftActions = () => (
     <View style={swipeReplyStyles.action}>
-      <Ionicons name="return-down-forward-outline" size={22} color="#2563EB" />
+      <Ionicons name="arrow-undo" size={22} color="#6C63FF" />
     </View>
   );
 
@@ -133,6 +137,16 @@ const swipeReplyStyles = StyleSheet.create({
     paddingHorizontal: 16,
   },
 });
+
+// Returns a safe display string for a value that may still be an EncryptedMessage object
+// (guards against decrypt-timing races when rendering replyTo.text)
+function safeText(val: unknown): string {
+  if (typeof val === 'string') return val;
+  if (val !== null && typeof val === 'object') {
+    return (val as { plaintext?: string }).plaintext ?? '[encrypted]';
+  }
+  return '';
+}
 
 // ─── Review-status helpers ─────────────────────────────────────────────────────
 
@@ -164,6 +178,8 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
   const group = peerGroups.find(g => g.id === groupId);
 
   const [groupMessages, setGroupMessages] = useState<Message[]>([]);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
   const [moderationError, setModerationError] = useState<string | null>(null);
@@ -247,6 +263,49 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
       ],
     );
   };
+
+  const handleMessageAction = (msg: Message) => {
+    const isOwn = msg.senderId === user?.id;
+    Alert.alert(
+      'Message',
+      undefined,
+      [
+        { text: 'Reply', onPress: () => setReplyingTo(msg) },
+        ...(isOwn ? [{
+          text: 'Delete',
+          style: 'destructive' as const,
+          onPress: () => handleDeleteMessage(msg),
+        }] : []),
+        { text: 'Cancel', style: 'cancel' as const },
+      ],
+    );
+  };
+
+  const scrollToMessage = (messageId: string) => {
+    const index = groupMessages.findIndex(m => m.id === messageId);
+    if (index < 0) return;
+    try {
+      listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.3 });
+    } catch {
+      // onScrollToIndexFailed handles the fallback
+    }
+    setHighlightedId(messageId);
+    setTimeout(() => setHighlightedId(null), 1500);
+  };
+
+  const renderQuotedPreview = (replyTo: NonNullable<Message['replyTo']>) => (
+    <TouchableOpacity
+      style={styles.quotedBlock}
+      activeOpacity={0.7}
+      onPress={() => scrollToMessage(replyTo.id)}
+    >
+      <View style={styles.quotedBar} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.quotedName} numberOfLines={1}>{replyTo.senderName}</Text>
+        <Text style={styles.quotedSnippet} numberOfLines={1}>{safeText(replyTo.text)}</Text>
+      </View>
+    </TouchableOpacity>
+  );
 
   const messages: Message[] = isAI ? aiMessages : groupMessages;
 
@@ -485,9 +544,18 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
       return;
     }
     if (!user) { setSending(false); return; }
+
+    const replyPayload = replyingTo ? {
+      id: replyingTo.id,
+      text: replyingTo.text,
+      senderName: replyingTo.senderName ?? 'User',
+      senderId: replyingTo.senderId ?? '',
+    } : undefined;
+    setReplyingTo(null);
+
     setSending(true);
     try {
-      await sendGroupMessage(groupId, text);
+      await sendGroupMessage(groupId, text, replyPayload);
     } finally {
       setSending(false);
     }
@@ -729,7 +797,6 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
             msg.senderName?.trim().toLowerCase() === group.moderatorName.trim().toLowerCase();
           const isRejected = isOwn && status === 'rejected';
           const isPending = isOwn && status === 'pending';
-          const canDelete = !isAI && isOwn && !isRejected;
           // Private thread data — only populated for the current user's own flagged messages
           const thread: PrivateThreadMessage[] = isOwn ? (privateThreads[msg.id] ?? []) : [];
           const hasThread = thread.length > 0;
@@ -738,81 +805,89 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
           return (
             <View>
               {unreadDivider}
-              {/* Original message bubble */}
-              <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
-                {!isOwn && (
-                  msg.sender === 'ai'
-                    ? <MindyAvatar />
-                    : <MessageAvatar
-                        seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
-                        name={msg.senderName}
-                        imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
-                      />
-                )}
-                <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
-                  {(isOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
-                    <View style={styles.senderNameRow}>
-                      <Text style={styles.senderName}>
-                        {isOwn ? (user?.nickname ?? user?.name) : msg.senderName}
-                      </Text>
-                      {isModerator && (
-                        <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
-                      )}
-                    </View>
-                  ) : null}
-                  <TouchableOpacity
-                    onLongPress={canDelete ? () => handleDeleteMessage(msg) : undefined}
-                    delayLongPress={400}
-                    activeOpacity={canDelete ? 0.8 : 1}
-                    disabled={deletingId === msg.id || isRejected}
-                  >
-                    <View
-                      style={[
-                        styles.bubble,
-                        isOwn ? styles.userBubble : styles.otherBubble,
-                        isModerator && styles.moderatorBubble,
-                        deletingId === msg.id && styles.bubbleDeleting,
-                        isRejected && styles.bubbleRejected,
-                      ]}
-                    >
-                      {isPending && (
-                        <View style={styles.reviewBadge}>
-                          <Ionicons name="time-outline" size={10} color="#D97706" />
-                          <Text style={styles.reviewBadgeText}>Under review</Text>
-                        </View>
-                      )}
-                      {isRejected && (
-                        <View style={styles.removedBadge}>
-                          <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
-                          <Text style={styles.removedBadgeText}>Removed by moderator</Text>
-                        </View>
-                      )}
-                      {!isPending && !isRejected && status !== 'approved' && msg.flagged && (
-                        <View style={styles.flaggedBadge}>
-                          <Ionicons name="warning-outline" size={10} color="#F87171" />
-                          <Text style={styles.flaggedText}>Flagged</Text>
-                        </View>
-                      )}
-                      <Text
-                        style={[
-                          styles.bubbleText,
-                          isOwn ? styles.userBubbleText : styles.otherBubbleText,
-                          isModerator && styles.moderatorBubbleText,
-                          isRejected && styles.rejectedBubbleText,
-                        ]}
+              <SwipeableMessageRow
+                onReply={() => setReplyingTo(msg)}
+                enabled={!isAI && status !== 'rejected'}
+              >
+                {/* Original message bubble */}
+                <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
+                  {!isOwn && (
+                    msg.sender === 'ai'
+                      ? <MindyAvatar />
+                      : <MessageAvatar
+                          seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
+                          name={msg.senderName}
+                          imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
+                        />
+                  )}
+                  <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
+                    {(isOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
+                      <View style={styles.senderNameRow}>
+                        <Text style={styles.senderName}>
+                          {isOwn ? (user?.nickname ?? user?.name) : msg.senderName}
+                        </Text>
+                        {isModerator && (
+                          <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
+                        )}
+                      </View>
+                    ) : null}
+                    <View style={[highlightedId === msg.id && styles.highlightFlash]}>
+                      {msg.replyTo && renderQuotedPreview(msg.replyTo)}
+                      <TouchableOpacity
+                        onLongPress={!isAI && !isRejected ? () => handleMessageAction(msg) : undefined}
+                        delayLongPress={300}
+                        activeOpacity={!isRejected ? 0.8 : 1}
+                        disabled={deletingId === msg.id || isRejected}
                       >
-                        {msg.text}
-                      </Text>
+                        <View
+                          style={[
+                            styles.bubble,
+                            isOwn ? styles.userBubble : styles.otherBubble,
+                            isModerator && styles.moderatorBubble,
+                            deletingId === msg.id && styles.bubbleDeleting,
+                            isRejected && styles.bubbleRejected,
+                          ]}
+                        >
+                          {isPending && (
+                            <View style={styles.reviewBadge}>
+                              <Ionicons name="time-outline" size={10} color="#D97706" />
+                              <Text style={styles.reviewBadgeText}>Under review</Text>
+                            </View>
+                          )}
+                          {isRejected && (
+                            <View style={styles.removedBadge}>
+                              <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
+                              <Text style={styles.removedBadgeText}>Removed by moderator</Text>
+                            </View>
+                          )}
+                          {!isPending && !isRejected && status !== 'approved' && msg.flagged && (
+                            <View style={styles.flaggedBadge}>
+                              <Ionicons name="warning-outline" size={10} color="#F87171" />
+                              <Text style={styles.flaggedText}>Flagged</Text>
+                            </View>
+                          )}
+                          <Text
+                            style={[
+                              styles.bubbleText,
+                              isOwn ? styles.userBubbleText : styles.otherBubbleText,
+                              isModerator && styles.moderatorBubbleText,
+                              isRejected && styles.rejectedBubbleText,
+                            ]}
+                          >
+                            {msg.text}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
                     </View>
-                  </TouchableOpacity>
-                  <Text style={styles.timestamp}>
-                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
+                    <Text style={styles.timestamp}>
+                      {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </View>
+                  {isOwn && (
+                    <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
+                  )}
                 </View>
-                {isOwn && (
-                  <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
-                )}
-              </View>
+              </SwipeableMessageRow>
 
               {/* Inline private advisor thread — only rendered for the message sender */}
               {hasThread && (
@@ -917,6 +992,22 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
               </Text>
               <TouchableOpacity onPress={() => setReplyingToPrivate(null)}>
                 <Ionicons name="close" size={18} color="#7C3AED" />
+              </TouchableOpacity>
+            </View>
+          )}
+          {replyingTo && !isAI && (
+            <View style={styles.replyBanner}>
+              <View style={styles.quotedBar} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.replyBannerName} numberOfLines={1}>
+                  Replying to {replyingTo.senderName ?? 'message'}
+                </Text>
+                <Text style={styles.replyBannerSnippet} numberOfLines={1}>
+                  {safeText(replyingTo.text)}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setReplyingTo(null)} hitSlop={8}>
+                <Ionicons name="close" size={20} color="#9CA3AF" />
               </TouchableOpacity>
             </View>
           )}
@@ -1459,5 +1550,55 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#6C63FF',
+  },
+  // ── Reply: quoted preview inside bubble ────────────────────────────────────
+  quotedBlock: {
+    flexDirection: 'row',
+    gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.05)',
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    marginBottom: 4,
+  },
+  quotedBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: '#6C63FF',
+  },
+  quotedName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6C63FF',
+  },
+  quotedSnippet: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  // ── Reply banner above input ───────────────────────────────────────────────
+  replyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginHorizontal: 8,
+    marginBottom: 6,
+  },
+  replyBannerName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6C63FF',
+  },
+  replyBannerSnippet: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  // ── Highlight flash on tap-to-scroll target ────────────────────────────────
+  highlightFlash: {
+    backgroundColor: 'rgba(108,99,255,0.12)',
+    borderRadius: 8,
   },
 });

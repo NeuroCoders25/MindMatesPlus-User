@@ -5,12 +5,13 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider } from './src/context/AppContext';
 import { Navigation } from './src/navigation';
+import { COLORS } from './src/services/dataService';
 
 export default function App() {
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <StatusBar style="dark" translucent backgroundColor="transparent" />
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.background }}>
+      <SafeAreaProvider style={{ backgroundColor: COLORS.background }}>
+        <StatusBar style="dark" backgroundColor={COLORS.background} />
         <AppProvider>
           <Navigation />
         </AppProvider>
