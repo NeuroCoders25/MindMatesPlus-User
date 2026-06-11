@@ -302,8 +302,12 @@ const avatarSvg = useMemo(
       if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
         calculatedAge--;
       }
-      if (calculatedAge < 10 || calculatedAge > 100) {
-        setError('You must be between 10 and 100 years old.');
+      if (calculatedAge < 18) {
+        setError('Sorry, you cannot register on our system.');
+        return;
+      }
+      if (calculatedAge > 100) {
+        setError('Please enter a valid date of birth.');
         return;
       }
     }

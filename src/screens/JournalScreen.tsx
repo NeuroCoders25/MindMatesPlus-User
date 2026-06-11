@@ -46,7 +46,7 @@ const fmtTime = (d: Date) =>
   d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
 export const JournalScreen = () => {
-  const { journalEntries, addJournalEntry, isRestricted } = useApp();
+  const { journalEntries, addJournalEntry, isRestricted, gamificationTriggers } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -97,6 +97,8 @@ export const JournalScreen = () => {
 
     setIsAnalyzing(false);
     await addJournalEntry(title || 'Untitled Entry', content, selectedMood || 'neutral', mlAnalysis);
+    // Fire-and-forget — never blocks the journal save on the gamification call
+    void gamificationTriggers.onJournalSaved(journalEntries.length + 1);
 
     setTimeout(() => {
       setTitle('');

@@ -168,7 +168,7 @@ const isMessageVisible = (msg: Message, viewerId: string | undefined): boolean =
 export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited, isRestricted } = useApp();
+  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited, isRestricted, gamificationTriggers } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
@@ -556,6 +556,13 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
     setSending(true);
     try {
       await sendGroupMessage(groupId, text, replyPayload);
+      if (replyPayload && replyPayload.senderId && replyPayload.senderId !== user.id) {
+        void gamificationTriggers.onSupportiveReply({
+          originalSenderId: replyPayload.senderId,
+          originalText: safeText(replyPayload.text),
+          replyText: text,
+        });
+      }
     } finally {
       setSending(false);
     }

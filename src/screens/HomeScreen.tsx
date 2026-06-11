@@ -27,16 +27,21 @@ import {
 import { subscribeAllGroupCalls } from '../services/groupCallService';
 import { LiveCallBanner } from '../components/LiveCallBanner';
 import { UpcomingCallsCard } from '../components/UpcomingCallsCard';
+import { WeeklyReflectionCard } from '../components/WeeklyReflectionCard';
 import { RootStackParamList } from '../navigation';
 import { Group, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
 import { GroupCall } from '../types/groupCall';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
+import { getIcon } from '../components/BadgeAwardToast';
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
-  const { user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup, isRestricted } = useApp();
+  const {
+    user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup, isRestricted,
+    gamificationProfile, earnedBadges, gamificationTriggers,
+  } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [joiningId, setJoiningId] = useState<string | null>(null);
   const avatarSvg = useMemo(
@@ -69,6 +74,18 @@ export const HomeScreen = () => {
     return unsubscribe;
   }, [joinedGroupIds]);
 
+  // Daily check-in trigger — fires at most once per day, compared client-side
+  // against the last known check-in date so we don't spam the backend.
+  useEffect(() => {
+    if (!user?.id) return;
+    const lastCheckin = gamificationProfile?.lastCheckInDate?.toDate?.();
+    const today = new Date();
+    const isNewDay = !lastCheckin || lastCheckin.toDateString() !== today.toDateString();
+    if (isNewDay) {
+      void gamificationTriggers.onCheckIn();
+    }
+  }, [user?.id]);
+
   useEffect(() => {
     if (!user) return;
     const unsub = subscribeToMlMentalHealthProfile(user.id, (profile) => {
@@ -86,6 +103,7 @@ export const HomeScreen = () => {
     });
     return unsub;
   }, [user?.id]);
+
 
   // Show approval modal once when advisor approves the user
   useEffect(() => {
@@ -160,6 +178,7 @@ export const HomeScreen = () => {
     setJoiningId(group.id);
     try {
       await joinGroup(group.id);
+      void gamificationTriggers.onGroupJoined();
       // Switch to the Groups tab so the user sees the group card with the Open button
       (navigation as any).navigate('Groups');
     } finally {
@@ -249,6 +268,24 @@ export const HomeScreen = () => {
             "One small step at a time is still progress."
           </Text>
         </View>
+
+        {/* Latest achievement teaser */}
+        {earnedBadges.length > 0 && (
+          <TouchableOpacity
+            style={styles.dailyCardBadge}
+            onPress={() => navigation.navigate('Achievements')}
+            activeOpacity={0.8}
+          >
+            <View style={styles.dailyCardBadgeIcon}>
+              <Text style={styles.dailyCardBadgeEmoji}>{getIcon(earnedBadges[0].iconName)}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.dailyCardBadgeLabel}>Latest Achievement</Text>
+              <Text style={styles.dailyCardBadgeName} numberOfLines={1}>{earnedBadges[0].badgeName}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.7)" />
+          </TouchableOpacity>
+        )}
 
         {/* Wellness Score strip (conditional) */}
         {!insightLoading && mlInsight && (() => {
@@ -463,6 +500,8 @@ export const HomeScreen = () => {
         </View>
       )}
 
+      {/* Weekly reflection — warm, affirming summary loaded once per session */}
+      {user && <WeeklyReflectionCard uid={user.id} />}
 
     </ScrollView>
 
@@ -642,6 +681,32 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     flexShrink: 1,
   },
+  dailyCardBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  dailyCardBadgeIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dailyCardBadgeEmoji: { fontSize: 18 },
+  dailyCardBadgeLabel: {
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.7)',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  dailyCardBadgeName: { fontSize: 13, fontWeight: '700', color: '#fff' },
   callsSection: { gap: 10 },
   upcomingSection: { gap: 10 },
   section: { gap: 14 },

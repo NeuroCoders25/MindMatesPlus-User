@@ -11,7 +11,7 @@ import { useApp } from '../context/AppContext';
 
 export const FeedbackScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { submitFeedback } = useApp();
+  const { submitFeedback, gamificationTriggers } = useApp();
   const [peerFeedback, setPeerFeedback] = useState('');
   const [appFeedback, setAppFeedback] = useState('');
   const [rating, setRating] = useState(0);
@@ -39,6 +39,7 @@ export const FeedbackScreen = () => {
   setSubmitting(true);
   try {
     await submitFeedback(rating, peerFeedback, appFeedback);
+    void gamificationTriggers.onFeedbackSubmitted();
     Alert.alert('Thank you!', 'Your feedback has been submitted.', [
       {
         text: 'OK',

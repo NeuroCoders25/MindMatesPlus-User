@@ -166,6 +166,7 @@ export const ProfileScreen = () => {
 
   const settings = [
     { icon: 'bell' as const,           label: 'Notifications',  color: '#3B82F6', onPress: () => {} },
+    { icon: 'award' as const,          label: 'Achievements',   color: '#F59E0B', onPress: () => navigation.navigate('Achievements') },
     { icon: 'heart' as const,          label: 'Wellness Goals', color: '#EC4899', onPress: () => navigation.navigate('WellnessGoals') },
     { icon: 'bookmark' as const,       label: `Saved${savedResources.length > 0 ? ` (${savedResources.length})` : ''}`, color: '#F59E0B', onPress: () => setSavedTab(true) },
     { icon: 'message-square' as const, label: 'Feedback',       color: '#7C3AED', onPress: () => navigation.navigate('Feedback') },

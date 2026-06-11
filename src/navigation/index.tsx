@@ -25,6 +25,7 @@ import { ListenerScreen } from '../screens/ListenerScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { FeedbackScreen } from '../screens/FeedbackScreen';
+import { AchievementsScreen } from '../screens/AchievementsScreen';
 import { WellnessGoalsScreen } from '../screens/WellnessGoalsScreen';
 import { ForgotPasswordScreen } from '../screens/ForgotPasswordScreen';
 import { RecoverPasswordScreen } from '../screens/RecoverPasswordScreen';
@@ -55,6 +56,7 @@ export type RootStackParamList = {
   };
   Feedback: undefined;
   WellnessGoals: undefined;
+  Achievements: undefined;
 };
 
 export type MainTabParamList = {
@@ -192,6 +194,7 @@ export const Navigation = () => (
       />
       <RootStack.Screen name="Feedback" component={FeedbackScreen} />
       <RootStack.Screen name="WellnessGoals" component={WellnessGoalsScreen} />
+      <RootStack.Screen name="Achievements" component={AchievementsScreen} />
       <RootStack.Screen
         name="GroupCall"
         component={GroupCallScreen}

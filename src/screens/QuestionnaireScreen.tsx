@@ -84,7 +84,7 @@ const saveToFirestore = async (
 };
 
 export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
-  const { setDass21Result, prepareSupportChatFromDass, user } = useApp();
+  const { setDass21Result, prepareSupportChatFromDass, user, gamificationTriggers } = useApp();
   const [showInstructions, setShowInstructions] = useState(true);
   const [currentStep, setCurrentStep] = useState(0); // 0-indexed; 0 = Q1
   const [answers, setAnswers] = useState<Record<number, number>>({});
@@ -157,6 +157,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
         if (user?.id) {
           saveToFirestore(user.id, newAnswers, result).catch(console.error);
         }
+        void gamificationTriggers.onDass21Complete();
         navigation.replace('Result');
       }
     });
@@ -185,6 +186,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
         if (user?.id) {
           saveToFirestore(user.id, answers, result).catch(console.error);
         }
+        void gamificationTriggers.onDass21Complete();
         navigation.replace('Result');
       }
     });

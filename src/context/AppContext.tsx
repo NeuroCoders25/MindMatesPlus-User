@@ -1,6 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { View, ActivityIndicator, Modal, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { doc, getDoc } from 'firebase/firestore';
+import {
+  subscribeGamificationStats,
+  subscribeBadges,
+} from '../services/gamificationFirestoreService';
 import { navigationRef } from '../navigation/navigationRef';
 import {
   onAuthStateChanged,
@@ -30,6 +34,13 @@ import {
 } from '../services/dataService';
 import { AdvisorRatingModal } from '../components/AdvisorRatingModal';
 import { ListenerAcceptedToast } from '../components/ListenerAcceptedToast';
+import { BadgeAwardToast } from '../components/BadgeAwardToast';
+import {
+  Badge, GamificationProfile,
+  triggerJournalSaved, triggerCheckIn, triggerDass21Complete,
+  triggerGroupJoined, triggerGoalCreated, triggerGoalsCompleted,
+  triggerFeedbackSubmitted, triggerSupportiveReplyCheck,
+} from '../services/gamificationApiService';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
 import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
@@ -74,6 +85,24 @@ interface AppContextType {
   listenerAcceptedNotice: ListenerConnection | null;
   clearListenerAcceptedNotice: () => void;
   dataAccessBlocked: boolean;
+  pendingBadge: Badge | null;
+  clearPendingBadge: () => void;
+  gamificationProfile: GamificationProfile | null;
+  earnedBadges: Badge[];
+  gamificationTriggers: {
+    onJournalSaved: (entryCount: number) => Promise<void>;
+    onCheckIn: () => Promise<void>;
+    onDass21Complete: () => Promise<void>;
+    onGroupJoined: () => Promise<void>;
+    onGoalCreated: () => Promise<void>;
+    onGoalsCompleted: (totalCompleted: number) => Promise<void>;
+    onFeedbackSubmitted: () => Promise<void>;
+    onSupportiveReply: (params: {
+      originalSenderId: string;
+      originalText: string;
+      replyText: string;
+    }) => Promise<void>;
+  };
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -177,6 +206,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [dataAccessBlocked, setDataAccessBlocked] = useState(false);
   // Ensures weekly KNN fires at most once per app session per user
   const knnTriggeredRef = useRef(false);
+  const [pendingBadge, setPendingBadge] = useState<Badge | null>(null);
+  const [gamificationProfile, setGamificationProfile] = useState<GamificationProfile | null>(null);
+  const [earnedBadges, setEarnedBadges] = useState<Badge[]>([]);
 
   const handleFirestoreError = (label: string) => (code: string) => {
     if (code === 'permission-denied') {
@@ -258,6 +290,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.log('[Listener] Unsubscribed advisor connections for user:', user.id);
       unsub();
     };
+  }, [user?.id]);
+
+  // ─── Gamification — live listeners on subcollection paths ───────────────────
+  useEffect(() => {
+    if (!user?.id) return;
+    const unsubStats = subscribeGamificationStats(user.id, setGamificationProfile);
+    const unsubBadges = subscribeBadges(user.id, setEarnedBadges);
+    return () => { unsubStats(); unsubBadges(); };
   }, [user?.id]);
 
   // ─── Listener expert connection tracking ──────────────────────────────────────
@@ -489,6 +529,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
   };
 
+  // ─── Gamification — backend-driven triggers + badge award toast ──────────────
+  // Fire-and-forget: a failed gamification call never blocks the real action.
+  const processBadgeResult = useCallback((result: any) => {
+    if (!result) return;
+    const awarded: Badge[] = result.awarded_badges ?? [];
+    if (awarded.length > 0) {
+      setPendingBadge(awarded[0]);
+    }
+    // Stats and badge docs update via Firestore listeners automatically.
+  }, []);
+
+  const gamificationTriggers = {
+    onJournalSaved: async (entryCount: number) => {
+      if (!user) return;
+      processBadgeResult(await triggerJournalSaved(user.id, entryCount));
+    },
+    onCheckIn: async () => {
+      if (!user) return;
+      const r = await triggerCheckIn(user.id);
+      processBadgeResult(r);
+      // Optimistic update so the streak chip reacts immediately.
+      if (r?.checkInStreak !== undefined) {
+        setGamificationProfile(p => p ? { ...p, checkInStreak: r.checkInStreak as number } : p);
+      }
+    },
+    onDass21Complete: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerDass21Complete(user.id));
+    },
+    onGroupJoined: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerGroupJoined(user.id));
+    },
+    onGoalCreated: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerGoalCreated(user.id));
+    },
+    onGoalsCompleted: async (totalCompleted: number) => {
+      if (!user) return;
+      processBadgeResult(await triggerGoalsCompleted(user.id, totalCompleted));
+    },
+    onFeedbackSubmitted: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerFeedbackSubmitted(user.id));
+    },
+    onSupportiveReply: async (params: {
+      originalSenderId: string;
+      originalText: string;
+      replyText: string;
+    }) => {
+      if (!user?.id) return;
+      const r = await triggerSupportiveReplyCheck({ uid: user.id, ...params });
+      processBadgeResult(r);
+    },
+  };
+
   const prepareSupportChatFromDass = (result: Dass21Result) => {
     const now = Date.now();
     const seeded = supportMessagesFromResult(result).map((text, index) => ({
@@ -568,6 +664,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         listenerAcceptedNotice,
         clearListenerAcceptedNotice: () => setListenerAcceptedNotice(null),
         dataAccessBlocked,
+        pendingBadge,
+        clearPendingBadge: () => setPendingBadge(null),
+        gamificationProfile,
+        earnedBadges,
+        gamificationTriggers,
       }}
     >
       {children}
@@ -648,6 +749,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           onSubmitted={() => console.log('[Rating] Advisor rated from approval flow')}
         />
       )}
+
+      {/* Badge award — global celebratory toast, fires from any screen */}
+      <BadgeAwardToast badge={pendingBadge} onDismiss={() => setPendingBadge(null)} />
 
       {/* Listener expert accepted — non-blocking slide-down toast */}
       {listenerAcceptedNotice && (
