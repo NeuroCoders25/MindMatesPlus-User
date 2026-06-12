@@ -46,8 +46,8 @@ export const WeeklyReflectionCard: React.FC<Props> = ({ uid }) => {
         <View style={styles.newBadges}>
           <Text style={styles.newBadgesTitle}>New this week:</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {summary.badgesEarnedThisWeek.map(b => (
-              <View key={b.badgeId} style={styles.badgePill}>
+            {summary.badgesEarnedThisWeek.map((b, i) => (
+              <View key={b.badgeId ?? String(i)} style={styles.badgePill}>
                 <Text>{getIcon(b.iconName)}</Text>
                 <Text style={styles.badgePillName}>{b.badgeName}</Text>
               </View>

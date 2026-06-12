@@ -19,6 +19,7 @@ export interface GamificationProfile {
   lastCheckInDate: any;
   lastJournalDate: any;
   supportiveReplyCount?: number;
+  supporterDiscountPercent?: number;
 }
 
 export interface WeeklySummary {

@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -16,7 +15,6 @@ import { RootStackParamList } from '../navigation';
 import {
   COLORS,
   fetchAdvisors,
-  requestExpertListener,
   ListenerConnection,
 } from '../services/dataService';
 import { Advisor } from '../types';
@@ -42,13 +40,9 @@ const AvatarPlaceholder: React.FC = () => (
   </View>
 );
 
-// ─── Button config ────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-type BtnConfig = {
-  label: string;
-  style: 'primary' | 'muted' | 'green';
-  disabled: boolean;
-};
+const ACTIVE_PAYMENT_STATUSES = new Set(['pending_payment', 'paid', 'trial']);
 
 const getActiveConnection = (
   advisorId: string,
@@ -59,29 +53,21 @@ const getActiveConnection = (
       (c.status === 'pending' || c.status === 'accepted' || c.status === 'reviewed'),
   );
 
-const getBtnConfig = (
-  advisorId: string,
-  connections: ListenerConnection[],
-  connectingId: string | null,
-): BtnConfig => {
-  if (connectingId === advisorId) return { label: 'Sending…', style: 'muted', disabled: true };
-  const conn = getActiveConnection(advisorId, connections);
-  if (!conn) return { label: 'Connect', style: 'primary', disabled: false };
-  if (conn.status === 'accepted' || conn.status === 'reviewed') {
-    return { label: 'Chat', style: 'green', disabled: false };
-  }
-  return { label: 'Pending', style: 'muted', disabled: true };
-};
+const getLockedBooking = (connections: ListenerConnection[]): ListenerConnection | undefined =>
+  connections.find(
+    c =>
+      (c.status === 'pending' || c.status === 'accepted') &&
+      ACTIVE_PAYMENT_STATUSES.has(c.paymentStatus ?? ''),
+  );
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export const ExpertListView: React.FC = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { user, listenerConnections } = useApp();
+  const { listenerConnections } = useApp();
 
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
   const [loading, setLoading] = useState(true);
-  const [connectingId, setConnectingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAdvisors()
@@ -90,43 +76,7 @@ export const ExpertListView: React.FC = () => {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleConnect = async (advisor: Advisor) => {
-    if (!user) return;
-
-    const conn = getActiveConnection(advisor.id, listenerConnections);
-
-    if (conn?.status === 'accepted' || conn?.status === 'reviewed') {
-      navigation.navigate('AdvisorChat', { advisor });
-      return;
-    }
-
-    if (conn?.status === 'pending') return;
-
-    setConnectingId(advisor.id);
-    const result = await requestExpertListener({
-      userId: user.id,
-      userNickname: user.nickname ?? user.name ?? 'Student',
-      advisorId: advisor.id,
-    });
-    setConnectingId(null);
-
-    if (result.success) {
-      Alert.alert(
-        'Request Sent',
-        `Your request has been sent to ${advisor.name}. They will respond based on availability.`,
-        [{ text: 'OK' }],
-      );
-    } else if (result.alreadyConnected) {
-      Alert.alert(
-        'Already Connected',
-        `You already have an active request with ${advisor.name}.`,
-        [{ text: 'OK' }],
-      );
-    } else {
-      Alert.alert('Could not connect', 'Something went wrong creating your request. Please try again.');
-      console.error('[ExpertListView] requestExpertListener failed for advisor', advisor.id);
-    }
-  };
+  const lockedBooking = getLockedBooking(listenerConnections);
 
   return (
     <ScrollView
@@ -142,28 +92,45 @@ export const ExpertListView: React.FC = () => {
         </Text>
       </View>
 
+      {/* Exclusive lock banner */}
+      {lockedBooking && (
+        <View style={styles.lockBanner}>
+          <Ionicons name="lock-closed" size={16} color="#92400E" />
+          <Text style={styles.lockBannerText}>
+            You have an active booking with{' '}
+            <Text style={styles.lockBannerName}>{lockedBooking.advisorName ?? 'your advisor'}</Text>
+            . Cancel it to connect with another advisor.
+          </Text>
+        </View>
+      )}
+
       {loading ? (
         <ActivityIndicator size="large" color={COLORS.primary} style={styles.loader} />
       ) : advisors.length === 0 ? (
         <Text style={styles.emptyText}>No advisors available at the moment.</Text>
       ) : (
         advisors.map(advisor => {
-          const { label, style: btnStyle, disabled } = getBtnConfig(
-            advisor.id,
-            listenerConnections,
-            connectingId,
-          );
+          const conn = getActiveConnection(advisor.id, listenerConnections);
+          const isLockedAdvisor = lockedBooking?.advisorId === advisor.id;
+          const isOtherLocked = !!lockedBooking && !isLockedAdvisor;
           const avail = getAvailability(advisor.availability);
 
           return (
-            <View key={advisor.id} style={styles.card}>
+            <TouchableOpacity
+              key={advisor.id}
+              style={[styles.card, isOtherLocked && styles.cardDisabled]}
+              activeOpacity={0.7}
+              onPress={() => navigation.navigate('AdvisorDetails', { advisor, flow: 'listener' })}
+            >
               {advisor.imageUrl
                 ? <Image source={{ uri: advisor.imageUrl }} style={styles.avatar} />
                 : <AvatarPlaceholder />}
 
               <View style={styles.details}>
                 <View style={styles.nameRow}>
-                  <Text style={styles.name}>{advisor.name ?? ''}</Text>
+                  <Text style={[styles.name, isOtherLocked && styles.nameMuted]}>
+                    {advisor.name ?? ''}
+                  </Text>
                   <View style={styles.ratingBox}>
                     <Ionicons name="star" size={12} color="#FACC15" />
                     <Text style={styles.ratingText}>
@@ -184,31 +151,32 @@ export const ExpertListView: React.FC = () => {
                     <Text style={styles.availabilityText}>{avail.label}</Text>
                   </View>
 
-                  <TouchableOpacity
-                    style={[
-                      styles.connectBtn,
-                      btnStyle === 'muted'  && styles.connectBtnMuted,
-                      btnStyle === 'green'  && styles.connectBtnGreen,
-                    ]}
-                    onPress={() => handleConnect(advisor)}
-                    disabled={disabled}
-                    activeOpacity={0.8}
-                  >
-                    {connectingId === advisor.id ? (
-                      <ActivityIndicator size="small" color={COLORS.primary} />
-                    ) : (
-                      <Text style={[
-                        styles.connectBtnText,
-                        btnStyle === 'muted'  && styles.connectBtnTextMuted,
-                        btnStyle === 'green'  && styles.connectBtnTextGreen,
-                      ]}>
-                        {label}
+                  {isOtherLocked ? (
+                    <View style={[styles.statusPill, styles.statusPillGrey]}>
+                      <Text style={[styles.statusPillText, styles.statusPillTextGrey]}>
+                        Unavailable
                       </Text>
-                    )}
-                  </TouchableOpacity>
+                    </View>
+                  ) : conn?.status === 'accepted' || conn?.status === 'reviewed' ? (
+                    <View style={[styles.statusPill, styles.statusPillAccepted]}>
+                      <Text style={[styles.statusPillText, styles.statusPillTextAccepted]}>
+                        Connected
+                      </Text>
+                    </View>
+                  ) : conn?.status === 'pending' ? (
+                    <View style={[styles.statusPill, styles.statusPillPending]}>
+                      <Text style={[styles.statusPillText, styles.statusPillTextPending]}>
+                        Requested
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={styles.chevronWrap}>
+                      <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                    </View>
+                  )}
                 </View>
               </View>
-            </View>
+            </TouchableOpacity>
           );
         })
       )}
@@ -246,12 +214,30 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
 
+  lockBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+  },
+  lockBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#92400E',
+    lineHeight: 19,
+  },
+  lockBannerName: { fontWeight: '700' },
+
   card: {
     flexDirection: 'row',
     backgroundColor: COLORS.white,
     borderRadius: 24,
     padding: 16,
-    alignItems: 'center',
+    alignItems: 'flex-start',
     shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
@@ -259,6 +245,9 @@ const styles = StyleSheet.create({
     elevation: 3,
     borderWidth: 1,
     borderColor: 'rgba(37, 99, 235, 0.08)',
+  },
+  cardDisabled: {
+    opacity: 0.5,
   },
   avatar: {
     width: 72,
@@ -286,6 +275,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   name: { fontSize: 17, fontWeight: '700', color: COLORS.text },
+  nameMuted: { color: COLORS.muted },
   ratingBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -315,31 +305,35 @@ const styles = StyleSheet.create({
   onlineDot: { width: 8, height: 8, borderRadius: 4 },
   availabilityText: { fontSize: 12, color: COLORS.muted, fontWeight: '500' },
 
-  connectBtn: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 12,
-    minWidth: 82,
+  statusPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
     alignItems: 'center',
-    shadowColor: COLORS.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
   },
-  connectBtnMuted: {
-    backgroundColor: 'rgba(156, 163, 175, 0.1)',
-    shadowOpacity: 0,
-    elevation: 0,
+  statusPillPending: {
+    backgroundColor: '#F3F4F6',
     borderWidth: 1,
     borderColor: '#E5E7EB',
   },
-  connectBtnGreen: {
-    backgroundColor: '#22C55E',
-    shadowColor: '#22C55E',
+  statusPillAccepted: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
   },
-  connectBtnText: { color: 'white', fontSize: 12, fontWeight: '700' },
-  connectBtnTextMuted: { color: '#9CA3AF' },
-  connectBtnTextGreen: { color: 'white' },
+  statusPillGrey: {
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  statusPillText: { fontSize: 12, fontWeight: '700' },
+  statusPillTextPending: { color: '#9CA3AF' },
+  statusPillTextAccepted: { color: '#16A34A' },
+  statusPillTextGrey: { color: '#6B7280' },
+  chevronWrap: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

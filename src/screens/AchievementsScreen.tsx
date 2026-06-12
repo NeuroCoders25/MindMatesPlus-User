@@ -83,6 +83,11 @@ export const AchievementsScreen = () => {
           <Text style={styles.peerSupportCount}>
             🤝 Supportive replies: {gamificationProfile?.supportiveReplyCount ?? 0}
           </Text>
+          {(gamificationProfile?.supporterDiscountPercent ?? 0) > 0 && (
+            <Text style={styles.peerSupportDiscount}>
+              Your current booking discount: {gamificationProfile!.supporterDiscountPercent}%
+            </Text>
+          )}
         </View>
 
         {/* Earned badges */}
@@ -200,6 +205,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.text,
+  },
+  peerSupportDiscount: {
+    fontSize: 13,
+    color: '#1E3A8A',
+    fontWeight: '600',
+    marginTop: 2,
   },
 
   sectionTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },

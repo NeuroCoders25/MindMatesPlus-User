@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   Image,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,9 +15,7 @@ import { RootStackParamList } from '../navigation';
 import {
   COLORS,
   fetchAdvisors,
-  connectToAdvisor,
   listenToUserAdvisorConnections,
-  getAdvisorButtonStatus,
   AdvisorConnectionStatusValue,
 } from '../services/dataService';
 import { Advisor } from '../types';
@@ -31,24 +28,6 @@ const AvatarPlaceholder = () => (
     <Ionicons name="person-circle" size={52} color="#9CA3AF" />
   </View>
 );
-
-// ─── Button config per connection status ──────────────────────────────────────
-
-type BtnConfig = { label: string; style: 'default' | 'muted' | 'green'; disabled: boolean };
-
-const getBtnConfig = (
-  advisorId: string,
-  connections: Record<string, AdvisorConnectionStatusValue>,
-  connecting: Set<string>
-): BtnConfig => {
-  if (connecting.has(advisorId)) return { label: 'Sending…', style: 'muted', disabled: true };
-  const status = getAdvisorButtonStatus(advisorId, connections);
-  switch (status) {
-    case 'pending':  return { label: 'Pending',   style: 'muted',   disabled: true };
-    case 'accepted': return { label: 'Connected', style: 'muted',   disabled: true };
-    default:         return { label: 'Connect',   style: 'default', disabled: false };
-  }
-};
 
 // ─── Availability config ──────────────────────────────────────────────────────
 
@@ -69,9 +48,7 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
   const [loading, setLoading] = useState(true);
   const [connections, setConnections] = useState<Record<string, AdvisorConnectionStatusValue>>({});
-  const [connecting, setConnecting] = useState<Set<string>>(new Set());
 
-  // Load advisors once
   useEffect(() => {
     fetchAdvisors()
       .then(data => setAdvisors(data))
@@ -79,7 +56,6 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
       .finally(() => setLoading(false));
   }, []);
 
-  // Real-time listener for all advisor connections for this user
   useEffect(() => {
     if (!user) return;
     const unsub = listenToUserAdvisorConnections(user.id, incoming => {
@@ -88,42 +64,13 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
     return unsub;
   }, [user]);
 
-  const handleConnect = async (advisor: Advisor) => {
-    if (!user) return;
-    const status = getAdvisorButtonStatus(advisor.id, connections);
-
-    // Active connection → navigate to advisor details (chat/status)
-    if (status === 'pending' || status === 'accepted') {
-      navigation.navigate('AdvisorDetails', { advisor });
-      return;
-    }
-
-    setConnecting(prev => new Set(prev).add(advisor.id));
-    try {
-      await connectToAdvisor(user.id, user.name, user.email, advisor);
-      // Real-time listener will update connections automatically
-      Alert.alert(
-        'Request Sent',
-        `Your connection request has been sent to ${advisor.name}. You will be notified once they accept.`,
-        [{ text: 'OK' }]
-      );
-    } catch (err) {
-      console.error('[ConsultAdvisor] Error connecting to advisor:', err);
-      Alert.alert('Error', 'Failed to send connection request. Please try again.');
-    } finally {
-      setConnecting(prev => {
-        const next = new Set(prev);
-        next.delete(advisor.id);
-        return next;
-      });
-    }
-  };
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.canGoBack() ? navigation.goBack() : navigation.navigate('Main')} style={styles.backButton}>
+        <TouchableOpacity
+          onPress={() => navigation.canGoBack() ? navigation.goBack() : navigation.navigate('Main')}
+          style={styles.backButton}
+        >
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Consult Advisor</Text>
@@ -141,15 +88,16 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={styles.emptyText}>No advisors available at the moment.</Text>
         ) : (
           advisors.map(advisor => {
-            const { label, style: btnStyle, disabled } = getBtnConfig(advisor.id, connections, connecting);
-            const isPreviouslyApproved = connections[advisor.id] === 'approved';
+            const status = connections[advisor.id];
+            const isPreviouslyApproved = status === 'approved';
+            const avail = getAvailability(advisor.availability);
 
             return (
               <TouchableOpacity
                 key={advisor.id}
                 style={styles.card}
                 activeOpacity={0.7}
-                onPress={() => navigation.navigate('AdvisorDetails', { advisor })}
+                onPress={() => navigation.navigate('CriticalAdvisorDetails', { advisor, flow: 'critical' })}
               >
                 {advisor.imageUrl
                   ? <Image source={{ uri: advisor.imageUrl }} style={styles.avatar} />
@@ -181,39 +129,27 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
 
                   <View style={styles.cardFooter}>
                     <View style={styles.availabilityRow}>
-                      {(() => {
-                        const avail = getAvailability(advisor.availability);
-                        return (
-                          <>
-                            <View style={[styles.onlineDot, { backgroundColor: avail.color }]} />
-                            <Text style={styles.availabilityText}>{avail.label}</Text>
-                          </>
-                        );
-                      })()}
+                      <View style={[styles.onlineDot, { backgroundColor: avail.color }]} />
+                      <Text style={styles.availabilityText}>{avail.label}</Text>
                     </View>
 
-                    <TouchableOpacity
-                      style={[
-                        styles.connectBtn,
-                        btnStyle === 'muted' && styles.connectBtnMuted,
-                        btnStyle === 'green' && styles.connectBtnGreen,
-                      ]}
-                      onPress={() => handleConnect(advisor)}
-                      disabled={disabled}
-                      activeOpacity={0.8}
-                    >
-                      {connecting.has(advisor.id) ? (
-                        <ActivityIndicator size="small" color="#6366F1" />
-                      ) : (
-                        <Text style={[
-                          styles.connectBtnText,
-                          btnStyle === 'muted' && styles.connectBtnTextMuted,
-                          btnStyle === 'green' && styles.connectBtnTextGreen,
-                        ]}>
-                          {label}
+                    {status === 'pending' ? (
+                      <View style={[styles.statusPill, styles.statusPillPending]}>
+                        <Text style={[styles.statusPillText, styles.statusPillTextPending]}>
+                          Requested
                         </Text>
-                      )}
-                    </TouchableOpacity>
+                      </View>
+                    ) : status === 'accepted' || status === 'reviewed' ? (
+                      <View style={[styles.statusPill, styles.statusPillAccepted]}>
+                        <Text style={[styles.statusPillText, styles.statusPillTextAccepted]}>
+                          Connected
+                        </Text>
+                      </View>
+                    ) : (
+                      <View style={styles.chevronWrap}>
+                        <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                      </View>
+                    )}
                   </View>
                 </View>
               </TouchableOpacity>
@@ -334,31 +270,29 @@ const styles = StyleSheet.create({
   onlineDot: { width: 8, height: 8, borderRadius: 4 },
   availabilityText: { fontSize: 12, color: COLORS.muted, fontWeight: '500' },
 
-  connectBtn: {
-    backgroundColor: '#6366F1',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 12,
-    minWidth: 82,
+  statusPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
     alignItems: 'center',
-    shadowColor: '#6366F1',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
   },
-  connectBtnMuted: {
-    backgroundColor: 'rgba(156, 163, 175, 0.1)',
-    shadowOpacity: 0,
-    elevation: 0,
+  statusPillPending: {
+    backgroundColor: '#F3F4F6',
     borderWidth: 1,
     borderColor: '#E5E7EB',
   },
-  connectBtnGreen: {
-    backgroundColor: '#22C55E',
-    shadowColor: '#22C55E',
+  statusPillAccepted: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
   },
-  connectBtnText: { color: 'white', fontSize: 12, fontWeight: '700' },
-  connectBtnTextMuted: { color: '#9CA3AF' },
-  connectBtnTextGreen: { color: 'white' },
+  statusPillText: { fontSize: 12, fontWeight: '700' },
+  statusPillTextPending: { color: '#9CA3AF' },
+  statusPillTextAccepted: { color: '#16A34A' },
+  chevronWrap: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });

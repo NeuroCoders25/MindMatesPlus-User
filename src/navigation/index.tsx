@@ -9,6 +9,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useApp } from '../context/AppContext';
 import { COLORS } from '../services/dataService';
 import { Advisor } from '../types';
+import { PaymentQuote } from '../services/paymentService';
 
 import { SplashScreen } from '../screens/SplashScreen';
 import { AuthScreen } from '../screens/AuthScreen';
@@ -21,6 +22,7 @@ import { AdvisorChatScreen } from '../screens/AdvisorChatScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { GroupsScreen } from '../screens/GroupsScreen';
 import { ChatScreen } from '../screens/ChatScreen';
+import { PaymentScreen } from '../screens/PaymentScreen';
 import { ListenerScreen } from '../screens/ListenerScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
@@ -42,7 +44,8 @@ export type RootStackParamList = {
   Result: undefined;
   Advisor: undefined;
   ConsultAdvisor: undefined;
-  AdvisorDetails: { advisor: Advisor };
+  AdvisorDetails: { advisor: Advisor; flow?: 'listener' | 'critical' };
+  CriticalAdvisorDetails: { advisor: Advisor; flow?: 'listener' | 'critical' };
   AdvisorChat: { advisor: Advisor };
   Main: undefined;
   GroupChat: { groupId: string; groupName: string };
@@ -57,6 +60,7 @@ export type RootStackParamList = {
   Feedback: undefined;
   WellnessGoals: undefined;
   Achievements: undefined;
+  Payment: { connectionId: string; advisorId: string; advisorName: string; quote: PaymentQuote };
 };
 
 export type MainTabParamList = {
@@ -185,6 +189,7 @@ export const Navigation = () => (
       <RootStack.Screen name="Advisor" component={AdvisorScreen} />
       <RootStack.Screen name="ConsultAdvisor" component={ConsultAdvisorScreen} />
       <RootStack.Screen name="AdvisorDetails" component={AdvisorDetailsScreen} />
+      <RootStack.Screen name="CriticalAdvisorDetails" component={AdvisorDetailsScreen} />
       <RootStack.Screen name="AdvisorChat" component={AdvisorChatScreen} />
       <RootStack.Screen name="Main" component={MainTabs} />
       <RootStack.Screen
@@ -195,6 +200,7 @@ export const Navigation = () => (
       <RootStack.Screen name="Feedback" component={FeedbackScreen} />
       <RootStack.Screen name="WellnessGoals" component={WellnessGoalsScreen} />
       <RootStack.Screen name="Achievements" component={AchievementsScreen} />
+      <RootStack.Screen name="Payment" component={PaymentScreen} />
       <RootStack.Screen
         name="GroupCall"
         component={GroupCallScreen}

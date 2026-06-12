@@ -250,42 +250,26 @@ export const HomeScreen = () => {
         <View style={styles.dailyCardCircle1} />
         <View style={styles.dailyCardCircle2} />
 
-        {/* Date badge */}
-        <View style={styles.dailyCardDateBadge}>
-          <Ionicons name="calendar-outline" size={10} color="rgba(255,255,255,0.85)" />
-          <Text style={styles.dailyCardDateText}>
-            {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-          </Text>
-        </View>
-
         {/* Motivation */}
         <View style={styles.dailyCardTop}>
+          {/* Single header row: label | spacer | badge | date */}
           <View style={styles.dailyCardLabelRow}>
-            <Ionicons name="sunny-outline" size={12} color="#BFDBFE" />
-            <Text style={styles.dailyCardLabel}>Daily Motivation</Text>
+            <View style={styles.dailyCardLabelLeft}>
+              <Ionicons name="sunny-outline" size={12} color="#BFDBFE" />
+              <Text style={styles.dailyCardLabel}>Daily Motivation</Text>
+            </View>
+            <View style={{ flex: 1 }} />
+            <View style={styles.dailyCardDateBadge}>
+              <Ionicons name="calendar-outline" size={10} color="rgba(255,255,255,0.85)" />
+              <Text style={styles.dailyCardDateText}>
+                {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </Text>
+            </View>
           </View>
           <Text style={styles.dailyCardQuote}>
             "One small step at a time is still progress."
           </Text>
         </View>
-
-        {/* Latest achievement teaser */}
-        {earnedBadges.length > 0 && (
-          <TouchableOpacity
-            style={styles.dailyCardBadge}
-            onPress={() => navigation.navigate('Achievements')}
-            activeOpacity={0.8}
-          >
-            <View style={styles.dailyCardBadgeIcon}>
-              <Text style={styles.dailyCardBadgeEmoji}>{getIcon(earnedBadges[0].iconName)}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.dailyCardBadgeLabel}>Latest Achievement</Text>
-              <Text style={styles.dailyCardBadgeName} numberOfLines={1}>{earnedBadges[0].badgeName}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.7)" />
-          </TouchableOpacity>
-        )}
 
         {/* Wellness Score strip (conditional) */}
         {!insightLoading && mlInsight && (() => {
@@ -308,12 +292,28 @@ export const HomeScreen = () => {
                 <Text style={[styles.dailyCardScoreValue, { color: '#FFFFFF' }]}>{wellnessScore}%</Text>
               </View>
               <View style={styles.dailyCardDivider} />
-              <View style={styles.dailyCardCategorySection}>
-                <Text style={styles.dailyCardScoreLabel}>Category</Text>
-                <Text style={[styles.dailyCardCategoryValue, { color: '#FFFFFF' }]} numberOfLines={2}>
-                  {dashboardCategory}
-                </Text>
-              </View>
+              {earnedBadges.length > 0 ? (
+                <TouchableOpacity
+                  style={styles.dailyCardCategorySection}
+                  onPress={() => navigation.navigate('Achievements')}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.dailyCardScoreLabel}>Latest Badge</Text>
+                  <View style={styles.dailyCardBadgeRow}>
+                    <Text style={styles.dailyCardBadgeSectionEmoji}>{getIcon(earnedBadges[0].iconName)}</Text>
+                    <Text style={styles.dailyCardBadgeSectionName} numberOfLines={2} ellipsizeMode="tail">
+                      {earnedBadges[0].badgeName.split(/\s*[–—-]\s*/)[0].trim()}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.dailyCardCategorySection}>
+                  <Text style={styles.dailyCardScoreLabel}>Category</Text>
+                  <Text style={[styles.dailyCardCategoryValue, { color: '#FFFFFF' }]} numberOfLines={2}>
+                    {dashboardCategory}
+                  </Text>
+                </View>
+              )}
             </View>
           );
         })()}
@@ -609,17 +609,14 @@ const styles = StyleSheet.create({
     left: -10,
   },
   dailyCardDateBadge: {
-    position: 'absolute',
-    top: 14,
-    right: 14,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     backgroundColor: 'rgba(255,255,255,0.18)',
     borderRadius: 20,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    zIndex: 1,
+    flexShrink: 0,
   },
   dailyCardDateText: {
     fontSize: 11,
@@ -629,12 +626,18 @@ const styles = StyleSheet.create({
   },
   dailyCardTop: {
     gap: 8,
-    paddingRight: 76,
   },
   dailyCardLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+    flexWrap: 'nowrap',
+  },
+  dailyCardLabelLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 5,
+    flexShrink: 0,
   },
   dailyCardLabel: {
     fontSize: 10,
@@ -684,29 +687,38 @@ const styles = StyleSheet.create({
   dailyCardBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 4,
     backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    borderRadius: 20,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    maxWidth: 90,
+    flexShrink: 1,
+    minWidth: 0,
   },
-  dailyCardBadgeIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+  dailyCardBadgeEmoji: { fontSize: 12 },
+  dailyCardBadgeName: { fontSize: 10, fontWeight: '600', color: 'rgba(255,255,255,0.9)', flexShrink: 1, minWidth: 0 },
+  dailyCardBadgeRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 4,
+    flexShrink: 1,
   },
-  dailyCardBadgeEmoji: { fontSize: 18 },
-  dailyCardBadgeLabel: {
+  dailyCardBadgeSectionLabel: {
     fontSize: 9,
-    color: 'rgba(255,255,255,0.7)',
+    color: '#FCD34D',
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  dailyCardBadgeName: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  dailyCardBadgeSectionEmoji: { fontSize: 24 },
+  dailyCardBadgeSectionName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    flexShrink: 1,
+    flexWrap: 'wrap',
+  },
   callsSection: { gap: 10 },
   upcomingSection: { gap: 10 },
   section: { gap: 14 },

@@ -268,4 +268,6 @@ export interface Advisor {
   experience?: string;
   sessions?: string;
   about?: string;
+  sessionFeeUSD?: number;
+  feeDescription?: string;
 }
