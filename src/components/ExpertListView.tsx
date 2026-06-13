@@ -42,8 +42,6 @@ const AvatarPlaceholder: React.FC = () => (
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const ACTIVE_PAYMENT_STATUSES = new Set(['pending_payment', 'paid', 'trial']);
-
 const getActiveConnection = (
   advisorId: string,
   connections: ListenerConnection[],
@@ -51,13 +49,6 @@ const getActiveConnection = (
   connections.find(
     c => c.advisorId === advisorId &&
       (c.status === 'pending' || c.status === 'accepted' || c.status === 'reviewed'),
-  );
-
-const getLockedBooking = (connections: ListenerConnection[]): ListenerConnection | undefined =>
-  connections.find(
-    c =>
-      (c.status === 'pending' || c.status === 'accepted') &&
-      ACTIVE_PAYMENT_STATUSES.has(c.paymentStatus ?? ''),
   );
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -76,8 +67,6 @@ export const ExpertListView: React.FC = () => {
       .finally(() => setLoading(false));
   }, []);
 
-  const lockedBooking = getLockedBooking(listenerConnections);
-
   return (
     <ScrollView
       showsVerticalScrollIndicator={false}
@@ -92,18 +81,6 @@ export const ExpertListView: React.FC = () => {
         </Text>
       </View>
 
-      {/* Exclusive lock banner */}
-      {lockedBooking && (
-        <View style={styles.lockBanner}>
-          <Ionicons name="lock-closed" size={16} color="#92400E" />
-          <Text style={styles.lockBannerText}>
-            You have an active booking with{' '}
-            <Text style={styles.lockBannerName}>{lockedBooking.advisorName ?? 'your advisor'}</Text>
-            . Cancel it to connect with another advisor.
-          </Text>
-        </View>
-      )}
-
       {loading ? (
         <ActivityIndicator size="large" color={COLORS.primary} style={styles.loader} />
       ) : advisors.length === 0 ? (
@@ -111,14 +88,12 @@ export const ExpertListView: React.FC = () => {
       ) : (
         advisors.map(advisor => {
           const conn = getActiveConnection(advisor.id, listenerConnections);
-          const isLockedAdvisor = lockedBooking?.advisorId === advisor.id;
-          const isOtherLocked = !!lockedBooking && !isLockedAdvisor;
           const avail = getAvailability(advisor.availability);
 
           return (
             <TouchableOpacity
               key={advisor.id}
-              style={[styles.card, isOtherLocked && styles.cardDisabled]}
+              style={styles.card}
               activeOpacity={0.7}
               onPress={() => navigation.navigate('AdvisorDetails', { advisor, flow: 'listener' })}
             >
@@ -128,9 +103,7 @@ export const ExpertListView: React.FC = () => {
 
               <View style={styles.details}>
                 <View style={styles.nameRow}>
-                  <Text style={[styles.name, isOtherLocked && styles.nameMuted]}>
-                    {advisor.name ?? ''}
-                  </Text>
+                  <Text style={styles.name}>{advisor.name ?? ''}</Text>
                   <View style={styles.ratingBox}>
                     <Ionicons name="star" size={12} color="#FACC15" />
                     <Text style={styles.ratingText}>
@@ -151,13 +124,7 @@ export const ExpertListView: React.FC = () => {
                     <Text style={styles.availabilityText}>{avail.label}</Text>
                   </View>
 
-                  {isOtherLocked ? (
-                    <View style={[styles.statusPill, styles.statusPillGrey]}>
-                      <Text style={[styles.statusPillText, styles.statusPillTextGrey]}>
-                        Unavailable
-                      </Text>
-                    </View>
-                  ) : conn?.status === 'accepted' || conn?.status === 'reviewed' ? (
+                  {conn?.status === 'accepted' || conn?.status === 'reviewed' ? (
                     <View style={[styles.statusPill, styles.statusPillAccepted]}>
                       <Text style={[styles.statusPillText, styles.statusPillTextAccepted]}>
                         Connected
@@ -214,24 +181,6 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
 
-  lockBanner: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: '#FFFBEB',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#FCD34D',
-  },
-  lockBannerText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#92400E',
-    lineHeight: 19,
-  },
-  lockBannerName: { fontWeight: '700' },
-
   card: {
     flexDirection: 'row',
     backgroundColor: COLORS.white,
@@ -245,9 +194,6 @@ const styles = StyleSheet.create({
     elevation: 3,
     borderWidth: 1,
     borderColor: 'rgba(37, 99, 235, 0.08)',
-  },
-  cardDisabled: {
-    opacity: 0.5,
   },
   avatar: {
     width: 72,
@@ -275,7 +221,6 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   name: { fontSize: 17, fontWeight: '700', color: COLORS.text },
-  nameMuted: { color: COLORS.muted },
   ratingBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -321,15 +266,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#BBF7D0',
   },
-  statusPillGrey: {
-    backgroundColor: '#F3F4F6',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
   statusPillText: { fontSize: 12, fontWeight: '700' },
   statusPillTextPending: { color: '#9CA3AF' },
   statusPillTextAccepted: { color: '#16A34A' },
-  statusPillTextGrey: { color: '#6B7280' },
   chevronWrap: {
     width: 32,
     height: 32,

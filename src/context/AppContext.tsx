@@ -143,9 +143,7 @@ const supportMessagesFromResult = (result: Dass21Result): string[] => {
     ];
   }
   return [
-    'Nice work completing your mental wellness check.',
-    `Your scores suggest mild to manageable symptoms, with ${concern} as the main area to watch.`,
-    'I can help you keep momentum with a short daily routine and check-ins. Want a 3-step plan for today?',
+    `Great job completing your mental wellness check! Your scores look good — just keep an eye on ${concern}. I'm here whenever you need support. How are you feeling today?`,
   ];
 };
 

@@ -797,6 +797,24 @@ export const fetchAdvisors = async (): Promise<Advisor[]> => {
   return advisors.sort((a, b) => getWeight(a.availability) - getWeight(b.availability));
 };
 
+export const fetchAdvisorById = async (advisorId: string): Promise<Advisor | null> => {
+  const snap = await getDoc(doc(db, 'advisors', advisorId));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return {
+    id: snap.id,
+    name: data.name as string,
+    specialty: (data.specialty || data.role) as string,
+    rating: (data.averageRating ?? data.rating) as number | undefined,
+    availability: data.availability as string,
+    imageUrl: (data.profileImageUrl || data.imageUrl) as string | undefined,
+    sessions: data.sessions as string | undefined,
+    about: data.about as string | undefined,
+    sessionFeeUSD: data.sessionFeeUSD as number | undefined,
+    feeDescription: data.feeDescription as string | undefined,
+  };
+};
+
 // ─── Advisor Connection Real-time Functions ───────────────────────────────────
 
 export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed' | 'closed' | 'cancelled';

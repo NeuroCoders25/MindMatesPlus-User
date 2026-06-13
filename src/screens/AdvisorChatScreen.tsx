@@ -19,12 +19,13 @@ import { RootStackParamList } from '../navigation';
 import {
   COLORS,
   AdvisorMessage,
-  findAdvisorConnection,
+  listenToAdvisorConnection,
   listenToAdvisorConnectionMessages,
   sendUserAdvisorMessage,
   hasUserRatedAdvisor,
   markChatRead,
   getLastReadAt,
+  fetchAdvisorById,
 } from '../services/dataService';
 import { getPaymentQuote, PaymentQuote } from '../services/paymentService';
 import { useTrialStatus } from '../hooks/useTrialStatus';
@@ -44,6 +45,7 @@ const fmtUSD = (amount: number | undefined | null, fallback = 10): string => {
 export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { advisor } = route.params;
   const { user } = useApp();
+  const [advisorImageUrl, setAdvisorImageUrl] = useState<string | undefined>(advisor.imageUrl);
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
   const [caseType, setCaseType] = useState<string | undefined>(undefined);
@@ -62,6 +64,13 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const [paymentStatus, setPaymentStatus] = useState<string | undefined>(undefined);
   const [paymentQuote, setPaymentQuote] = useState<PaymentQuote | null>(null);
+
+  useEffect(() => {
+    if (advisorImageUrl) return;
+    fetchAdvisorById(advisor.id)
+      .then(a => { if (a?.imageUrl) setAdvisorImageUrl(a.imageUrl); })
+      .catch(() => {});
+  }, [advisor.id, advisorImageUrl]);
 
   // ── Trial state (critical_case only) ──────────────────────────────────────
   const isCritical = caseType === 'critical_case';
@@ -89,18 +98,17 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   useEffect(() => {
     if (!user) return;
-    findAdvisorConnection(user.id, advisor.id)
-      .then(conn => {
-        if (conn) {
-          setConnectionId(conn.connectionId);
-          setConnectionStatus(conn.status as ConnectionStatus);
-          setCaseType(conn.caseType);
-          setPaymentStatus(conn.paymentStatus);
-        }
-      })
-      .catch(err => console.error('[AdvisorChat] Failed to load connection:', err))
-      .finally(() => setLoadingConnection(false));
-  }, [user, advisor.id]);
+    const unsub = listenToAdvisorConnection(user.id, advisor.id, conn => {
+      if (conn) {
+        setConnectionId(conn.connectionId);
+        setConnectionStatus(conn.status as ConnectionStatus);
+        setCaseType(conn.caseType);
+        setPaymentStatus(conn.paymentStatus);
+      }
+      setLoadingConnection(false);
+    });
+    return unsub;
+  }, [user?.id, advisor.id]);
 
   // Fetch payment quote so lock card can show a price immediately.
   useEffect(() => {
@@ -276,8 +284,8 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
       </TouchableOpacity>
       <View style={styles.headerProfile}>
         <View style={styles.headerAvatarCircle}>
-          {advisor.imageUrl ? (
-            <Image source={{ uri: advisor.imageUrl }} style={styles.headerAvatarImage} />
+          {advisorImageUrl ? (
+            <Image source={{ uri: advisorImageUrl }} style={styles.headerAvatarImage} />
           ) : (
             <Ionicons name="person" size={22} color="white" />
           )}
