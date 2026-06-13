@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,15 +12,25 @@ import {
   Alert,
   Image,
 } from 'react-native';
+import ReanimatedSwipeable, { SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Input } from '../components/UI';
-import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply, fetchUserProfile } from '../services/dataService';
+import { COLORS, subscribeGroupMessages, deleteGroupMessage, subscribePrivateThread, sendPrivateThreadReply, fetchUserProfile, markChatRead, getLastReadAt } from '../services/dataService';
+
+const AVAILABILITY: Record<string, { color: string }> = {
+  online:  { color: '#10B981' },
+  busy:    { color: '#F59E0B' },
+  away:    { color: '#6B7280' },
+  offline: { color: '#9CA3AF' },
+};
+const getModeratorStatusColor = (raw: string | undefined) =>
+  (AVAILABILITY[(raw ?? '').toLowerCase()] ?? AVAILABILITY['online']).color;
 import { moderateContent } from '../services/geminiService';
 import { RootStackParamList } from '../navigation';
 import { Message, ReviewStatus, PrivateThreadMessage } from '../types';
@@ -60,6 +70,84 @@ const msgAvatarStyles = StyleSheet.create({
   img: { width: 32, height: 32, borderRadius: 16 },
 });
 
+// ─── Mindy AI avatar ──────────────────────────────────────────────────────────
+const MindyAvatar = memo(() => (
+  <View style={mindyAvatarStyles.wrap}>
+    <MaterialCommunityIcons name="robot" size={18} color="#7C3AED" />
+  </View>
+));
+
+const mindyAvatarStyles = StyleSheet.create({
+  wrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#EDE9FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+  },
+});
+
+// ─── Swipe-to-reply row wrapper ───────────────────────────────────────────────
+const SwipeableMessageRow = memo(({
+  onReply,
+  enabled = true,
+  children,
+}: {
+  onReply: () => void;
+  enabled?: boolean;
+  children: React.ReactNode;
+}) => {
+  const swipeableRef = useRef<SwipeableMethods>(null);
+
+  if (!enabled) return <>{children}</>;
+
+  const renderLeftActions = () => (
+    <View style={swipeReplyStyles.action}>
+      <Ionicons name="arrow-undo" size={22} color="#6C63FF" />
+    </View>
+  );
+
+  return (
+    <ReanimatedSwipeable
+      ref={swipeableRef}
+      renderLeftActions={renderLeftActions}
+      onSwipeableOpen={(direction) => {
+        if (direction === 'left') {
+          onReply();
+          swipeableRef.current?.close();
+        }
+      }}
+      friction={2}
+      leftThreshold={40}
+      overshootLeft={false}
+    >
+      {children}
+    </ReanimatedSwipeable>
+  );
+});
+
+const swipeReplyStyles = StyleSheet.create({
+  action: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+});
+
+// Returns a safe display string for a value that may still be an EncryptedMessage object
+// (guards against decrypt-timing races when rendering replyTo.text)
+function safeText(val: unknown): string {
+  if (typeof val === 'string') return val;
+  if (val !== null && typeof val === 'object') {
+    return (val as { plaintext?: string }).plaintext ?? '[encrypted]';
+  }
+  return '';
+}
+
 // ─── Review-status helpers ─────────────────────────────────────────────────────
 
 // Treat missing reviewStatus (older messages) as 'not_required'.
@@ -77,10 +165,10 @@ const isMessageVisible = (msg: Message, viewerId: string | undefined): boolean =
   return msg.senderId === viewerId;
 };
 
-export const ChatScreen = () => {
+export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
-  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited, isRestricted } = useApp();
+  const { user, aiMessages, sendAiMessage, sendGroupMessage, peerGroups, leaveGroup, markGroupAsVisited, isRestricted, gamificationTriggers } = useApp();
 
   const params = (route.params ?? {}) as { groupId?: string; groupName?: string };
   const isAI = !params.groupId;
@@ -90,6 +178,8 @@ export const ChatScreen = () => {
   const group = peerGroups.find(g => g.id === groupId);
 
   const [groupMessages, setGroupMessages] = useState<Message[]>([]);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
   const [moderationError, setModerationError] = useState<string | null>(null);
@@ -108,6 +198,15 @@ export const ChatScreen = () => {
   // keyed by flaggedMessageId → sorted thread messages
   const [privateThreads, setPrivateThreads] = useState<Record<string, PrivateThreadMessage[]>>({});
   const listRef = useRef<FlatList>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [firstUnreadIndex, setFirstUnreadIndex] = useState<number | null>(null);
+  const firstUnreadIndexRef = useRef<number | null>(null);
+  const lastReadAtRef = useRef<Date | null>(null);
+  const initializedRef = useRef(false);
+  const initialScrollDoneRef = useRef(false);
+  const openTimeRef = useRef<number>(Date.now());
+  const userHasScrolledRef = useRef(false);
+  const prevLengthRef = useRef(0);
   // Holds unsubscribe functions for active privateThread listeners; cleaned up on unmount / group change
   const privateThreadUnsubs = useRef<Record<string, () => void>>({});
   // Live avatarSeed + profileImageUrl fetched from users/{senderId} — keyed by userId
@@ -165,22 +264,115 @@ export const ChatScreen = () => {
     );
   };
 
+  const handleMessageAction = (msg: Message) => {
+    const isOwn = msg.senderId === user?.id;
+    Alert.alert(
+      'Message',
+      undefined,
+      [
+        { text: 'Reply', onPress: () => setReplyingTo(msg) },
+        ...(isOwn ? [{
+          text: 'Delete',
+          style: 'destructive' as const,
+          onPress: () => handleDeleteMessage(msg),
+        }] : []),
+        { text: 'Cancel', style: 'cancel' as const },
+      ],
+    );
+  };
+
+  const scrollToMessage = (messageId: string) => {
+    const index = groupMessages.findIndex(m => m.id === messageId);
+    if (index < 0) return;
+    try {
+      listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.3 });
+    } catch {
+      // onScrollToIndexFailed handles the fallback
+    }
+    setHighlightedId(messageId);
+    setTimeout(() => setHighlightedId(null), 1500);
+  };
+
+  const renderQuotedPreview = (replyTo: NonNullable<Message['replyTo']>) => (
+    <TouchableOpacity
+      style={styles.quotedBlock}
+      activeOpacity={0.7}
+      onPress={() => scrollToMessage(replyTo.id)}
+    >
+      <View style={styles.quotedBar} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.quotedName} numberOfLines={1}>{replyTo.senderName}</Text>
+        <Text style={styles.quotedSnippet} numberOfLines={1}>{safeText(replyTo.text)}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+
   const messages: Message[] = isAI ? aiMessages : groupMessages;
 
-  // Subscribe to real-time Firestore messages for group chats
+  // Subscribe to real-time Firestore messages for group chats.
+  // Loads lastReadAt first so the unread divider position is stable on open.
   useEffect(() => {
     if (isAI || !groupId) return;
-    const unsubscribe = subscribeGroupMessages(groupId, incoming => {
-      // Mark messages from current user as 'user', all others as 'peer'
-      const mapped: Message[] = incoming.map(msg => ({
-        ...msg,
-        sender: msg.senderId === user?.id ? 'user' : 'peer',
-        senderName: msg.senderId === user?.id ? undefined : msg.senderName,
-      }));
-      setGroupMessages(mapped.filter(msg => isMessageVisible(msg, user?.id)));
-    });
+
+    // Reset unread state when the group changes
+    lastReadAtRef.current = null;
+    initializedRef.current = false;
+    initialScrollDoneRef.current = false;
+    openTimeRef.current = Date.now();
+    userHasScrolledRef.current = false;
+    prevLengthRef.current = 0;
+    setUnreadCount(0);
+    setFirstUnreadIndex(null);
+    firstUnreadIndexRef.current = null;
+
+    let unsubscribeMessages: (() => void) | null = null;
+    let cancelled = false;
+
+    (async () => {
+      lastReadAtRef.current = await getLastReadAt(groupId, 'group');
+      if (cancelled) return;
+
+      unsubscribeMessages = subscribeGroupMessages(groupId, incoming => {
+        const mapped: Message[] = incoming.map(msg => ({
+          ...msg,
+          sender: msg.senderId === user?.id ? 'user' : 'peer',
+          senderName: msg.senderId === user?.id ? undefined : msg.senderName,
+        }));
+        const filtered = mapped.filter(msg => isMessageVisible(msg, user?.id));
+        setGroupMessages(filtered);
+
+        // Compute unread once on the first snapshot so the divider stays fixed
+        if (!initializedRef.current) {
+          const lastRead = lastReadAtRef.current;
+          if (lastRead) {
+            const uid = user?.id;
+            let idx = -1;
+            let count = 0;
+            filtered.forEach((m, i) => {
+              if (m.timestamp > lastRead && m.senderId !== uid) {
+                if (idx === -1) idx = i;
+                count++;
+              }
+            });
+            const firstUnread = idx >= 0 ? idx : null;
+            setUnreadCount(count);
+            setFirstUnreadIndex(firstUnread);
+            firstUnreadIndexRef.current = firstUnread;
+          }
+          initializedRef.current = true;
+        }
+      });
+    })();
+
     return () => {
-      unsubscribe();
+      cancelled = true;
+      unsubscribeMessages?.();
+      initializedRef.current = false;
+      initialScrollDoneRef.current = false;
+      openTimeRef.current = Date.now();
+      userHasScrolledRef.current = false;
+      prevLengthRef.current = 0;
+      firstUnreadIndexRef.current = null;
       // Also tear down all private-thread listeners when the group subscription resets
       Object.values(privateThreadUnsubs.current).forEach(u => u());
       privateThreadUnsubs.current = {};
@@ -246,11 +438,63 @@ export const ChatScreen = () => {
     }
   }, [groupId, isAI, markGroupAsVisited]);
 
-  useEffect(() => {
-    if (messages.length > 0) {
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+  const scrollToInitialPosition = useCallback((animated: boolean) => {
+    const idx = firstUnreadIndexRef.current;
+    if (idx !== null && idx >= 0) {
+      try {
+        listRef.current?.scrollToIndex({ index: idx, animated, viewPosition: 0.2 });
+      } catch {
+        listRef.current?.scrollToEnd({ animated });
+      }
+    } else {
+      listRef.current?.scrollToEnd({ animated });
     }
-  }, [messages.length]);
+  }, []);
+
+  // AI chat: keep scrolled to latest on every new message
+  useEffect(() => {
+    if (!isAI || messages.length === 0) return;
+    const t = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+    return () => clearTimeout(t);
+  }, [messages.length, isAI]);
+
+  // Group chat: re-pin to initial position at intervals to cover async decrypt + image loads
+  useEffect(() => {
+    if (isAI || groupMessages.length === 0) return;
+    if (userHasScrolledRef.current) return;
+    const timers = [150, 500, 1000].map(delay =>
+      setTimeout(() => {
+        if (!userHasScrolledRef.current) {
+          scrollToInitialPosition(false);
+        }
+      }, delay),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [groupMessages.length, isAI, scrollToInitialPosition]);
+
+  // Group chat: scroll to end when a new message arrives after initial positioning is done
+  useEffect(() => {
+    if (isAI || groupMessages.length === 0) return;
+    const grew = groupMessages.length > prevLengthRef.current;
+    prevLengthRef.current = groupMessages.length;
+    if (!grew) return;
+    if (!initialScrollDoneRef.current) return;
+    const t = setTimeout(() => {
+      listRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+    return () => clearTimeout(t);
+  }, [groupMessages.length, isAI]);
+
+  // Mark chat as read when the user leaves the screen
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (!isAI && groupId) {
+          markChatRead(groupId, 'group');
+        }
+      };
+    }, [groupId, isAI]),
+  );
 
   const handleSend = async () => {
     const text = inputText.trim();
@@ -300,9 +544,25 @@ export const ChatScreen = () => {
       return;
     }
     if (!user) { setSending(false); return; }
+
+    const replyPayload = replyingTo ? {
+      id: replyingTo.id,
+      text: replyingTo.text,
+      senderName: replyingTo.senderName ?? 'User',
+      senderId: replyingTo.senderId ?? '',
+    } : undefined;
+    setReplyingTo(null);
+
     setSending(true);
     try {
-      await sendGroupMessage(groupId, text);
+      await sendGroupMessage(groupId, text, replyPayload);
+      if (replyPayload && replyPayload.senderId && replyPayload.senderId !== user.id) {
+        void gamificationTriggers.onSupportiveReply({
+          originalSenderId: replyPayload.senderId,
+          originalText: safeText(replyPayload.text),
+          replyText: text,
+        });
+      }
     } finally {
       setSending(false);
     }
@@ -312,8 +572,11 @@ export const ChatScreen = () => {
   const liveCall = activeCalls.find(c => c.status === 'live');
   const scheduledCalls = activeCalls.filter(c => c.status === 'scheduled');
 
+  const Wrapper = embedded ? View : SafeAreaView;
+  const wrapperProps = embedded ? {} : { edges: ['top'] as const };
+
   return (
-    <SafeAreaView style={styles.container}>
+    <Wrapper style={styles.container} {...wrapperProps}>
       {/* Group Info Modal */}
       <Modal visible={infoVisible} transparent animationType="fade" onRequestClose={() => setInfoVisible(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setInfoVisible(false)}>
@@ -352,9 +615,13 @@ export const ChatScreen = () => {
                       <Ionicons name="person" size={16} color="#2563EB" />
                     </View>
                   )}
-                  {/* Green verified badge pinned to bottom-right of avatar */}
+                  {/* Availability status badge pinned to bottom-right of avatar */}
                   <View style={styles.moderatorVerifiedBadge}>
-                    <Ionicons name="checkmark-circle" size={14} color="#16A34A" />
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={14}
+                      color={getModeratorStatusColor(group?.moderatorAvailability)}
+                    />
                   </View>
                 </View>
 
@@ -393,7 +660,8 @@ export const ChatScreen = () => {
         </TouchableOpacity>
       </Modal>
 
-      {/* Header */}
+      {/* Header — hidden when embedded inside ListenerScreen */}
+      {!embedded && (
       <View style={styles.header}>
         {!isAI && (
           <TouchableOpacity
@@ -423,6 +691,7 @@ export const ChatScreen = () => {
           </TouchableOpacity>
         )}
       </View>
+      )}
 
       {/* Live / scheduled call banners — group chat only */}
       {!isAI && (liveCall || scheduledCalls.length > 0) && (
@@ -442,12 +711,62 @@ export const ChatScreen = () => {
         style={styles.messageList}
         contentContainerStyle={styles.messageContent}
         showsVerticalScrollIndicator={false}
-        renderItem={({ item: msg }) => {
+        onContentSizeChange={() => {
+          if (isAI) {
+            listRef.current?.scrollToEnd({ animated: false });
+            return;
+          }
+          if (userHasScrolledRef.current) return;
+          const sinceOpen = Date.now() - openTimeRef.current;
+          if (sinceOpen < 1500) {
+            scrollToInitialPosition(false);
+          } else if (!initialScrollDoneRef.current) {
+            scrollToInitialPosition(false);
+            initialScrollDoneRef.current = true;
+          }
+        }}
+        onScrollBeginDrag={() => {
+          userHasScrolledRef.current = true;
+          initialScrollDoneRef.current = true;
+        }}
+        onScrollToIndexFailed={(info) => {
+          listRef.current?.scrollToOffset({
+            offset: info.averageItemLength * info.index,
+            animated: false,
+          });
+          setTimeout(() => {
+            if (!userHasScrolledRef.current) {
+              try {
+                listRef.current?.scrollToIndex({
+                  index: info.index,
+                  animated: false,
+                  viewPosition: 0.2,
+                });
+              } catch {
+                listRef.current?.scrollToEnd({ animated: false });
+              }
+            }
+          }, 250);
+        }}
+        renderItem={({ item: msg, index }) => {
+          const showDivider = !isAI && firstUnreadIndex === index && unreadCount > 0;
+          const unreadDivider = showDivider ? (
+            <View style={styles.unreadDivider}>
+              <View style={styles.unreadLine} />
+              <Text style={styles.unreadLabel}>
+                {unreadCount} new message{unreadCount > 1 ? 's' : ''}
+              </Text>
+              <View style={styles.unreadLine} />
+            </View>
+          ) : null;
+
           // Advisor hard-deleted — replace bubble in its original position for everyone.
           if (msg.deletedByAdvisor) {
             const deletedIsOwn = msg.sender === 'user';
             return (
-              <View style={[styles.msgRow, deletedIsOwn ? styles.msgRowUser : styles.msgRowOther]}>
+              <View>
+                {unreadDivider}
+                <View style={[styles.msgRow, deletedIsOwn ? styles.msgRowUser : styles.msgRowOther]}>
                 {!deletedIsOwn && (
                   <MessageAvatar
                     seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
@@ -474,6 +793,7 @@ export const ChatScreen = () => {
                   <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
                 )}
               </View>
+              </View>
             );
           }
 
@@ -484,7 +804,6 @@ export const ChatScreen = () => {
             msg.senderName?.trim().toLowerCase() === group.moderatorName.trim().toLowerCase();
           const isRejected = isOwn && status === 'rejected';
           const isPending = isOwn && status === 'pending';
-          const canDelete = !isAI && isOwn && !isRejected;
           // Private thread data — only populated for the current user's own flagged messages
           const thread: PrivateThreadMessage[] = isOwn ? (privateThreads[msg.id] ?? []) : [];
           const hasThread = thread.length > 0;
@@ -492,79 +811,90 @@ export const ChatScreen = () => {
 
           return (
             <View>
-              {/* Original message bubble */}
-              <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
-                {!isOwn && (
-                  <MessageAvatar
-                    seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
-                    name={msg.senderName}
-                    imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
-                  />
-                )}
-                <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
-                  {(isOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
-                    <View style={styles.senderNameRow}>
-                      <Text style={styles.senderName}>
-                        {isOwn ? (user?.nickname ?? user?.name) : msg.senderName}
-                      </Text>
-                      {isModerator && (
-                        <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
-                      )}
-                    </View>
-                  ) : null}
-                  <TouchableOpacity
-                    onLongPress={canDelete ? () => handleDeleteMessage(msg) : undefined}
-                    delayLongPress={400}
-                    activeOpacity={canDelete ? 0.8 : 1}
-                    disabled={deletingId === msg.id || isRejected}
-                  >
-                    <View
-                      style={[
-                        styles.bubble,
-                        isOwn ? styles.userBubble : styles.otherBubble,
-                        isModerator && styles.moderatorBubble,
-                        deletingId === msg.id && styles.bubbleDeleting,
-                        isRejected && styles.bubbleRejected,
-                      ]}
-                    >
-                      {isPending && (
-                        <View style={styles.reviewBadge}>
-                          <Ionicons name="time-outline" size={10} color="#D97706" />
-                          <Text style={styles.reviewBadgeText}>Under review</Text>
-                        </View>
-                      )}
-                      {isRejected && (
-                        <View style={styles.removedBadge}>
-                          <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
-                          <Text style={styles.removedBadgeText}>Removed by moderator</Text>
-                        </View>
-                      )}
-                      {!isPending && !isRejected && status !== 'approved' && msg.flagged && (
-                        <View style={styles.flaggedBadge}>
-                          <Ionicons name="warning-outline" size={10} color="#F87171" />
-                          <Text style={styles.flaggedText}>Flagged</Text>
-                        </View>
-                      )}
-                      <Text
-                        style={[
-                          styles.bubbleText,
-                          isOwn ? styles.userBubbleText : styles.otherBubbleText,
-                          isModerator && styles.moderatorBubbleText,
-                          isRejected && styles.rejectedBubbleText,
-                        ]}
+              {unreadDivider}
+              <SwipeableMessageRow
+                onReply={() => setReplyingTo(msg)}
+                enabled={!isAI && status !== 'rejected'}
+              >
+                {/* Original message bubble */}
+                <View style={[styles.msgRow, isOwn ? styles.msgRowUser : styles.msgRowOther]}>
+                  {!isOwn && (
+                    msg.sender === 'ai'
+                      ? <MindyAvatar />
+                      : <MessageAvatar
+                          seed={userProfiles[msg.senderId ?? '']?.avatarSeed ?? msg.senderAvatarSeed}
+                          name={msg.senderName}
+                          imageUrl={isModerator ? group?.moderatorImageUrl : userProfiles[msg.senderId ?? '']?.profileImageUrl}
+                        />
+                  )}
+                  <View style={[styles.msgWrapper, isOwn ? styles.userSide : styles.otherSide]}>
+                    {(isOwn ? (user?.nickname ?? user?.name) : msg.senderName) ? (
+                      <View style={styles.senderNameRow}>
+                        <Text style={styles.senderName}>
+                          {isOwn ? (user?.nickname ?? user?.name) : msg.senderName}
+                        </Text>
+                        {isModerator && (
+                          <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
+                        )}
+                      </View>
+                    ) : null}
+                    <View style={[highlightedId === msg.id && styles.highlightFlash]}>
+                      {msg.replyTo && renderQuotedPreview(msg.replyTo)}
+                      <TouchableOpacity
+                        onLongPress={!isAI && !isRejected ? () => handleMessageAction(msg) : undefined}
+                        delayLongPress={300}
+                        activeOpacity={!isRejected ? 0.8 : 1}
+                        disabled={deletingId === msg.id || isRejected}
                       >
-                        {msg.text}
-                      </Text>
+                        <View
+                          style={[
+                            styles.bubble,
+                            isOwn ? styles.userBubble : styles.otherBubble,
+                            isModerator && styles.moderatorBubble,
+                            deletingId === msg.id && styles.bubbleDeleting,
+                            isRejected && styles.bubbleRejected,
+                          ]}
+                        >
+                          {isPending && (
+                            <View style={styles.reviewBadge}>
+                              <Ionicons name="time-outline" size={10} color="#D97706" />
+                              <Text style={styles.reviewBadgeText}>Under review</Text>
+                            </View>
+                          )}
+                          {isRejected && (
+                            <View style={styles.removedBadge}>
+                              <Ionicons name="ban-outline" size={10} color="#9CA3AF" />
+                              <Text style={styles.removedBadgeText}>Removed by moderator</Text>
+                            </View>
+                          )}
+                          {!isPending && !isRejected && status !== 'approved' && msg.flagged && (
+                            <View style={styles.flaggedBadge}>
+                              <Ionicons name="warning-outline" size={10} color="#F87171" />
+                              <Text style={styles.flaggedText}>Flagged</Text>
+                            </View>
+                          )}
+                          <Text
+                            style={[
+                              styles.bubbleText,
+                              isOwn ? styles.userBubbleText : styles.otherBubbleText,
+                              isModerator && styles.moderatorBubbleText,
+                              isRejected && styles.rejectedBubbleText,
+                            ]}
+                          >
+                            {msg.text}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
                     </View>
-                  </TouchableOpacity>
-                  <Text style={styles.timestamp}>
-                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
+                    <Text style={styles.timestamp}>
+                      {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </View>
+                  {isOwn && (
+                    <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
+                  )}
                 </View>
-                {isOwn && (
-                  <MessageAvatar seed={user?.avatarSeed} name={user?.name} imageUrl={user?.profileImageUrl} />
-                )}
-              </View>
+              </SwipeableMessageRow>
 
               {/* Inline private advisor thread — only rendered for the message sender */}
               {hasThread && (
@@ -672,6 +1002,22 @@ export const ChatScreen = () => {
               </TouchableOpacity>
             </View>
           )}
+          {replyingTo && !isAI && (
+            <View style={styles.replyBanner}>
+              <View style={styles.quotedBar} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.replyBannerName} numberOfLines={1}>
+                  Replying to {replyingTo.senderName ?? 'message'}
+                </Text>
+                <Text style={styles.replyBannerSnippet} numberOfLines={1}>
+                  {safeText(replyingTo.text)}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setReplyingTo(null)} hitSlop={8}>
+                <Ionicons name="close" size={20} color="#9CA3AF" />
+              </TouchableOpacity>
+            </View>
+          )}
           {moderationError && (
             <View style={styles.moderationBanner}>
               <Ionicons name="warning-outline" size={16} color="#DC2626" />
@@ -709,7 +1055,7 @@ export const ChatScreen = () => {
           </View>
         </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </Wrapper>
   );
 };
 
@@ -1194,4 +1540,72 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 4,
   },
   moderatorBubbleText: { color: '#14532D' },
+  // ── Unread messages divider ────────────────────────────────────────────────
+  unreadDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginVertical: 12,
+    paddingHorizontal: 16,
+  },
+  unreadLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#6C63FF',
+  },
+  unreadLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6C63FF',
+  },
+  // ── Reply: quoted preview inside bubble ────────────────────────────────────
+  quotedBlock: {
+    flexDirection: 'row',
+    gap: 6,
+    backgroundColor: 'rgba(0,0,0,0.05)',
+    borderRadius: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 6,
+    marginBottom: 4,
+  },
+  quotedBar: {
+    width: 3,
+    borderRadius: 2,
+    backgroundColor: '#6C63FF',
+  },
+  quotedName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6C63FF',
+  },
+  quotedSnippet: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  // ── Reply banner above input ───────────────────────────────────────────────
+  replyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginHorizontal: 8,
+    marginBottom: 6,
+  },
+  replyBannerName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6C63FF',
+  },
+  replyBannerSnippet: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  // ── Highlight flash on tap-to-scroll target ────────────────────────────────
+  highlightFlash: {
+    backgroundColor: 'rgba(108,99,255,0.12)',
+    borderRadius: 8,
+  },
 });

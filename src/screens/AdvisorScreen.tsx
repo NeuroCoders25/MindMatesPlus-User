@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -10,7 +11,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Advisor'>;
 
 export const AdvisorScreen: React.FC<Props> = ({ navigation }) => {
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.iconWrapper}>
         <Ionicons name="call" size={40} color="#EF4444" />
       </View>
@@ -40,7 +41,7 @@ export const AdvisorScreen: React.FC<Props> = ({ navigation }) => {
           <Ionicons name="arrow-forward" size={16} color={COLORS.muted} />
         </TouchableOpacity>
       </View>
-    </View>
+    </SafeAreaView>
   );
 };
 

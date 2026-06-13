@@ -4,11 +4,12 @@ import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import { navigationRef } from './navigationRef';
 import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { useApp } from '../context/AppContext';
 import { COLORS } from '../services/dataService';
 import { Advisor } from '../types';
+import { PaymentQuote } from '../services/paymentService';
 
 import { SplashScreen } from '../screens/SplashScreen';
 import { AuthScreen } from '../screens/AuthScreen';
@@ -21,9 +22,12 @@ import { AdvisorChatScreen } from '../screens/AdvisorChatScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { GroupsScreen } from '../screens/GroupsScreen';
 import { ChatScreen } from '../screens/ChatScreen';
+import { PaymentScreen } from '../screens/PaymentScreen';
+import { ListenerScreen } from '../screens/ListenerScreen';
 import { JournalScreen } from '../screens/JournalScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { FeedbackScreen } from '../screens/FeedbackScreen';
+import { AchievementsScreen } from '../screens/AchievementsScreen';
 import { WellnessGoalsScreen } from '../screens/WellnessGoalsScreen';
 import { ForgotPasswordScreen } from '../screens/ForgotPasswordScreen';
 import { RecoverPasswordScreen } from '../screens/RecoverPasswordScreen';
@@ -40,7 +44,8 @@ export type RootStackParamList = {
   Result: undefined;
   Advisor: undefined;
   ConsultAdvisor: undefined;
-  AdvisorDetails: { advisor: Advisor };
+  AdvisorDetails: { advisor: Advisor; flow?: 'listener' | 'critical' };
+  CriticalAdvisorDetails: { advisor: Advisor; flow?: 'listener' | 'critical' };
   AdvisorChat: { advisor: Advisor };
   Main: undefined;
   GroupChat: { groupId: string; groupName: string };
@@ -54,12 +59,14 @@ export type RootStackParamList = {
   };
   Feedback: undefined;
   WellnessGoals: undefined;
+  Achievements: undefined;
+  Payment: { connectionId: string; advisorId: string; advisorName: string; quote: PaymentQuote };
 };
 
 export type MainTabParamList = {
   Home: undefined;
   Groups: undefined;
-  AIChat: undefined;
+  Listener: undefined;
   Journal: undefined;
   Profile: undefined;
 };
@@ -76,7 +83,6 @@ type IoniconsName = React.ComponentProps<typeof Ionicons>['name'];
 const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
   Home: ['home', 'home-outline'],
   Groups: ['people', 'people-outline'],
-  AIChat: ['chatbubble', 'chatbubble-outline'],
   Journal: ['book', 'book-outline'],
   Profile: ['person', 'person-outline'],
 };
@@ -84,9 +90,21 @@ const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
 // ─── Main Tabs ────────────────────────────────────────────────────────────────
 
 const MainTabs = () => {
-  const { showCrisisAlert, setShowCrisisAlert } = useApp();
+  const { showCrisisAlert, setShowCrisisAlert, notifications } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const initialTab = 'Home';
+
+  const groupsUnread = notifications.filter(
+    n => !n.read && (n.type === 'peer_message' || n.type === 'call_scheduled'),
+  ).length;
+  const listenerUnread = notifications.filter(
+    n => !n.read && (n.type === 'advisor_message' || n.type === 'listener_accepted' || n.type === 'advisor_request'),
+  ).length;
+  const profileUnread = notifications.filter(
+    n => !n.read && n.type === 'badge_awarded',
+  ).length;
+
+  const badgeLabel = (count: number) => (count === 0 ? undefined : count > 9 ? '9+' : String(count));
 
   return (
     <>
@@ -111,8 +129,15 @@ const MainTabs = () => {
             tabBarStyle: {
               backgroundColor: 'rgba(255,255,255,0.97)',
               borderTopColor: COLORS.border,
-              paddingBottom: 4,
-              height: 60,
+            },
+            tabBarBadgeStyle: {
+              backgroundColor: '#22C55E',
+              color: '#FFFFFF',
+              fontSize: 9,
+              minWidth: 16,
+              height: 16,
+              lineHeight: 16,
+              borderRadius: 8,
             },
             tabBarLabelStyle: {
               fontSize: 10,
@@ -124,14 +149,28 @@ const MainTabs = () => {
         }}
       >
         <MainTab.Screen name="Home" component={HomeScreen} />
-        <MainTab.Screen name="Groups" component={GroupsScreen} />
         <MainTab.Screen
-          name="AIChat"
-          component={ChatScreen}
-          options={{ tabBarLabel: 'AI Chat' }}
+          name="Groups"
+          component={GroupsScreen}
+          options={{ tabBarBadge: badgeLabel(groupsUnread) }}
+        />
+        <MainTab.Screen
+          name="Listener"
+          component={ListenerScreen}
+          options={{
+            tabBarLabel: 'Listener',
+            tabBarIcon: ({ color, size }) => (
+              <MaterialCommunityIcons name="face-agent" size={size} color={color} />
+            ),
+            tabBarBadge: badgeLabel(listenerUnread),
+          }}
         />
         <MainTab.Screen name="Journal" component={JournalScreen} />
-        <MainTab.Screen name="Profile" component={ProfileScreen} />
+        <MainTab.Screen
+          name="Profile"
+          component={ProfileScreen}
+          options={{ tabBarBadge: badgeLabel(profileUnread) }}
+        />
       </MainTab.Navigator>
 
       {/* Crisis Alert Modal */}
@@ -180,6 +219,7 @@ export const Navigation = () => (
       <RootStack.Screen name="Advisor" component={AdvisorScreen} />
       <RootStack.Screen name="ConsultAdvisor" component={ConsultAdvisorScreen} />
       <RootStack.Screen name="AdvisorDetails" component={AdvisorDetailsScreen} />
+      <RootStack.Screen name="CriticalAdvisorDetails" component={AdvisorDetailsScreen} />
       <RootStack.Screen name="AdvisorChat" component={AdvisorChatScreen} />
       <RootStack.Screen name="Main" component={MainTabs} />
       <RootStack.Screen
@@ -189,6 +229,8 @@ export const Navigation = () => (
       />
       <RootStack.Screen name="Feedback" component={FeedbackScreen} />
       <RootStack.Screen name="WellnessGoals" component={WellnessGoalsScreen} />
+      <RootStack.Screen name="Achievements" component={AchievementsScreen} />
+      <RootStack.Screen name="Payment" component={PaymentScreen} />
       <RootStack.Screen
         name="GroupCall"
         component={GroupCallScreen}

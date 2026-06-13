@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,21 +7,44 @@ import {
   TouchableOpacity,
   Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
+import { useGuide } from '../context/GuideContext';
 import { Card } from '../components/UI';
-import { COLORS } from '../services/dataService';
+import { COLORS, subscribeUnreadCount } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Group } from '../types';
 
 export const GroupsScreen = () => {
   const { peerGroups, joinedGroupIds, setSelectedGroup, visitedGroupIds, markGroupAsVisited, isRestricted } = useApp();
+  const { registerTarget } = useGuide();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  const groupsContentRef = useRef<View>(null);
+  const measureGroupsContent = () => {
+    groupsContentRef.current?.measureInWindow((x, y, w, h) => {
+      if (w > 0 && h > 0) registerTarget('groups_content', { x, y, width: w, height: h });
+    });
+  };
 
   const myGroups = peerGroups.filter(g => joinedGroupIds.includes(g.id));
   const unvisitedGroupsCount = myGroups.filter(g => !visitedGroupIds.includes(g.id)).length;
+
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  const groupIdsKey = myGroups.map(g => g.id).join(',');
+  useEffect(() => {
+    if (myGroups.length === 0) return;
+    const unsubs = myGroups.map(group =>
+      subscribeUnreadCount(group.id, 'group', count => {
+        setUnreadCounts(prev => ({ ...prev, [group.id]: count }));
+      })
+    );
+    return () => unsubs.forEach(u => u());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupIdsKey]);
 
   const handleOpen = (group: Group) => {
     if (isRestricted) return;
@@ -54,34 +77,50 @@ export const GroupsScreen = () => {
             <Ionicons name="people-outline" size={12} color={COLORS.muted} />
             <Text style={styles.membersText}>{group.members} members active</Text>
           </View>
-          {!visitedGroupIds.includes(group.id) && (
-            <TouchableOpacity
-              style={styles.openBtn}
-              onPress={() => handleOpen(group)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.openBtnText}>Open</Text>
-            </TouchableOpacity>
-          )}
+          <View style={styles.groupBottomRight}>
+            {(unreadCounts[group.id] ?? 0) > 0 && (
+              <View style={styles.unreadBadge}>
+                <Text style={styles.unreadBadgeText}>
+                  {(unreadCounts[group.id] ?? 0) > 99 ? '99+' : unreadCounts[group.id]}
+                </Text>
+              </View>
+            )}
+            {!visitedGroupIds.includes(group.id) && (
+              <TouchableOpacity
+                style={styles.openBtn}
+                onPress={() => handleOpen(group)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.openBtnText}>Open</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
       </View>
     </Card>
   );
 
   return (
+    <SafeAreaView style={styles.container} edges={['top']}>
     <ScrollView
-      style={styles.container}
+      style={{ flex: 1 }}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.header}>
-        <Text style={styles.title}>My Groups</Text>
-        {unvisitedGroupsCount > 0 && (
-          <View style={styles.countBadge}>
-            <Text style={styles.countText}>{unvisitedGroupsCount}</Text>
-          </View>
-        )}
-      </View>
+      <View
+        ref={groupsContentRef}
+        onLayout={measureGroupsContent}
+        collapsable={false}
+        style={{ gap: 20 }}
+      >
+        <View style={styles.header}>
+          <Text style={styles.title}>My Groups</Text>
+          {unvisitedGroupsCount > 0 && (
+            <View style={styles.countBadge}>
+              <Text style={styles.countText}>{unvisitedGroupsCount}</Text>
+            </View>
+          )}
+        </View>
 
       {isRestricted ? (
         <View style={styles.restrictionCard}>
@@ -115,7 +154,9 @@ export const GroupsScreen = () => {
           {myGroups.map(renderGroupCard)}
         </View>
       )}
+      </View>
     </ScrollView>
+    </SafeAreaView>
   );
 };
 
@@ -126,7 +167,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title: { fontSize: 22, fontWeight: 'bold', color: COLORS.text },
   countBadge: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: COLORS.primary,
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 2,
@@ -160,7 +201,7 @@ const styles = StyleSheet.create({
   },
   categoryBadgeText: {
     fontSize: 9,
-    color: COLORS.accent,
+    color: COLORS.primary,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
@@ -174,7 +215,7 @@ const styles = StyleSheet.create({
   membersRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   membersText: { fontSize: 10, color: COLORS.muted, fontWeight: '500' },
   openBtn: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: COLORS.primary,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 6,
@@ -182,6 +223,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   openBtnText: { fontSize: 12, fontWeight: '700', color: 'white' },
+  groupBottomRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  unreadBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   emptyState: { alignItems: 'center', paddingVertical: 64, gap: 12 },
   emptyTitle: { fontSize: 16, fontWeight: 'bold', color: COLORS.text },

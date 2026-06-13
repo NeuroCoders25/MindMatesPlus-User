@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
@@ -83,7 +84,7 @@ const saveToFirestore = async (
 };
 
 export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
-  const { setDass21Result, prepareSupportChatFromDass, user } = useApp();
+  const { setDass21Result, prepareSupportChatFromDass, user, gamificationTriggers } = useApp();
   const [showInstructions, setShowInstructions] = useState(true);
   const [currentStep, setCurrentStep] = useState(0); // 0-indexed; 0 = Q1
   const [answers, setAnswers] = useState<Record<number, number>>({});
@@ -156,6 +157,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
         if (user?.id) {
           saveToFirestore(user.id, newAnswers, result).catch(console.error);
         }
+        void gamificationTriggers.onDass21Complete();
         navigation.replace('Result');
       }
     });
@@ -184,6 +186,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
         if (user?.id) {
           saveToFirestore(user.id, answers, result).catch(console.error);
         }
+        void gamificationTriggers.onDass21Complete();
         navigation.replace('Result');
       }
     });
@@ -209,7 +212,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
   // ─── Instructions screen ───────────────────────────────────────────────────
   if (showInstructions) {
     return (
-      <View style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <Image source={require('../assets/logo.png')} style={styles.logo} resizeMode="contain" />
 
         <View style={styles.progressSection}>
@@ -229,12 +232,13 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.startButtonText}>Start Assessment</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </SafeAreaView>
     );
   }
 
   // ─── Question screen ───────────────────────────────────────────────────────
   return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.background }} edges={['top']}>
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -365,6 +369,7 @@ export const QuestionnaireScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       )}
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 

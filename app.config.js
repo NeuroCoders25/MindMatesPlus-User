@@ -3,40 +3,55 @@
 
 module.exports = {
   expo: {
-    name: 'MindMatesPlus-RN',
-    slug: 'MindMatesPlus-RN',
+    name: 'MindMates+',
+    slug: 'MindMates+',
     version: '1.0.0',
     orientation: 'portrait',
-    icon: './assets/icon.png',
+    icon: './assets/icon copy.png',
     userInterfaceStyle: 'light',
     newArchEnabled: true,
     splash: {
-      image: './assets/splash-icon.png',
+      image: './assets/splash-icon copy.png',
       resizeMode: 'contain',
-      backgroundColor: '#ffffff',
+      backgroundColor: '#1c2758',
     },
     ios: {
       supportsTablet: true,
       infoPlist: {
         NSCameraUsageDescription:
-          'MindMates+ needs camera access for peer group calls',
+          'MindMates+ needs camera access for group video calls with your peer support group.',
         NSMicrophoneUsageDescription:
-          'MindMates+ needs microphone access for peer group calls',
+          'MindMates+ needs microphone access for group calls with your peer support group.',
       },
     },
     android: {
       adaptiveIcon: {
         foregroundImage: './assets/adaptive-icon.png',
-        backgroundColor: '#ffffff',
+        backgroundColor: '#0B0D3F',
       },
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
       package: 'com.anonymous.MindMatesPlusRN',
-      permissions: ['CAMERA', 'RECORD_AUDIO', 'MODIFY_AUDIO_SETTINGS'],
+      permissions: [
+        'android.permission.CAMERA',
+        'android.permission.RECORD_AUDIO',
+        'android.permission.MODIFY_AUDIO_SETTINGS',
+        'android.permission.INTERNET',
+      ],
+    },
+    androidStatusBar: {
+      backgroundColor: '#F8F9FF',
+      barStyle: 'dark-content',
+      translucent: false,
+    },
+    androidNavigationBar: {
+      backgroundColor: '#F8F9FF',
+      barStyle: 'dark-content',
     },
     web: {
       favicon: './assets/favicon.png',
     },
+    plugins: [],
 
     // ── ZEGOCLOUD credentials ──────────────────────────────────────────────────
     // Set ZEGO_APP_ID and ZEGO_SERVER_SECRET in .env (never commit real secrets).
@@ -44,6 +59,8 @@ module.exports = {
     extra: {
       zegoAppId: process.env.ZEGO_APP_ID,
       zegoServerSecret: process.env.ZEGO_SERVER_SECRET,
+      alertApiUrl: process.env.ALERT_API_URL,
+      mlApiUrl: process.env.ML_API_URL,
     },
   },
 };

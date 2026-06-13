@@ -1,5 +1,5 @@
-const API_BASE_URL = 'http://192.168.1.2:8000';
-
+export const API_BASE_URL = 'http://192.168.1.2:8000';
+//10.72.73.62
 export interface KnnRecommendRequest {
   depression_score: number;
   anxiety_score: number;

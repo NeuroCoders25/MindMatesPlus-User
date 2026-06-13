@@ -8,6 +8,7 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { sendPasswordResetEmail } from 'firebase/auth';
@@ -54,8 +55,9 @@ export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   return (
+    <SafeAreaView style={styles.outer} edges={['top']}>
     <KeyboardAvoidingView
-      style={styles.outer}
+      style={{ flex: 1 }}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView
@@ -130,12 +132,13 @@ export const ForgotPasswordScreen: React.FC<Props> = ({ navigation }) => {
         )}
       </ScrollView>
     </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
   outer: { flex: 1, backgroundColor: COLORS.background },
-  container: { flexGrow: 1, padding: 32, paddingTop: 56 },
+  container: { flexGrow: 1, padding: 32, paddingTop: 20 },
   backBtn: {
     flexDirection: 'row',
     alignItems: 'center',

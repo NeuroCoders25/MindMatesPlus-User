@@ -1,0 +1,119 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // ── Users + all subcollections ────────────────────────────────────────────
+    // Each user can only read/write their own document and subcollections.
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+
+      match /{subcollection}/{docId} {
+        allow read, write: if isOwner(userId);
+
+        // Deeply nested subcollections (e.g. mentalHealthProfile/currentProfile)
+        match /{rest=**} {
+          allow read, write: if isOwner(userId);
+        }
+      }
+    }
+
+    // ── Peer groups ───────────────────────────────────────────────────────────
+    match /peer_groups/{groupId} {
+      allow read: if isSignedIn();
+      // Writes come from the advisor/admin SDK — users cannot modify group docs directly
+      allow write: if false;
+
+      match /chatMessages/{msgId} {
+        allow read: if isSignedIn();
+        // Users may only post messages with their own senderId
+        allow create: if isSignedIn()
+                      && request.resource.data.senderId == request.auth.uid;
+        // update: BERT write-back + advisor moderation both happen from authenticated clients
+        allow update: if isSignedIn();
+        allow delete: if isSignedIn();
+
+        match /privateThread/{threadMsgId} {
+          // Only participants listed in visibleTo may read the thread
+          allow read: if isSignedIn()
+                      && request.auth.uid in resource.data.visibleTo;
+          allow create: if isSignedIn()
+                        && request.resource.data.senderId == request.auth.uid;
+          allow update, delete: if false;
+        }
+      }
+    }
+
+    // ── Group membership ──────────────────────────────────────────────────────
+    match /groupMembers/{memberId} {
+      // Any authenticated user may query (needed for fetchUserJoinedGroupIds)
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn()
+                             && resource.data.userId == request.auth.uid;
+    }
+
+    // ── Advisors ──────────────────────────────────────────────────────────────
+    match /advisors/{advisorId} {
+      allow read: if isSignedIn();
+      // Advisors write their own profile from the Advisor App
+      allow write: if isSignedIn() && request.auth.uid == advisorId;
+
+      match /ratings/{ratingId} {
+        allow read: if isSignedIn();
+        // Deterministic ID ${userId}_${connectionId} — create only, no edits
+        allow create: if isSignedIn();
+        allow update, delete: if false;
+      }
+    }
+
+    // ── Advisor connections ───────────────────────────────────────────────────
+    match /advisorConnections/{connectionId} {
+      allow create: if isSignedIn()
+                    && request.resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn()
+                  && (resource.data.userId   == request.auth.uid
+                   || resource.data.advisorId == request.auth.uid);
+      allow update: if isSignedIn()
+                    && (resource.data.userId   == request.auth.uid
+                     || resource.data.advisorId == request.auth.uid);
+      allow delete: if false;
+
+      match /messages/{msgId} {
+        // Verify participation via parent doc (one extra read per rule evaluation)
+        function connectionData() {
+          return get(/databases/$(database)/documents/advisorConnections/$(connectionId)).data;
+        }
+        allow read: if isSignedIn()
+                    && (connectionData().userId   == request.auth.uid
+                     || connectionData().advisorId == request.auth.uid);
+        allow create: if isSignedIn()
+                      && request.resource.data.senderId == request.auth.uid;
+        allow update: if isSignedIn()
+                      && (connectionData().userId   == request.auth.uid
+                       || connectionData().advisorId == request.auth.uid);
+        allow delete: if false;
+      }
+    }
+
+    // ── Resources ─────────────────────────────────────────────────────────────
+    match /resources/{resourceId} {
+      allow read: if isSignedIn();
+      allow write: if false;  // advisor/admin SDK only
+
+      match /likes/{likeId} {
+        allow read: if isSignedIn();
+        // likeId == userId — users can only toggle their own like
+        allow write: if isSignedIn() && request.auth.uid == likeId;
+      }
+    }
+  }
+}

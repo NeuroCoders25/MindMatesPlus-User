@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, Image, StyleSheet, Animated } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation';
 import { COLORS } from '../services/dataService';
@@ -21,7 +22,7 @@ export const SplashScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <Animated.Image
         source={require('../assets/logo.png')}
         style={[styles.logo, { transform: [{ scale }], opacity }]}
@@ -30,7 +31,7 @@ export const SplashScreen: React.FC<Props> = ({ navigation }) => {
       <Animated.Text style={[styles.tagline, { opacity }]}>
         Your AI-Powered Mental Health Companion
       </Animated.Text>
-    </View>
+    </SafeAreaView>
   );
 };
 

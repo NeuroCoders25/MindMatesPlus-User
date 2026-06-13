@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,10 +7,12 @@ import {
   TouchableOpacity,
   Modal,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
+import { useGuide } from '../context/GuideContext';
 import { RootStackParamList } from '../navigation';
 import { Input, Card, Button } from '../components/UI';
 import { COLORS, ML_CATEGORY_MAP } from '../services/dataService';
@@ -45,8 +47,16 @@ const fmtTime = (d: Date) =>
   d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
 export const JournalScreen = () => {
-  const { journalEntries, addJournalEntry, isRestricted } = useApp();
+  const { journalEntries, addJournalEntry, isRestricted, gamificationTriggers } = useApp();
+  const { registerTarget } = useGuide();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  const journalContentRef = useRef<View>(null);
+  const measureJournalContent = () => {
+    journalContentRef.current?.measureInWindow((x, y, w, h) => {
+      if (w > 0 && h > 0) registerTarget('journal_content', { x, y, width: w, height: h });
+    });
+  };
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [selectedMood, setSelectedMood] = useState('');
@@ -96,6 +106,8 @@ export const JournalScreen = () => {
 
     setIsAnalyzing(false);
     await addJournalEntry(title || 'Untitled Entry', content, selectedMood || 'neutral', mlAnalysis);
+    // Fire-and-forget — never blocks the journal save on the gamification call
+    void gamificationTriggers.onJournalSaved(journalEntries.length + 1);
 
     setTimeout(() => {
       setTitle('');
@@ -115,9 +127,9 @@ export const JournalScreen = () => {
   };
 
   return (
-    <>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
-        style={styles.container}
+        style={{ flex: 1 }}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
@@ -150,6 +162,7 @@ export const JournalScreen = () => {
         )}
 
         {/* Entry Form Card */}
+        <View ref={journalContentRef} onLayout={measureJournalContent} collapsable={false}>
         <Card style={[styles.formCard, isRestricted && styles.formCardDisabled]}>
           <View style={styles.formHeader}>
             <View style={styles.dateRow}>
@@ -239,6 +252,7 @@ export const JournalScreen = () => {
             </View>
           )}
         </Card>
+        </View>
 
         {/* Moderation error */}
         {moderationError && (
@@ -365,6 +379,7 @@ export const JournalScreen = () => {
         </View>
       </ScrollView>
 
+
       {/* Entry Detail Modal */}
       <Modal visible={!!selectedEntry} transparent animationType="fade">
         <TouchableOpacity
@@ -403,7 +418,7 @@ export const JournalScreen = () => {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
-    </>
+    </SafeAreaView>
   );
 };
 

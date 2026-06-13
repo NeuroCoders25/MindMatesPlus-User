@@ -487,6 +487,7 @@ const GroupCallScreen: React.FC = () => {
             mixedContentMode="always"
             allowFileAccess={true}
             allowFileAccessFromFileURLs={true}
+            allowUniversalAccessFromFileURLs={true}
 
             // ── Injected scripts ───────────────────────────────────────────
             // injectedJavaScriptBeforeContentLoaded runs BEFORE the CDN

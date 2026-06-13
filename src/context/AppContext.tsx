@@ -1,6 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { View, ActivityIndicator, Modal, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
+import {
+  subscribeGamificationStats,
+  subscribeBadges,
+} from '../services/gamificationFirestoreService';
 import { navigationRef } from '../navigation/navigationRef';
 import {
   onAuthStateChanged,
@@ -22,10 +26,26 @@ import {
   updatePeerGroupRecommendationFromWeeklyTrend,
   listenToMentalHealthProfile, isUserRestricted,
   listenToAdvisorConnectionsWithNames,
+  listenToUserListenerConnections, ListenerConnection,
   continueAfterAdvisorApproval,
   runWeeklyKnnRecommendation,
   callKnnAndWriteResult,
+  hasUserRatedAdvisor,
+  createNotification,
+  subscribeGroupMessageNotifications,
+  subscribeAdvisorMessageNotifications,
+  subscribeToNotifications,
+  AppNotification,
 } from '../services/dataService';
+import { AdvisorRatingModal } from '../components/AdvisorRatingModal';
+import { ListenerAcceptedToast } from '../components/ListenerAcceptedToast';
+import { BadgeAwardToast } from '../components/BadgeAwardToast';
+import {
+  Badge, GamificationProfile,
+  triggerJournalSaved, triggerCheckIn, triggerDass21Complete,
+  triggerGroupJoined, triggerGoalCreated, triggerGoalsCompleted,
+  triggerFeedbackSubmitted, triggerSupportiveReplyCheck,
+} from '../services/gamificationApiService';
 import { sendSupportMessage } from '../services/geminiService';
 import { MlPredictResponse } from '../services/mlApiService';
 import { User, Group, Message, JournalEntry, Dass21Result, Feedback, MlMentalHealthProfile, MentalHealthRecommendationProfile } from '../types';
@@ -61,11 +81,34 @@ interface AppContextType {
   isRestricted: boolean;
   aiMessages: Message[];
   sendAiMessage: (text: string) => Promise<void>;
-  sendGroupMessage: (groupId: string, text: string) => Promise<void>;
+  sendGroupMessage: (groupId: string, text: string, replyTo?: { id: string; text: string; senderName: string; senderId?: string }) => Promise<void>;
   showCrisisAlert: boolean;
   setShowCrisisAlert: (show: boolean) => void;
   visitedGroupIds: string[];
   markGroupAsVisited: (groupId: string) => void;
+  listenerConnections: ListenerConnection[];
+  listenerAcceptedNotice: ListenerConnection | null;
+  clearListenerAcceptedNotice: () => void;
+  dataAccessBlocked: boolean;
+  pendingBadge: Badge | null;
+  clearPendingBadge: () => void;
+  gamificationProfile: GamificationProfile | null;
+  earnedBadges: Badge[];
+  notifications: AppNotification[];
+  gamificationTriggers: {
+    onJournalSaved: (entryCount: number) => Promise<void>;
+    onCheckIn: () => Promise<void>;
+    onDass21Complete: () => Promise<void>;
+    onGroupJoined: () => Promise<void>;
+    onGoalCreated: () => Promise<void>;
+    onGoalsCompleted: (totalCompleted: number) => Promise<void>;
+    onFeedbackSubmitted: () => Promise<void>;
+    onSupportiveReply: (params: {
+      originalSenderId: string;
+      originalText: string;
+      replyText: string;
+    }) => Promise<void>;
+  };
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -157,9 +200,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [advisorApprovalNotification, setAdvisorApprovalNotification] = useState<string | null>(null);
   const [showAdvisorApprovalModal, setShowAdvisorApprovalModal] = useState(false);
   const [advisorApprovedCategory, setAdvisorApprovedCategory] = useState('');
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [ratingAdvisorId, setRatingAdvisorId] = useState('');
+  const [ratingAdvisorName, setRatingAdvisorName] = useState('');
+  const [ratingConnectionId, setRatingConnectionId] = useState('');
   const prevConnectionStatuses = useRef<Record<string, string>>({});
+  const [listenerConnections, setListenerConnections] = useState<ListenerConnection[]>([]);
+  const [listenerAcceptedNotice, setListenerAcceptedNotice] = useState<ListenerConnection | null>(null);
+  const prevListenerStatuses = useRef<Record<string, string>>({});
+  const isFirstListenerSnapshot = useRef(true);
+  const [dataAccessBlocked, setDataAccessBlocked] = useState(false);
   // Ensures weekly KNN fires at most once per app session per user
   const knnTriggeredRef = useRef(false);
+  const [pendingBadge, setPendingBadge] = useState<Badge | null>(null);
+  const [gamificationProfile, setGamificationProfile] = useState<GamificationProfile | null>(null);
+  const [earnedBadges, setEarnedBadges] = useState<Badge[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+
+  const handleFirestoreError = (label: string) => (code: string) => {
+    if (code === 'permission-denied') {
+      console.warn('[Firestore] permission denied for', label);
+      setDataAccessBlocked(true);
+    } else {
+      console.warn('[Firestore] listener error for', label, '— code:', code);
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
@@ -185,7 +250,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setMentalHealthProfile(profile);
           console.log('[Firestore] Initial data loaded for user:', fbUser.uid);
         } catch (err) {
-          console.error('[Firestore] Failed to load initial data — operating offline:', err);
+          const code = (err as { code?: string })?.code;
+          if (code === 'permission-denied') {
+            console.warn('[Firestore] permission denied reading initial user data');
+            setDataAccessBlocked(true);
+          } else {
+            console.warn('[Firestore] Failed to load initial data — operating offline:', err);
+          }
           // Still set the user so the app is usable; data will be empty until Firestore reconnects
           setUser(mapFirebaseUser(fbUser));
         } finally {
@@ -221,12 +292,101 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const updated: Record<string, string> = {};
       connections.forEach(({ advisorId, status }) => { updated[advisorId] = status; });
       prevConnectionStatuses.current = updated;
-    });
+    }, handleFirestoreError('advisorConnections'));
     return () => {
       console.log('[Listener] Unsubscribed advisor connections for user:', user.id);
       unsub();
     };
   }, [user?.id]);
+
+  // ─── Gamification — live listeners on subcollection paths ───────────────────
+  useEffect(() => {
+    if (!user?.id) return;
+    const unsubStats = subscribeGamificationStats(user.id, setGamificationProfile);
+    const unsubBadges = subscribeBadges(user.id, setEarnedBadges);
+    return () => { unsubStats(); unsubBadges(); };
+  }, [user?.id]);
+
+  // ─── Notifications — global real-time subscription ───────────────────────────
+  useEffect(() => {
+    if (!user?.id) return;
+    const unsub = subscribeToNotifications(user.id, setNotifications);
+    return unsub;
+  }, [user?.id]);
+
+  // ─── Listener expert connection tracking ──────────────────────────────────────
+  // Detects pending→accepted transitions and fires a non-blocking toast.
+  // Pre-existing accepted connections on launch are seeded silently (no notice).
+  useEffect(() => {
+    if (!user?.id) return;
+    isFirstListenerSnapshot.current = true;
+    const unsub = listenToUserListenerConnections(user.id, conns => {
+      if (isFirstListenerSnapshot.current) {
+        // Seed without firing any notices — connections were already accepted before launch
+        conns.forEach(c => { prevListenerStatuses.current[c.id] = c.status; });
+        isFirstListenerSnapshot.current = false;
+      } else {
+        conns.forEach(c => {
+          const prev = prevListenerStatuses.current[c.id];
+          if (prev === 'pending' && c.status === 'accepted') {
+            setListenerAcceptedNotice(c);
+            createNotification(user.id, `listener_accepted_${c.id}`, {
+              type: 'listener_accepted',
+              title: 'Expert Listener Ready',
+              body: `${c.advisorName ?? 'Your expert'} has accepted your request. Start chatting now.`,
+              read: false,
+              chatId: c.id,
+            });
+          }
+          prevListenerStatuses.current[c.id] = c.status;
+        });
+      }
+      setListenerConnections(conns);
+    }, handleFirestoreError('listenerConnections'));
+    return () => {
+      unsub();
+      isFirstListenerSnapshot.current = true;
+    };
+  }, [user?.id]);
+
+  // ─── Track selected group for "don't notify if chat is open" check ────────────
+  const selectedGroupIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedGroupIdRef.current = selectedGroup?.id ?? null;
+  }, [selectedGroup]);
+
+  // ─── Peer group message notification subscriptions ────────────────────────────
+  useEffect(() => {
+    if (!user?.id || joinedGroupIds.length === 0) return;
+    const startTimestamp = Timestamp.now();
+    const userId = user.id;
+    const unsubs = joinedGroupIds.map(groupId => {
+      const group = peerGroups.find(g => g.id === groupId);
+      const groupName = group?.name ?? 'Group Chat';
+      return subscribeGroupMessageNotifications(
+        groupId,
+        groupName,
+        userId,
+        startTimestamp,
+        () => selectedGroupIdRef.current === groupId,
+      );
+    });
+    return () => unsubs.forEach(u => u());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, joinedGroupIds.join(',')]);
+
+  // ─── Advisor/listener message notification subscriptions ─────────────────────
+  useEffect(() => {
+    if (!user?.id) return;
+    const startTimestamp = Timestamp.now();
+    const userId = user.id;
+    const accepted = listenerConnections.filter(c => c.status === 'accepted');
+    const unsubs = accepted.map(conn =>
+      subscribeAdvisorMessageNotifications(conn.id, userId, startTimestamp),
+    );
+    return () => unsubs.forEach(u => u());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, listenerConnections.map(c => `${c.id}:${c.status}`).join(',')]);
 
   // ─── Weekly KNN trigger — fires once per session when the profile first loads ─
   // Rate-limited to once per 23 hours via knnLastUpdatedAt in Firestore.
@@ -283,8 +443,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           'General Wellbeing';
         setAdvisorApprovedCategory(category);
         setShowAdvisorApprovalModal(true);
+        const connId = (profile as any).advisorConnectionId ?? 'advisor_approval';
+        createNotification(user.id, `advisor_approved_${connId}`, {
+          type: 'advisor_request',
+          title: 'Advisor Approved You',
+          body: `You've been approved for ${category}`,
+          read: false,
+          chatId: (profile as any).advisorConnectionId,
+        });
       }
-    });
+    }, handleFirestoreError('mentalHealthProfile'));
     return () => {
       console.log('[Listener] Unsubscribed mental health profile for user:', user.id);
       unsub();
@@ -302,6 +470,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.log('[ApprovalPopup] approvalMessageSeen updated');
       } catch (err) {
         console.error('[ApprovalPopup] Failed to update approvalMessageSeen:', err);
+      }
+
+      // Offer rating if the user hasn't rated this connection yet
+      const advisorId = recommendationProfile?.approvedByAdvisorId;
+      const connectionId = recommendationProfile?.advisorConnectionId;
+      if (advisorId && connectionId) {
+        try {
+          const alreadyRated = await hasUserRatedAdvisor(user.id, advisorId, connectionId);
+          if (!alreadyRated) {
+            const advisorSnap = await getDoc(doc(db, 'advisors', advisorId));
+            const name = advisorSnap.exists()
+              ? (advisorSnap.data().name as string | undefined) ?? 'your advisor'
+              : 'your advisor';
+            setRatingAdvisorId(advisorId);
+            setRatingAdvisorName(name);
+            setRatingConnectionId(connectionId);
+            setShowRatingModal(true);
+          }
+        } catch (err) {
+          console.warn('[Rating] Could not check rating status:', err);
+        }
       }
     }
     if (navigationRef.isReady()) {
@@ -408,6 +597,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await saveFeedback(user.id, { rating, peerComment, appComment, date: new Date() });
   };
 
+  // ─── Gamification — backend-driven triggers + badge award toast ──────────────
+  // Fire-and-forget: a failed gamification call never blocks the real action.
+  const processBadgeResult = useCallback((result: any, userId?: string) => {
+    if (!result) return;
+    const awarded: Badge[] = result.awarded_badges ?? [];
+    if (awarded.length > 0) {
+      setPendingBadge(awarded[0]);
+      if (userId) {
+        awarded.forEach(badge => {
+          createNotification(userId, `badge_${badge.badgeId}`, {
+            type: 'badge_awarded',
+            title: badge.badgeName,
+            body: badge.description ?? 'You earned a new badge!',
+            read: false,
+            badgeId: badge.badgeId,
+          });
+        });
+      }
+    }
+    // Stats and badge docs update via Firestore listeners automatically.
+  }, []);
+
+  const gamificationTriggers = {
+    onJournalSaved: async (entryCount: number) => {
+      if (!user) return;
+      processBadgeResult(await triggerJournalSaved(user.id, entryCount), user.id);
+    },
+    onCheckIn: async () => {
+      if (!user) return;
+      const r = await triggerCheckIn(user.id);
+      processBadgeResult(r, user.id);
+      // Optimistic update so the streak chip reacts immediately.
+      if (r?.checkInStreak !== undefined) {
+        setGamificationProfile(p => p ? { ...p, checkInStreak: r.checkInStreak as number } : p);
+      }
+    },
+    onDass21Complete: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerDass21Complete(user.id), user.id);
+    },
+    onGroupJoined: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerGroupJoined(user.id), user.id);
+    },
+    onGoalCreated: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerGoalCreated(user.id), user.id);
+    },
+    onGoalsCompleted: async (totalCompleted: number) => {
+      if (!user) return;
+      processBadgeResult(await triggerGoalsCompleted(user.id, totalCompleted), user.id);
+    },
+    onFeedbackSubmitted: async () => {
+      if (!user) return;
+      processBadgeResult(await triggerFeedbackSubmitted(user.id), user.id);
+    },
+    onSupportiveReply: async (params: {
+      originalSenderId: string;
+      originalText: string;
+      replyText: string;
+    }) => {
+      if (!user?.id) return;
+      const r = await triggerSupportiveReplyCheck({ uid: user.id, ...params });
+      processBadgeResult(r, user.id);
+    },
+  };
+
   const prepareSupportChatFromDass = (result: Dass21Result) => {
     const now = Date.now();
     const seeded = supportMessagesFromResult(result).map((text, index) => ({
@@ -419,9 +675,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAiMessages(seeded);
   };
 
-  const sendGroupMessage = async (groupId: string, text: string) => {
+  const sendGroupMessage = async (groupId: string, text: string, replyTo?: { id: string; text: string; senderName: string; senderId?: string }) => {
     if (!user) return;
-    await saveChatMessage(groupId, user.id, user.name, text, user.avatarSeed);
+    await saveChatMessage(groupId, user.id, user.name, text, user.avatarSeed, replyTo);
     runMlAnalysisForText(user.id, text, 'group_chat').catch(() => {});
   };
 
@@ -483,6 +739,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         aiMessages, sendAiMessage, sendGroupMessage,
         showCrisisAlert, setShowCrisisAlert,
         visitedGroupIds, markGroupAsVisited,
+        listenerConnections,
+        listenerAcceptedNotice,
+        clearListenerAcceptedNotice: () => setListenerAcceptedNotice(null),
+        dataAccessBlocked,
+        pendingBadge,
+        clearPendingBadge: () => setPendingBadge(null),
+        gamificationProfile,
+        earnedBadges,
+        notifications,
+        gamificationTriggers,
       }}
     >
       {children}
@@ -549,6 +815,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           </View>
         </View>
       </Modal>
+
+      {/* Post-approval rating prompt */}
+      {showRatingModal && (
+        <AdvisorRatingModal
+          visible={showRatingModal}
+          advisorName={ratingAdvisorName}
+          advisorId={ratingAdvisorId}
+          connectionId={ratingConnectionId}
+          userId={user?.id ?? ''}
+          userNickname={user?.nickname ?? user?.name ?? 'Anonymous'}
+          onClose={() => setShowRatingModal(false)}
+          onSubmitted={() => console.log('[Rating] Advisor rated from approval flow')}
+        />
+      )}
+
+      {/* Badge award — global celebratory toast, fires from any screen */}
+      <BadgeAwardToast badge={pendingBadge} onDismiss={() => setPendingBadge(null)} />
+
+      {/* Listener expert accepted — non-blocking slide-down toast */}
+      {listenerAcceptedNotice && (
+        <ListenerAcceptedToast
+          visible
+          advisorName={listenerAcceptedNotice.advisorName ?? 'Your expert'}
+          onChat={() => {
+            const conn = listenerAcceptedNotice;
+            setListenerAcceptedNotice(null);
+            if (navigationRef.isReady()) {
+              navigationRef.navigate('AdvisorChat' as never, {
+                advisor: {
+                  id: conn.advisorId,
+                  name: conn.advisorName ?? 'Expert',
+                  specialty: '',
+                  availability: '',
+                },
+              } as never);
+            }
+          }}
+          onDismiss={() => setListenerAcceptedNotice(null)}
+        />
+      )}
     </AppContext.Provider>
   );
 };

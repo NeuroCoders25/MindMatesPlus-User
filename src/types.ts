@@ -29,6 +29,7 @@ export interface Group {
   image: any;
   moderatorName?: string;
   moderatorImageUrl?: string;
+  moderatorAvailability?: string;
 }
 
 // Advisor-review lifecycle for flagged group chat messages.
@@ -57,6 +58,12 @@ export interface Message {
   /** Set by the advisor portal when a privateThread subcollection is started on this message.
    *  When true the app subscribes to chatMessages/{id}/privateThread for the message sender. */
   hasPrivateThread?: boolean;
+  replyTo?: {
+    id: string;
+    text: string;
+    senderName: string;
+    senderId?: string;
+  };
 }
 
 // Stored at: peer_groups/{groupId}/chatMessages/{flaggedMsgId}/privateThread
@@ -231,6 +238,8 @@ export interface MentalHealthRecommendationProfile {
   advisorConnectionStatus?: string;
   approvedCategory?: GroupCategory;
   approvalMessageSeen?: boolean;
+  approvedByAdvisorId?: string;
+  advisorConnectionId?: string;
   peerGroupRecommendationCategory?: GroupCategory;
   resourceRecommendationCategory?: GroupCategory;
   wellnessScore?: number;
@@ -253,10 +262,12 @@ export interface Advisor {
   id: string;
   name: string;
   specialty: string;
-  rating: number;
+  rating?: number;
   availability: string;
   imageUrl?: string;
   experience?: string;
   sessions?: string;
   about?: string;
+  sessionFeeUSD?: number;
+  feeDescription?: string;
 }

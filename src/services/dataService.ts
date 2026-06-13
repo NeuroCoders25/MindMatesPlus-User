@@ -1,12 +1,19 @@
 import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor, PrivateThreadMessage } from '../types';
-import { db, storage } from './firebaseConfig';
+import { db, auth, storage } from './firebaseConfig';
+import { deleteUser } from 'firebase/auth';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   collection, addDoc, getDocs, deleteDoc,
   doc, query, orderBy, Timestamp, where,
-  setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp,
+  setDoc, updateDoc, increment, getDoc, onSnapshot, limit, serverTimestamp, runTransaction,
 } from 'firebase/firestore';
-import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService';
+import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService'
+import { encryptText, decryptBatch, EncryptedMessage } from './cryptoService'
+import { triggerCriticalAlertEmail, triggerCriticalCancellationEmail } from './criticalAlertService';
+import { triggerListenerRequestEmail } from './listenerAlertService';
+import { startTrial } from './paymentService';
+import { awardJournalPoints, unlockDass21Badge } from './gamificationService';
+import { evaluateSupportReply } from './supportDetectionService';
 
 // ─── Journal Firestore Functions ──────────────────────────────────────────────
 
@@ -23,6 +30,7 @@ export const saveJournalEntry = async (
     analysis: entry.analysis ?? null,
     ml_analysis: entry.mlAnalysis ?? null,
   });
+  awardJournalPoints(userId).catch(err => console.warn('[gamify] non-fatal:', err));
   return docRef.id;
 };
 
@@ -111,13 +119,16 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
     getDocs(collection(db, 'advisors')),
   ]);
 
-  // Build name → imageUrl lookup from advisors collection
+  // Build name → imageUrl and name → availability lookups from advisors collection
   const advisorImageMap: Record<string, string> = {};
+  const advisorAvailabilityMap: Record<string, string> = {};
   advisorsSnap.docs.forEach(d => {
     const a = d.data();
     const name = (a.name ?? '').toLowerCase().trim();
     const img: string | undefined = a.profileImageUrl ?? a.imageUrl;
     if (name && img) advisorImageMap[name] = img;
+    const avail: string | undefined = a.availability;
+    if (name && avail) advisorAvailabilityMap[name] = avail;
   });
 
   return groupsSnap.docs.map(d => {
@@ -126,9 +137,9 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
     const imageUrl: string | undefined = data.group_image_url ?? data.imageUrl;
     const moderatorName: string | undefined =
       data.group_moderator ?? data.moderator_name ?? data.moderatorName ?? undefined;
-    const moderatorImageUrl: string | undefined = moderatorName
-      ? advisorImageMap[moderatorName.toLowerCase().trim()]
-      : undefined;
+    const key = moderatorName?.toLowerCase().trim();
+    const moderatorImageUrl: string | undefined = key ? advisorImageMap[key] : undefined;
+    const moderatorAvailability: string | undefined = key ? advisorAvailabilityMap[key] : undefined;
     return {
       id: d.id,
       name: data.group_name ?? data.name ?? '',
@@ -138,6 +149,7 @@ export const fetchPeerGroups = async (): Promise<Group[]> => {
       image: imageUrl ? { uri: imageUrl } : (GROUP_IMAGE_MAP[category] ?? GROUP_IMAGE_MAP['Wellness - Thriving']),
       moderatorName,
       moderatorImageUrl,
+      moderatorAvailability,
     };
   });
 };
@@ -245,6 +257,17 @@ function classificationFromCategory(category: GroupCategory | undefined): 'low' 
   if (category === 'Severe Support') return 'severe';
   if (category === 'Moderate Support') return 'moderate';
   return 'low';
+}
+
+export function getCaseTypeFromCategory(
+  category: string | undefined | null,
+): 'critical_case' | 'listener_support' {
+  if (!category) return 'listener_support';
+  const c = category.toLowerCase();
+  if (c.includes('severe') || c.includes('critical') || c.includes('crisis')) {
+    return 'critical_case';
+  }
+  return 'listener_support';
 }
 
 export const fetchMentalHealthProfile = async (
@@ -521,21 +544,37 @@ export const saveChatMessage = async (
   senderName: string,
   text: string,
   senderAvatarSeed?: string,
+  replyTo?: { id: string; text: string; senderName: string },
 ): Promise<string> => {
+  // Moderation and ML run on plaintext BEFORE encryption
   const lower = text.toLowerCase();
   const flagged = CRISIS_KEYWORDS.some(kw => lower.includes(kw));
   const ref = collection(db, 'peer_groups', groupId, 'chatMessages');
+  const msgTimestamp = Timestamp.now();
+  const encryptedText = await encryptText(text);
   const payload: Record<string, unknown> = {
     senderId,
     senderName,
-    text,
-    timestamp: Timestamp.now(),
+    text: encryptedText,
+    timestamp: msgTimestamp,
     flagged,
     reviewStatus: flagged ? 'pending' : 'not_required',
   };
   if (senderAvatarSeed) payload.senderAvatarSeed = senderAvatarSeed;
+  if (replyTo) payload.replyTo = replyTo;
   const docRef = await addDoc(ref, payload);
-  return docRef.id;
+  const savedId = docRef.id;
+  // BERT runs on plaintext — never on ciphertext
+  predictText(text)
+    .then(result => updateDoc(
+      doc(db, 'peer_groups', groupId, 'chatMessages', savedId),
+      { bertPrediction: { label: result.prediction, confidence: result.confidence } },
+    ))
+    .catch(err => console.warn('[bert-msg] non-fatal:', err));
+  // Support detection runs on plaintext
+  evaluateSupportReply(groupId, savedId, senderId, text, msgTimestamp)
+    .catch(err => console.warn('[support-detect] non-fatal:', err));
+  return savedId;
 };
 
 export const subscribeGroupMessages = (
@@ -547,28 +586,39 @@ export const subscribeGroupMessages = (
     collection(db, 'peer_groups', groupId, 'chatMessages'),
     orderBy('timestamp', 'asc')
   );
+  let decryptInFlight = false;
   return onSnapshot(
     q,
-    snapshot => {
-      const messages: Message[] = snapshot.docs.map(d => ({
-        id: d.id,
-        text: d.data().text,
-        sender: 'peer',
-        senderId: d.data().senderId as string,
-        senderName: d.data().senderName as string,
-        senderAvatarSeed: d.data().senderAvatarSeed as string | undefined,
-        timestamp: (d.data().timestamp as Timestamp).toDate(),
-        flagged: d.data().flagged ?? false,
-        reviewStatus: d.data().reviewStatus ?? 'not_required',
-        reviewedBy: d.data().reviewedBy ?? null,
-        reviewedAt: d.data().reviewedAt ? (d.data().reviewedAt as Timestamp).toDate() : null,
-        deletedByAdvisor: d.data().deletedByAdvisor ?? false,
-        hasPrivateThread: d.data().hasPrivateThread ?? false,
-      }));
-      callback(messages);
+    async snapshot => {
+      if (decryptInFlight) return;
+      decryptInFlight = true;
+      try {
+        const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+        const texts = docs.map(d => d.data.text as EncryptedMessage | string);
+        const plain = await decryptBatch(texts);
+        const messages: Message[] = docs.map((d, i) => ({
+          id: d.id,
+          text: plain[i],
+          sender: 'peer',
+          senderId: d.data.senderId as string,
+          senderName: d.data.senderName as string,
+          senderAvatarSeed: d.data.senderAvatarSeed as string | undefined,
+          timestamp: (d.data.timestamp as Timestamp).toDate(),
+          flagged: (d.data.flagged as boolean) ?? false,
+          reviewStatus: (d.data.reviewStatus as string) ?? 'not_required',
+          reviewedBy: (d.data.reviewedBy as string | null) ?? null,
+          reviewedAt: d.data.reviewedAt ? (d.data.reviewedAt as Timestamp).toDate() : null,
+          deletedByAdvisor: (d.data.deletedByAdvisor as boolean) ?? false,
+          hasPrivateThread: (d.data.hasPrivateThread as boolean) ?? false,
+          replyTo: d.data.replyTo as { id: string; text: string; senderName: string } | undefined,
+        }));
+        callback(messages);
+      } finally {
+        decryptInFlight = false;
+      }
     },
     err => {
-      console.error('[Firestore] subscribeGroupMessages error:', err);
+      console.warn('[Firestore] subscribeGroupMessages error:', err.code);
     }
   );
 };
@@ -608,29 +658,39 @@ export const subscribePrivateThread = (
     collection(db, 'peer_groups', groupId, 'chatMessages', flaggedMessageId, 'privateThread'),
     where('visibleTo', 'array-contains', userId),
   );
+  let decryptInFlight = false;
   return onSnapshot(
     q,
-    snapshot => {
-      const messages: PrivateThreadMessage[] = snapshot.docs
-        .map(d => ({
-          id: d.id,
-          senderId: d.data().senderId as string,
-          senderName: d.data().senderName as string,
-          senderRole: d.data().senderRole as 'user' | 'advisor',
-          receiverId: d.data().receiverId as string,
-          receiverName: d.data().receiverName as string,
-          text: d.data().text as string,
-          timestamp: (d.data().timestamp as Timestamp).toDate(),
-          isPrivate: d.data().isPrivate ?? true,
-          threadType: d.data().threadType as 'advisor_private_message' | 'user_private_reply',
-          flaggedMessageRef: d.data().flaggedMessageRef as string,
-          visibleTo: d.data().visibleTo as string[],
-        }))
-        .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      callback(messages);
+    async snapshot => {
+      if (decryptInFlight) return;
+      decryptInFlight = true;
+      try {
+        const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+        const texts = docs.map(d => d.data.text as EncryptedMessage | string);
+        const plain = await decryptBatch(texts);
+        const messages: PrivateThreadMessage[] = docs
+          .map((d, i) => ({
+            id: d.id,
+            senderId: d.data.senderId as string,
+            senderName: d.data.senderName as string,
+            senderRole: d.data.senderRole as 'user' | 'advisor',
+            receiverId: d.data.receiverId as string,
+            receiverName: d.data.receiverName as string,
+            text: plain[i],
+            timestamp: (d.data.timestamp as Timestamp).toDate(),
+            isPrivate: (d.data.isPrivate as boolean) ?? true,
+            threadType: d.data.threadType as 'advisor_private_message' | 'user_private_reply',
+            flaggedMessageRef: d.data.flaggedMessageRef as string,
+            visibleTo: d.data.visibleTo as string[],
+          }))
+          .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        callback(messages);
+      } finally {
+        decryptInFlight = false;
+      }
     },
     err => {
-      console.error('[Firestore] subscribePrivateThread error:', err);
+      console.warn('[Firestore] subscribePrivateThread error:', err.code);
     },
   );
 };
@@ -647,6 +707,7 @@ export const sendPrivateThreadReply = async (
   advisorName: string,
   text: string,
 ): Promise<string> => {
+  const encryptedText = await encryptText(text);
   const ref = collection(
     db, 'peer_groups', groupId, 'chatMessages', flaggedMessageId, 'privateThread',
   );
@@ -656,7 +717,7 @@ export const sendPrivateThreadReply = async (
     senderRole: 'user',
     receiverId: advisorId,
     receiverName: advisorName,
-    text,
+    text: encryptedText,
     timestamp: Timestamp.now(),
     isPrivate: true,
     threadType: 'user_private_reply',
@@ -697,24 +758,48 @@ export const getMlGroupCategory = (dominantCategory: string): GroupCategory =>
 
 // ─── Advisors Firestore Functions ───────────────────────────────────────────
 
+const formatExperience = (raw: unknown): string | undefined => {
+  if (raw == null) return undefined;
+  if (typeof raw === 'number') return `${raw} years`;
+  const s = String(raw).trim();
+  return s.length > 0 ? s : undefined;
+};
+
 export const fetchAdvisors = async (): Promise<Advisor[]> => {
   const snap = await getDocs(collection(db, 'advisors'));
-  return snap.docs.map(d => ({
-    id: (d.data().uid || d.id) as string,
-    name: d.data().name as string,
-    specialty: (d.data().specialty || d.data().role) as string,
-    rating: d.data().rating as number,
-    availability: d.data().availability as string,
-    imageUrl: (d.data().profileImageUrl || d.data().imageUrl) as string | undefined,
-    experience: d.data().experience as string | undefined,
-    sessions: d.data().sessions as string | undefined,
-    about: d.data().about as string | undefined,
-  }));
+  const advisors = snap.docs.map(d => {
+    const data = d.data();
+    const expRaw = data.yearsOfExperience ?? data.years_of_experience ?? data.experience_years ?? data.experience;
+    return {
+      id: (data.uid || d.id) as string,
+      name: data.name as string,
+      specialty: (data.specialty || data.role) as string,
+      rating: (data.averageRating ?? data.rating) as number | undefined,
+      availability: data.availability as string,
+      imageUrl: (data.profileImageUrl || data.imageUrl) as string | undefined,
+      experience: formatExperience(expRaw),
+      sessions: data.sessions as string | undefined,
+      about: data.about as string | undefined,
+      sessionFeeUSD: data.sessionFeeUSD as number | undefined,
+      feeDescription: data.feeDescription as string | undefined,
+    };
+  });
+
+  const getWeight = (status: string | undefined): number => {
+    const val = (status ?? '').toLowerCase().trim();
+    if (val === 'online') return 1;
+    if (val === 'busy') return 2;
+    if (val === 'away') return 3;
+    if (val === 'offline') return 4;
+    return 5;
+  };
+
+  return advisors.sort((a, b) => getWeight(a.availability) - getWeight(b.availability));
 };
 
 // ─── Advisor Connection Real-time Functions ───────────────────────────────────
 
-export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed' | 'closed';
+export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed' | 'closed' | 'cancelled';
 
 // Statuses that mean a connection is actively blocking a new request.
 const ACTIVE_CONNECTION_STATUSES: ReadonlySet<string> = new Set(['pending', 'accepted']);
@@ -722,6 +807,7 @@ const ACTIVE_CONNECTION_STATUSES: ReadonlySet<string> = new Set(['pending', 'acc
 // Streams all advisor connections for a user as a map of advisorId → status.
 // When a user has multiple docs for the same advisor (e.g. old approved + new pending),
 // active statuses (pending/accepted) take precedence over terminal ones.
+// Cancelled docs are skipped entirely so they never lock the UI.
 // Fires immediately with current data, then on every Firestore change.
 export const listenToUserAdvisorConnections = (
   userId: string,
@@ -737,6 +823,8 @@ export const listenToUserAdvisorConnections = (
         const data = d.data();
         if (data.advisorId && data.status) {
           const incoming = data.status as AdvisorConnectionStatusValue;
+          // Cancelled connections must never lock the advisor list
+          if (incoming === 'cancelled') return;
           const existing = connections[data.advisorId];
           // Active status always wins; among same priority, last write wins.
           if (!existing || ACTIVE_CONNECTION_STATUSES.has(incoming)) {
@@ -748,18 +836,24 @@ export const listenToUserAdvisorConnections = (
       callback(connections);
     },
     err => {
-      console.error('[Firestore] listenToUserAdvisorConnections error:', err);
+      console.warn('[Firestore] listenToUserAdvisorConnections error:', err.code);
     }
   );
 };
 
-// Streams all advisor connections for a user with full details (including advisor name).
-// Used by the global approval notification in AppContext.
+// Streams listener_support advisor connections for a user with full details (including advisor name).
+// Scoped to listener_support only — critical_case acceptances are handled separately
+// in AdvisorDetailsScreen and must not trigger Listener-tab notifications.
 export const listenToAdvisorConnectionsWithNames = (
   userId: string,
-  callback: (connections: Array<{ advisorId: string; advisorName: string; status: AdvisorConnectionStatusValue }>) => void
+  callback: (connections: Array<{ advisorId: string; advisorName: string; status: AdvisorConnectionStatusValue }>) => void,
+  onError?: (code: string) => void,
 ): (() => void) => {
-  const q = query(collection(db, 'advisorConnections'), where('userId', '==', userId));
+  const q = query(
+    collection(db, 'advisorConnections'),
+    where('userId', '==', userId),
+    where('caseType', '==', 'listener_support'),
+  );
   return onSnapshot(
     q,
     snapshot => {
@@ -773,10 +867,98 @@ export const listenToAdvisorConnectionsWithNames = (
       callback(connections);
     },
     err => {
-      console.error('[Firestore] listenToAdvisorConnectionsWithNames error:', err);
+      console.warn('[Firestore] listenToAdvisorConnectionsWithNames error:', err.code);
+      onError?.(err.code);
+      callback([]);
     }
   );
 };
+
+// ─── Listener Expert Connection Listener ─────────────────────────────────────
+
+export interface ListenerConnection {
+  id: string;
+  advisorId: string;
+  advisorName?: string;
+  userMentalHealthCategory?: string;
+  status: string;
+  caseType?: string;
+  paymentStatus?: string;
+  createdAt: unknown;
+  acceptedAt?: unknown;
+}
+
+const advisorNameCache = new Map<string, string>();
+
+export function listenToUserListenerConnections(
+  userId: string,
+  callback: (connections: ListenerConnection[]) => void,
+  onError?: (code: string) => void,
+): () => void {
+  const q = query(
+    collection(db, 'advisorConnections'),
+    where('userId', '==', userId),
+    where('caseType', '==', 'listener_support'),
+  );
+
+  return onSnapshot(
+    q,
+    async snapshot => {
+      try {
+        // Resolve advisor names, using cache to avoid repeated reads
+        const advisorIds = [...new Set(
+          snapshot.docs.map(d => d.data().advisorId as string).filter(Boolean)
+        )];
+        await Promise.all(
+          advisorIds
+            .filter(id => !advisorNameCache.has(id))
+            .map(async id => {
+              try {
+                const snap = await getDoc(doc(db, 'advisors', id));
+                if (snap.exists()) {
+                  advisorNameCache.set(id, (snap.data().name as string) ?? id);
+                }
+              } catch {
+                // leave cache empty for this id; name will fall back to undefined
+              }
+            })
+        );
+
+        const connections: ListenerConnection[] = snapshot.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            advisorId: data.advisorId as string,
+            advisorName: advisorNameCache.get(data.advisorId as string) ?? data.advisorName as string | undefined,
+            userMentalHealthCategory: data.userMentalHealthCategory as string | undefined,
+            status: (data.status as string) ?? 'pending',
+            caseType: data.caseType as string | undefined,
+            paymentStatus: data.paymentStatus as string | undefined,
+            createdAt: data.createdAt,
+            acceptedAt: data.acceptedAt,
+          };
+        });
+
+        // Sort descending by createdAt client-side (avoids composite index)
+        connections.sort((a, b) => {
+          const ta = (a.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+          const tb = (b.createdAt as { toMillis?: () => number })?.toMillis?.() ?? 0;
+          return tb - ta;
+        });
+
+        callback(connections);
+      } catch (err) {
+        console.warn('[listenToUserListenerConnections] Error processing snapshot:', err);
+        callback([]);
+      }
+    },
+    err => {
+      console.warn('[listenToUserListenerConnections] Snapshot error:', err.code);
+      onError?.(err.code);
+      callback([]);
+    }
+  );
+}
 
 // Returns the active connection status (pending/accepted) for an advisor,
 // or null if there is no active connection. Approved/reviewed/closed are treated
@@ -841,8 +1023,222 @@ export const connectToAdvisor = async (
     userStatus: 'under_review',
   }, { merge: true });
 
+  console.log('[connectToAdvisor] Created connection, triggering alert email for:', docRef.id);
+  void triggerCriticalAlertEmail(docRef.id);
+
   return docRef.id;
 };
+
+// Cancels a pending critical-case advisor request.
+// Guards against cancelling an already-accepted request (advisor already responded).
+// Returns { success: true } on cancel, { success: false, alreadyAccepted: true } if the
+// advisor has already accepted, or { success: false } for any other failure.
+export const cancelCriticalRequest = async (
+  userId: string,
+  advisorId: string,
+): Promise<{ success: boolean; alreadyAccepted?: boolean }> => {
+  try {
+    // Find the pending connection doc for this user+advisor
+    const pendingQ = query(
+      collection(db, 'advisorConnections'),
+      where('userId', '==', userId),
+      where('advisorId', '==', advisorId),
+      where('status', '==', 'pending'),
+      where('caseType', '==', 'critical_case'),
+    );
+    const pendingSnap = await getDocs(pendingQ);
+
+    if (pendingSnap.empty) {
+      // Check if the advisor has already accepted
+      const acceptedQ = query(
+        collection(db, 'advisorConnections'),
+        where('userId', '==', userId),
+        where('advisorId', '==', advisorId),
+        where('status', '==', 'accepted'),
+      );
+      const acceptedSnap = await getDocs(acceptedQ);
+      if (!acceptedSnap.empty) return { success: false, alreadyAccepted: true };
+      return { success: false };
+    }
+
+    const connDoc = pendingSnap.docs[0];
+    await updateDoc(doc(db, 'advisorConnections', connDoc.id), {
+      status: 'cancelled',
+      cancelledAt: serverTimestamp(),
+      cancelledBy: 'user',
+    });
+
+    // Clear the profile connection so the user is no longer under_review
+    await setDoc(
+      doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile'),
+      { advisorConnectionStatus: 'cancelled', userStatus: 'active', connectedAdvisorId: null },
+      { merge: true },
+    );
+
+    // Best-effort: notify advisor via email
+    void triggerCriticalCancellationEmail(connDoc.id);
+
+    console.log('[cancelCriticalRequest] Cancelled connection:', connDoc.id);
+    return { success: true };
+  } catch (err) {
+    console.error('[cancelCriticalRequest] Failed:', err);
+    return { success: false };
+  }
+};
+
+// ─── Listener Expert Connection ───────────────────────────────────────────────
+
+// Routes a listener-tab expert request by the user's risk category.
+// - Normal / moderate → caseType: "listener_support" (no access restriction)
+// - Severe / critical  → caseType: "critical_case"  (sets userStatus to "under_review")
+//
+// REQUIRED Firestore rule (firestore.rules):
+// match /advisorConnections/{id} {
+//   allow create: if request.auth != null
+//                 && request.resource.data.userId == request.auth.uid;
+//   allow read:   if request.auth != null
+//                 && (resource.data.userId == request.auth.uid
+//                  || resource.data.advisorId == request.auth.uid);
+//   allow update: if request.auth != null
+//                 && (resource.data.userId == request.auth.uid
+//                  || resource.data.advisorId == request.auth.uid);
+// }
+export async function requestExpertListener(params: {
+  userId: string;
+  userNickname: string;
+  advisorId: string;
+  paymentStatus?: string;
+  forcedCaseType?: 'critical_case' | 'listener_support';
+}): Promise<
+  | { success: true; caseType: string; connectionId: string }
+  | { success: false; alreadyConnected: true }
+  | { success: false }
+> {
+  const { userId: paramUserId, userNickname, advisorId, paymentStatus, forcedCaseType } = params;
+
+  // Confirm auth state — prefer the live Firebase auth uid over the context value
+  const uid = auth.currentUser?.uid ?? paramUserId;
+  if (!uid) {
+    console.error('[requestExpertListener] No authenticated user — cannot create connection');
+    return { success: false };
+  }
+  const userId = uid;
+
+  console.log('[requestExpertListener] Called with:', { userId, advisorId, userNickname });
+
+  try {
+    // Read mental health profile
+    const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
+    const profileSnap = await getDoc(profileRef);
+    const profileData = profileSnap.exists() ? profileSnap.data() : null;
+
+    // Determine risk category (priority order: active → baseline → initial); fallback so
+    // a missing profile never blocks the connection
+    const activeCat    = profileData?.activeRecommendationCategory   as string | undefined;
+    const baselineCat  = profileData?.baselineRecommendationCategory as string | undefined;
+    const initialCat   = profileData?.initialQuestionnaireScore?.category as string | undefined;
+    const riskCategory = activeCat ?? baselineCat ?? initialCat ?? 'Normal';
+
+    const isCritical = riskCategory.toLowerCase().includes('severe') ||
+                       riskCategory.toLowerCase().includes('critical');
+    const derivedCaseType = isCritical ? 'critical_case' : 'listener_support';
+    const caseType        = forcedCaseType ?? derivedCaseType;
+    const isCriticalFinal = caseType === 'critical_case';
+
+    if (forcedCaseType && forcedCaseType !== derivedCaseType) {
+      console.warn('[requestExpertListener][caseType mismatch]',
+        'derived=', derivedCaseType, 'forced=', forcedCaseType,
+        'riskCategory=', riskCategory);
+    }
+
+    console.log('[requestExpertListener] riskCategory:', riskCategory,
+      '| derived:', derivedCaseType, '| caseType:', caseType);
+
+    // Duplicate check — scoped to same advisor + same caseType + this user only.
+    // We query without a status filter (avoids composite index) and filter active
+    // statuses client-side so terminal ones (approved/reviewed/ended) never block.
+    const connectionsRef = collection(db, 'advisorConnections');
+    const dupQuery = query(
+      connectionsRef,
+      where('userId',    '==', userId),
+      where('advisorId', '==', advisorId),
+      where('caseType',  '==', caseType),
+    );
+    const dupSnap = await getDocs(dupQuery);
+
+    console.log(
+      '[requestExpertListener] Duplicate check — docs found:', dupSnap.size,
+      dupSnap.docs.map(d => ({
+        id: d.id,
+        status: d.data().status,
+        caseType: d.data().caseType,
+        advisorId: d.data().advisorId,
+      })),
+    );
+
+    const activeDup = dupSnap.docs.find(d => {
+      const s = ((d.data().status as string) ?? '').toLowerCase();
+      return s === 'pending' || s === 'accepted';
+    });
+
+    if (activeDup) {
+      console.log('[requestExpertListener] Duplicate active connection found:',
+        activeDup.id, activeDup.data().status);
+      return { success: false, alreadyConnected: true };
+    }
+
+    // Create the connection — every field must be non-undefined for Firestore addDoc
+    console.log('[requestExpertListener] CREATING connection for advisorId:', advisorId);
+    const connPaymentStatus = isCriticalFinal ? 'trial' : (paymentStatus ?? undefined);
+    const docRef = await addDoc(connectionsRef, {
+      userId,
+      advisorId,
+      userNickname:             userNickname ?? 'Student',
+      status:                   'pending',
+      caseType,
+      source:                   'listener_expert',
+      userMentalHealthCategory: riskCategory,
+      reason:                   'User requested expert listener support',
+      ...(connPaymentStatus !== undefined && { paymentStatus: connPaymentStatus }),
+      createdAt:                serverTimestamp(),
+      lastMessage:              '',
+      lastMessageAt:            null,
+    });
+    console.log('[requestExpertListener] CREATED connection:', docRef.id);
+
+    if (isCriticalFinal) {
+      console.log('[requestExpertListener] Critical case — triggering alert email and trial for:', docRef.id);
+      void triggerCriticalAlertEmail(docRef.id);
+      startTrial(docRef.id).catch(e =>
+        console.warn('[requestExpertListener] startTrial failed (non-critical):', e)
+      );
+    } else {
+      console.log('[requestExpertListener] Listener support — triggering listener alert email for:', docRef.id);
+      void triggerListenerRequestEmail(docRef.id);
+    }
+
+    // Only restrict access for critical cases — never for listener_support
+    if (isCriticalFinal) {
+      await updateDoc(
+        doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile'),
+        { userStatus: 'under_review' },
+      );
+    }
+
+    return { success: true, caseType, connectionId: docRef.id };
+  } catch (err: unknown) {
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'permission-denied') {
+      console.error(
+        '[requestExpertListener] PERMISSION DENIED — check firestore.rules for ' +
+        'advisorConnections create/read permissions',
+        err,
+      );
+    } else {
+      console.error('[requestExpertListener] FAILED to create connection:', err);
+    }
+    return { success: false };
+  }
+}
 
 export const updateUserAdvisorStatus = async (
   userId: string,
@@ -855,6 +1251,135 @@ export const updateUserAdvisorStatus = async (
     advisorConnectionStatus: status,
     userStatus: 'under_review',
   }, { merge: true });
+};
+
+// ─── Advisor Rating Functions ─────────────────────────────────────────────────
+
+// Returns true when this user has already submitted a rating for the given connection.
+// Uses a deterministic doc ID so the check is a single point-read with no duplication.
+// Never throws — returns false on any error so the UI degrades gracefully.
+export async function hasUserRatedAdvisor(
+  userId: string,
+  advisorId: string,
+  connectionId: string,
+): Promise<boolean> {
+  try {
+    const snap = await getDoc(
+      doc(db, 'advisors', advisorId, 'ratings', `${userId}_${connectionId}`),
+    );
+    return snap.exists();
+  } catch {
+    return false;
+  }
+}
+
+interface SubmitRatingParams {
+  userId: string;
+  userNickname: string;
+  advisorId: string;
+  connectionId: string;
+  rating: number;
+  comment?: string;
+}
+
+// Writes a rating record and atomically updates the advisor's aggregate score.
+// The deterministic doc ID `${userId}_${connectionId}` prevents duplicate ratings.
+// Never throws — returns a result object so the caller can branch on success/failure.
+export async function submitAdvisorRating(
+  params: SubmitRatingParams,
+): Promise<{ success: boolean; alreadyRated?: boolean }> {
+  const { userId, userNickname, advisorId, connectionId, rating, comment } = params;
+
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+    return { success: false };
+  }
+
+  const ratingDocRef = doc(db, 'advisors', advisorId, 'ratings', `${userId}_${connectionId}`);
+  const advisorRef = doc(db, 'advisors', advisorId);
+
+  try {
+    await runTransaction(db, async (tx) => {
+      const existingRating = await tx.get(ratingDocRef);
+      if (existingRating.exists()) {
+        throw { code: 'ALREADY_RATED' };
+      }
+
+      const advisorSnap = await tx.get(advisorRef);
+      const data = advisorSnap.exists() ? advisorSnap.data() : {};
+      const prevSum = typeof data['ratingSum'] === 'number' ? data['ratingSum'] : 0;
+      const prevCount = typeof data['ratingCount'] === 'number' ? data['ratingCount'] : 0;
+
+      const newSum = prevSum + rating;
+      const newCount = prevCount + 1;
+      const newAverage = Math.round((newSum / newCount) * 10) / 10;
+
+      tx.set(ratingDocRef, {
+        userId,
+        userNickname: userNickname ?? 'Anonymous',
+        advisorId,
+        connectionId,
+        rating,
+        comment: comment ?? '',
+        createdAt: serverTimestamp(),
+      });
+
+      tx.set(advisorRef, {
+        ratingSum: newSum,
+        ratingCount: newCount,
+        averageRating: newAverage,
+      }, { merge: true });
+    });
+
+    // Mark the connection so the rating prompt doesn't reappear
+    await setDoc(
+      doc(db, 'advisorConnections', connectionId),
+      { userRated: true },
+      { merge: true },
+    );
+
+    return { success: true };
+  } catch (err: unknown) {
+    if (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'ALREADY_RATED') {
+      return { success: false, alreadyRated: true };
+    }
+    console.warn('[Rating] submitAdvisorRating failed:', err);
+    return { success: false };
+  }
+}
+
+// ─── Advisor Reviews ──────────────────────────────────────────────────────────
+
+export interface AdvisorReview {
+  id: string;
+  userId: string;
+  userNickname: string;
+  rating: number;
+  comment: string;
+  createdAt: Date;
+}
+
+export const fetchAdvisorReviews = async (advisorId: string): Promise<AdvisorReview[]> => {
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, 'advisors', advisorId, 'ratings'),
+        orderBy('createdAt', 'desc'),
+        limit(30),
+      ),
+    );
+    return snap.docs
+      .map(d => ({
+        id: d.id,
+        userId: d.data().userId as string,
+        userNickname: (d.data().userNickname as string) || 'Anonymous',
+        rating: (d.data().rating as number) || 0,
+        comment: (d.data().comment as string) || '',
+        createdAt: d.data().createdAt?.toDate() ?? new Date(),
+      }))
+      .filter(r => r.rating > 0);
+  } catch {
+    return [];
+  }
 };
 
 // ─── Advisor Chat Functions ───────────────────────────────────────────────────
@@ -877,6 +1402,8 @@ export interface AdvisorConnection {
   userId: string;
   userName: string;
   status: 'pending' | 'accepted' | 'reviewed';
+  caseType?: string;
+  paymentStatus?: string;
 }
 
 // Queries advisorConnections directly — does not rely on the user profile field.
@@ -906,6 +1433,8 @@ export const findAdvisorConnection = async (
     userId: data.userId as string,
     userName: data.userName as string,
     status: data.status as 'pending' | 'accepted' | 'reviewed',
+    caseType: data.caseType as string | undefined,
+    paymentStatus: data.paymentStatus as string | undefined,
   };
 };
 
@@ -918,27 +1447,33 @@ export const listenToAdvisorConnectionMessages = (
     collection(db, 'advisorConnections', connectionId, 'messages'),
     orderBy('createdAt', 'asc')
   );
+  let decryptInFlight = false;
   return onSnapshot(
     q,
-    snapshot => {
-      callback(
-        snapshot.docs.map(d => {
-          const data = d.data();
-          return {
-            id: d.id,
-            senderId: data.senderId as string,
-            senderRole: data.senderRole as 'user' | 'advisor',
-            receiverId: data.receiverId as string,
-            messageText: data.messageText as string,
-            messageType: data.messageType ?? 'text',
-            createdAt: data.createdAt?.toDate() ?? new Date(),
-            isRead: data.isRead ?? false,
-          };
-        })
-      );
+    async snapshot => {
+      if (decryptInFlight) return;
+      decryptInFlight = true;
+      try {
+        const docs = snapshot.docs.map(d => ({ id: d.id, data: d.data() }));
+        const texts = docs.map(d => d.data.messageText as EncryptedMessage | string);
+        const plain = await decryptBatch(texts);
+        const messages: AdvisorMessage[] = docs.map((d, i) => ({
+          id: d.id,
+          senderId: d.data.senderId as string,
+          senderRole: d.data.senderRole as 'user' | 'advisor',
+          receiverId: d.data.receiverId as string,
+          messageText: plain[i],
+          messageType: (d.data.messageType as string) ?? 'text',
+          createdAt: d.data.createdAt?.toDate() ?? new Date(),
+          isRead: (d.data.isRead as boolean) ?? false,
+        }));
+        callback(messages);
+      } finally {
+        decryptInFlight = false;
+      }
     },
     err => {
-      console.error('[Firestore] listenToAdvisorConnectionMessages error:', err);
+      console.warn('[Firestore] listenToAdvisorConnectionMessages error:', err.code);
     }
   );
 };
@@ -962,16 +1497,18 @@ export const sendUserAdvisorMessage = async (
   advisorId: string,
   text: string
 ): Promise<void> => {
+  const encryptedText = await encryptText(text);
   await addDoc(collection(db, 'advisorConnections', connectionId, 'messages'), {
     senderId: userId,
     senderRole: 'user',
     receiverId: advisorId,
-    messageText: text,
+    messageText: encryptedText,
     messageType: 'text',
     createdAt: serverTimestamp(),
     isRead: false,
   });
-  console.log('[AdvisorChat] Message sent:', text);
+  console.log('[AdvisorChat] Message sent');
+  // lastMessage preview stays plaintext — it is connection metadata, not a stored message
   await updateAdvisorConnectionLastMessage(connectionId, text, userId);
 };
 
@@ -992,6 +1529,45 @@ export const sendAdvisorUserMessage = async (
   });
   console.log('[AdvisorChat] Message sent:', text);
   await updateAdvisorConnectionLastMessage(connectionId, text, advisorId);
+};
+
+// Real-time listener version of findAdvisorConnection.
+// Fires immediately with current state, then on every Firestore change.
+export const listenToAdvisorConnection = (
+  userId: string,
+  advisorId: string,
+  callback: (conn: AdvisorConnection | null) => void,
+): (() => void) => {
+  const q = query(
+    collection(db, 'advisorConnections'),
+    where('userId', '==', userId),
+    where('advisorId', '==', advisorId),
+  );
+  return onSnapshot(
+    q,
+    snapshot => {
+      // Prefer active statuses (pending/accepted) over terminal ones
+      const active = snapshot.docs.find(d =>
+        d.data().status === 'pending' || d.data().status === 'accepted',
+      );
+      const d = active ?? (snapshot.docs.length > 0 ? snapshot.docs[0] : null);
+      if (!d) { callback(null); return; }
+      const data = d.data();
+      callback({
+        connectionId: d.id,
+        advisorId:    data.advisorId as string,
+        advisorName:  data.advisorName as string,
+        userId:       data.userId as string,
+        userName:     data.userName as string,
+        status:       data.status as 'pending' | 'accepted' | 'reviewed',
+        caseType:     data.caseType as string | undefined,
+        paymentStatus: data.paymentStatus as string | undefined,
+      });
+    },
+    err => {
+      console.warn('[Firestore] listenToAdvisorConnection error:', err.code);
+    },
+  );
 };
 
 // Legacy aliases — kept so any existing callers outside this screen still compile.
@@ -1093,6 +1669,25 @@ export const fetchResourcesByCategory = async (
   );
 
   return enrichResourcesWithAdvisorImages([...primary, ...baseline]);
+};
+
+// Returns a real-time subscription to the single most recently posted or
+// updated resource from any advisor (authorId present), sorted by createdAt desc.
+export const listenToLatestAdvisorResource = (
+  callback: (resource: Resource | null) => void,
+): (() => void) => {
+  let cancelled = false;
+  const q = query(collection(db, 'resources'), orderBy('createdAt', 'desc'), limit(20));
+  const unsub = onSnapshot(q, snap => {
+    const found = snap.docs
+      .map(mapResourceDoc)
+      .find(r => r.isActive !== false && !!r.authorId);
+    if (!found) { callback(null); return; }
+    enrichResourcesWithAdvisorImages([found]).then(enriched => {
+      if (!cancelled) callback(enriched[0] ?? null);
+    });
+  });
+  return () => { cancelled = true; unsub(); };
 };
 
 // ─── Resource Social Features ────────────────────────────────────────────────
@@ -1201,7 +1796,7 @@ export const listenToUserRecommendationCategory = (
       });
     },
     err => {
-      console.error('[Firestore] listenToUserRecommendationCategory error:', err);
+      console.warn('[Firestore] listenToUserRecommendationCategory error:', err.code);
       callback({ active: null, baseline: null });
     }
   );
@@ -1316,7 +1911,7 @@ export const subscribeToMlMentalHealthProfile = (
       });
     },
     err => {
-      console.error('[Firestore] subscribeToMlMentalHealthProfile error:', err);
+      console.warn('[Firestore] subscribeToMlMentalHealthProfile error:', err.code);
       callback(null);
     }
   );
@@ -1615,6 +2210,7 @@ export const updateQuestionnaireProfile = async (
     recommendationSource: 'questionnaire',
     userStatus,
   }, { merge: true });
+  unlockDass21Badge(userId).catch(err => console.warn('[gamify] non-fatal:', err));
 };
 
 // Updates the recommendation profile when a new ML result arrives.
@@ -1680,7 +2276,8 @@ export const updateMlEmotionProfile = async (
 // Returns an unsubscribe function — call it in a useEffect cleanup.
 export const subscribeToRecommendationProfile = (
   userId: string,
-  callback: (profile: MentalHealthRecommendationProfile | null) => void
+  callback: (profile: MentalHealthRecommendationProfile | null) => void,
+  onError?: (code: string) => void,
 ): (() => void) => {
   console.log('[Firestore] Subscribing recommendation profile for user:', userId);
   const profileRef = doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile');
@@ -1725,12 +2322,15 @@ export const subscribeToRecommendationProfile = (
       advisorConnectionStatus: raw.advisorConnectionStatus as string | undefined,
       approvedCategory: raw.approvedCategory as GroupCategory | undefined,
       approvalMessageSeen: raw.approvalMessageSeen as boolean | undefined,
+      approvedByAdvisorId: raw.approvedByAdvisorId as string | undefined,
+      advisorConnectionId: raw.advisorConnectionId as string | undefined,
       peerGroupRecommendationCategory: raw.peerGroupRecommendationCategory as GroupCategory | undefined,
       resourceRecommendationCategory: raw.resourceRecommendationCategory as GroupCategory | undefined,
       wellnessScore: typeof raw.wellnessScore === 'number' ? raw.wellnessScore : undefined,
     });
   }, err => {
-    console.error('[Firestore] subscribeToRecommendationProfile error:', err);
+    console.warn('[Firestore] subscribeToRecommendationProfile error:', err.code);
+    onError?.(err.code);
     callback(null);
   });
 };
@@ -1738,8 +2338,9 @@ export const subscribeToRecommendationProfile = (
 // Alias for subscribeToRecommendationProfile — preferred name for feature code.
 export const listenToMentalHealthProfile = (
   userId: string,
-  callback: (profile: MentalHealthRecommendationProfile | null) => void
-): (() => void) => subscribeToRecommendationProfile(userId, callback);
+  callback: (profile: MentalHealthRecommendationProfile | null) => void,
+  onError?: (code: string) => void,
+): (() => void) => subscribeToRecommendationProfile(userId, callback, onError);
 
 // Marks the advisor approval message as seen so it is not shown again.
 // Called when the user taps "Continue to App" on the approval modal.
@@ -1922,11 +2523,11 @@ export const fetchUserGroupChatTexts = async (userId: string): Promise<string[]>
     )
   );
 
-  const texts = results.flatMap(snap =>
-    snap.docs
-      .map(d => (d.data().text as string | undefined)?.trim() ?? '')
-      .filter(t => t.length >= 3)
+  const rawTexts = results.flatMap(snap =>
+    snap.docs.map(d => d.data().text as EncryptedMessage | string)
   );
+  const plain = await decryptBatch(rawTexts);
+  const texts = plain.filter(t => t.trim().length >= 3);
   console.log('[ML] Group messages found:', texts.length);
   return texts;
 };
@@ -1940,17 +2541,18 @@ export const fetchUserAiChatTexts = async (userId: string): Promise<string[]> =>
   );
   const snap = await getDocs(q);
   // Only analyze the user's own messages — not the AI bot's responses.
-  const texts = snap.docs
-    .filter(d => d.data().sender === 'user')
-    .map(d => (d.data().text as string | undefined)?.trim() ?? '')
-    .filter(t => t.length >= 3);
+  const userDocs = snap.docs.filter(d => d.data().sender === 'user');
+  const rawTexts = userDocs.map(d => d.data().text as EncryptedMessage | string);
+  const plain = await decryptBatch(rawTexts);
+  const texts = plain.filter(t => t.trim().length >= 3);
   console.log('[ML] AI messages found:', texts.length);
   return texts;
 };
 
 export const saveAiChatMessage = async (userId: string, text: string): Promise<void> => {
+  const encryptedText = await encryptText(text);
   await addDoc(collection(db, 'users', userId, 'aiChatMessages'), {
-    text,
+    text: encryptedText,
     timestamp: Timestamp.now(),
     sender: 'user',
   });
@@ -2834,4 +3436,354 @@ export const runWeeklyKnnRecommendation = async (userId: string): Promise<void> 
 
   // Persist to the KNN-owned recommendationState document.
   await saveKnnRecommendationState(userId, result.recommended_group, weeklyEmotion);
+};
+
+// ─── Chat Read State ──────────────────────────────────────────────────────────
+
+export async function markChatRead(
+  chatId: string,
+  type: 'group' | 'advisor',
+): Promise<void> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+  try {
+    if (type === 'group') {
+      await setDoc(
+        doc(db, 'users', uid, 'chatReadState', chatId),
+        { lastReadAt: serverTimestamp(), chatId, type: 'group' },
+        { merge: true },
+      );
+    } else {
+      await setDoc(
+        doc(db, 'advisorConnections', chatId),
+        { userLastReadAt: serverTimestamp() },
+        { merge: true },
+      );
+    }
+  } catch (e) {
+    console.warn('markChatRead failed:', e);
+  }
+}
+
+export async function getLastReadAt(
+  chatId: string,
+  type: 'group' | 'advisor',
+): Promise<Date | null> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return null;
+  try {
+    if (type === 'group') {
+      const snap = await getDoc(doc(db, 'users', uid, 'chatReadState', chatId));
+      const ts = snap.exists() ? snap.data().lastReadAt : null;
+      return ts?.toDate ? ts.toDate() : null;
+    } else {
+      const snap = await getDoc(doc(db, 'advisorConnections', chatId));
+      const ts = snap.exists() ? snap.data().userLastReadAt : null;
+      return ts?.toDate ? ts.toDate() : null;
+    }
+  } catch (e) {
+    console.warn('getLastReadAt failed:', e);
+    return null;
+  }
+}
+
+// Subscribes to both the chat's messages AND the user's lastReadAt document.
+// Fires callback(count) whenever either changes — so the badge updates the
+// moment markChatRead() writes to Firestore, without a screen reload.
+export function subscribeUnreadCount(
+  chatId: string,
+  type: 'group' | 'advisor',
+  callback: (count: number) => void,
+): () => void {
+  const uid = auth.currentUser?.uid;
+  if (!uid) {
+    callback(0);
+    return () => {};
+  }
+
+  let cancelled = false;
+  let lastReadAt: Date | null = null;
+  let msgDocs: { senderId: string; msgDate: Date | null }[] = [];
+
+  const tsField = type === 'group' ? 'timestamp' : 'createdAt';
+  const msgCollection =
+    type === 'group'
+      ? collection(db, 'peer_groups', chatId, 'chatMessages')
+      : collection(db, 'advisorConnections', chatId, 'messages');
+  const readStateRef =
+    type === 'group'
+      ? doc(db, 'users', uid, 'chatReadState', chatId)
+      : doc(db, 'advisorConnections', chatId);
+  const readField = type === 'group' ? 'lastReadAt' : 'userLastReadAt';
+
+  const recount = () => {
+    if (cancelled) return;
+    if (!lastReadAt) {
+      callback(0);
+      return;
+    }
+    const lr = lastReadAt;
+    const count = msgDocs.filter(
+      d => d.msgDate !== null && d.msgDate > lr && d.senderId !== uid,
+    ).length;
+    callback(count);
+  };
+
+  // Listener 1: watches the read-state doc so the badge clears as soon as
+  // markChatRead() writes — even while GroupsScreen is in the background.
+  const unsubReadState = onSnapshot(
+    readStateRef,
+    snap => {
+      if (cancelled) return;
+      const raw = snap.exists() ? (snap.data()[readField] as Timestamp | null) : null;
+      lastReadAt = raw?.toDate ? raw.toDate() : null;
+      recount();
+    },
+    () => {},
+  );
+
+  // Listener 2: watches the message collection.
+  const unsubMsgs = onSnapshot(
+    query(msgCollection, orderBy(tsField, 'asc')),
+    snapshot => {
+      if (cancelled) return;
+      msgDocs = snapshot.docs.map(d => {
+        const ts = d.data()[tsField] as Timestamp | null;
+        return {
+          senderId: d.data().senderId as string,
+          msgDate: ts?.toDate ? ts.toDate() : null,
+        };
+      });
+      recount();
+    },
+    () => callback(0),
+  );
+
+  return () => {
+    cancelled = true;
+    unsubReadState();
+    unsubMsgs();
+  };
+}
+
+// ─── In-App Notifications ─────────────────────────────────────────────────────
+
+export interface AppNotification {
+  id: string;
+  type: 'peer_message' | 'advisor_message' | 'advisor_request' | 'listener_accepted' | 'call_scheduled' | 'badge_awarded';
+  title: string;
+  body: string;
+  read: boolean;
+  createdAt: any;
+  groupId?: string;
+  groupName?: string;
+  chatId?: string;
+  badgeId?: string;
+}
+
+/** Fire-and-forget write — idempotent via setDoc merge on deterministic notifId. */
+export const createNotification = (
+  userId: string,
+  notifId: string,
+  data: Omit<AppNotification, 'id' | 'createdAt'>,
+): void => {
+  setDoc(
+    doc(db, 'users', userId, 'notifications', notifId),
+    { ...data, createdAt: serverTimestamp() },
+    { merge: true },
+  ).catch(console.error);
+};
+
+export const subscribeToNotifications = (
+  userId: string,
+  callback: (notifications: AppNotification[]) => void,
+): (() => void) => {
+  const q = query(
+    collection(db, 'users', userId, 'notifications'),
+    orderBy('createdAt', 'desc'),
+    limit(30),
+  );
+  return onSnapshot(
+    q,
+    snapshot => {
+      callback(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as AppNotification)));
+    },
+    err => {
+      console.warn('[Firestore] subscribeToNotifications error:', err.code);
+      callback([]);
+    },
+  );
+};
+
+export const markNotificationRead = (userId: string, notifId: string): void => {
+  updateDoc(doc(db, 'users', userId, 'notifications', notifId), { read: true }).catch(console.error);
+};
+
+export const markAllNotificationsRead = (userId: string, notifIds: string[]): void => {
+  notifIds.forEach(id =>
+    updateDoc(doc(db, 'users', userId, 'notifications', id), { read: true }).catch(console.error),
+  );
+};
+
+/**
+ * Subscribes to peer group messages newer than startTimestamp and writes a
+ * notification for each message not sent by the current user.
+ * Uses the message doc ID as the notification ID — idempotent via setDoc merge.
+ * isGroupOpen() lets the caller skip when the user is actively viewing that chat.
+ */
+export const subscribeGroupMessageNotifications = (
+  groupId: string,
+  groupName: string,
+  userId: string,
+  startTimestamp: Timestamp,
+  isGroupOpen: () => boolean,
+): (() => void) => {
+  const q = query(
+    collection(db, 'peer_groups', groupId, 'chatMessages'),
+    where('timestamp', '>', startTimestamp),
+    orderBy('timestamp', 'asc'),
+  );
+
+  return onSnapshot(
+    q,
+    async snapshot => {
+      const added = snapshot.docChanges().filter(c => c.type === 'added');
+      for (const change of added) {
+        const data = change.doc.data();
+        if ((data.senderId as string) === userId) continue;
+        if (isGroupOpen()) continue;
+        try {
+          const [plain] = await decryptBatch([data.text as EncryptedMessage | string]);
+          createNotification(userId, `peer_msg_${change.doc.id}`, {
+            type: 'peer_message',
+            title: groupName,
+            body: plain.slice(0, 60),
+            read: false,
+            groupId,
+            groupName,
+          });
+        } catch {
+          createNotification(userId, `peer_msg_${change.doc.id}`, {
+            type: 'peer_message',
+            title: groupName,
+            body: 'New message in group',
+            read: false,
+            groupId,
+            groupName,
+          });
+        }
+      }
+    },
+    err => {
+      console.warn('[Notif] subscribeGroupMessageNotifications error:', err.code);
+    },
+  );
+};
+
+/**
+ * Subscribes to advisor/listener connection messages newer than startTimestamp
+ * and writes a notification for each message where senderRole === 'advisor'.
+ */
+// ─── Account Deletion ─────────────────────────────────────────────────────────
+
+/**
+ * Permanently deletes all Firestore data for the user across every known
+ * collection / subcollection, then deletes the Firebase Auth account.
+ * Throws on auth deletion failure (requires-recent-login) — caller should
+ * handle that case and still sign the user out so the app resets cleanly.
+ */
+export const deleteUserAccount = async (userId: string): Promise<void> => {
+  // ── 1. User subcollections ───────────────────────────────────────────────
+  const subcollections = [
+    'journal_entries',
+    'feedback',
+    'mentalHealthProfile',
+    'questionnaireResponses',
+    'ml_analysis',
+    'group_memberships',
+    'gamification',
+    'badges',
+    'notifications',
+    'aiChat',
+  ];
+
+  await Promise.all(
+    subcollections.map(async sub => {
+      const snap = await getDocs(collection(db, 'users', userId, sub));
+      await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+    }),
+  );
+
+  // ── 2. Main user document ────────────────────────────────────────────────
+  await deleteDoc(doc(db, 'users', userId));
+
+  // ── 3. groupMembers documents (doc ID = {groupId}_{userId}) ─────────────
+  const groupMembersSnap = await getDocs(
+    query(collection(db, 'groupMembers'), where('userId', '==', userId)),
+  );
+  await Promise.all(groupMembersSnap.docs.map(d => deleteDoc(d.ref)));
+
+  // ── 4. advisorConnections (and their messages subcollection) ─────────────
+  const connSnap = await getDocs(
+    query(collection(db, 'advisorConnections'), where('userId', '==', userId)),
+  );
+  await Promise.all(
+    connSnap.docs.map(async connDoc => {
+      const msgsSnap = await getDocs(
+        collection(db, 'advisorConnections', connDoc.id, 'messages'),
+      );
+      await Promise.all(msgsSnap.docs.map(m => deleteDoc(m.ref)));
+      await deleteDoc(connDoc.ref);
+    }),
+  );
+
+  // ── 5. Firebase Auth user ────────────────────────────────────────────────
+  const firebaseUser = auth.currentUser;
+  if (firebaseUser) {
+    await deleteUser(firebaseUser);
+  }
+};
+
+export const subscribeAdvisorMessageNotifications = (
+  connectionId: string,
+  userId: string,
+  startTimestamp: Timestamp,
+): (() => void) => {
+  const q = query(
+    collection(db, 'advisorConnections', connectionId, 'messages'),
+    where('createdAt', '>', startTimestamp),
+    orderBy('createdAt', 'asc'),
+  );
+
+  return onSnapshot(
+    q,
+    async snapshot => {
+      const added = snapshot.docChanges().filter(c => c.type === 'added');
+      for (const change of added) {
+        const data = change.doc.data();
+        if ((data.senderRole as string) !== 'advisor') continue;
+        try {
+          const [plain] = await decryptBatch([data.messageText as EncryptedMessage | string]);
+          createNotification(userId, `adv_msg_${change.doc.id}`, {
+            type: 'advisor_message',
+            title: 'Message from your advisor',
+            body: plain.slice(0, 60),
+            read: false,
+            chatId: connectionId,
+          });
+        } catch {
+          createNotification(userId, `adv_msg_${change.doc.id}`, {
+            type: 'advisor_message',
+            title: 'Message from your advisor',
+            body: 'You have a new message from your advisor',
+            read: false,
+            chatId: connectionId,
+          });
+        }
+      }
+    },
+    err => {
+      console.warn('[Notif] subscribeAdvisorMessageNotifications error:', err.code);
+    },
+  );
 };

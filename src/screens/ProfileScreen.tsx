@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   Alert, Image, Modal, StatusBar, Dimensions, ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
@@ -10,8 +11,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
+import { getIcon } from '../components/BadgeAwardToast';
+import { useGuide } from '../context/GuideContext';
 import { Card } from '../components/UI';
-import { COLORS, listenToUserSavedResources, uploadProfileImage } from '../services/dataService';
+import { COLORS, listenToUserSavedResources, uploadProfileImage, deleteUserAccount } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
 import { Resource } from '../types';
 import { ResourcePostCard } from '../components/ResourcePostCard';
@@ -52,13 +55,29 @@ const SavedGridItem: React.FC<{ resource: Resource; onPress: () => void }> = ({ 
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export const ProfileScreen = () => {
-  const { user, setUser } = useApp();
+  const { user, setUser, earnedBadges } = useApp();
+  const { startGuideManually, registerTarget } = useGuide();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  const achievementsRowRef = useRef<View>(null);
+  const measureAchievementsRow = () => {
+    achievementsRowRef.current?.measureInWindow((x, y, w, h) => {
+      if (w > 0 && h > 0) registerTarget('achievements_row', { x, y, width: w, height: h });
+    });
+  };
+
+  const feedbackRowRef = useRef<View>(null);
+  const measureFeedbackRow = () => {
+    feedbackRowRef.current?.measureInWindow((x, y, w, h) => {
+      if (w > 0 && h > 0) registerTarget('feedback_row', { x, y, width: w, height: h });
+    });
+  };
   const [savedResources, setSavedResources] = useState<Resource[]>([]);
   const [savedTab, setSavedTab] = useState(false);
   const [previewResource, setPreviewResource] = useState<Resource | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const avatarSvg = useMemo(
     () => (user?.avatarSeed ? multiavatar(user.avatarSeed) : null),
@@ -163,11 +182,58 @@ export const ProfileScreen = () => {
     navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.replace('Auth');
   };
 
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently erase your account and all associated data — journal entries, badges, group memberships, and messages. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Are you absolutely sure?',
+              'Your account and all your data will be permanently deleted.',
+              [
+                { text: 'Go Back', style: 'cancel' },
+                {
+                  text: 'Yes, Delete',
+                  style: 'destructive',
+                  onPress: async () => {
+                    if (!user?.id) return;
+                    setIsDeleting(true);
+                    try {
+                      await deleteUserAccount(user.id);
+                    } catch (err: any) {
+                      if (err?.code === 'auth/requires-recent-login') {
+                        Alert.alert(
+                          'Re-authentication Required',
+                          'For security, please sign out and sign back in before deleting your account.',
+                        );
+                        setIsDeleting(false);
+                        return;
+                      }
+                      console.error('[DeleteAccount]', err);
+                    }
+                    setUser(null);
+                    navigation.getParent<NativeStackNavigationProp<RootStackParamList>>()?.replace('Auth');
+                  },
+                },
+              ],
+            );
+          },
+        },
+      ],
+    );
+  };
+
   const settings = [
-    { icon: 'bell' as const,           label: 'Notifications',  color: '#3B82F6', onPress: () => {} },
+    { icon: 'award' as const,          label: 'Achievements',   color: '#F59E0B', onPress: () => navigation.navigate('Achievements') },
     { icon: 'heart' as const,          label: 'Wellness Goals', color: '#EC4899', onPress: () => navigation.navigate('WellnessGoals') },
     { icon: 'bookmark' as const,       label: `Saved${savedResources.length > 0 ? ` (${savedResources.length})` : ''}`, color: '#F59E0B', onPress: () => setSavedTab(true) },
     { icon: 'message-square' as const, label: 'Feedback',       color: '#7C3AED', onPress: () => navigation.navigate('Feedback') },
+    { icon: 'map' as const,            label: 'App Guide',      color: COLORS.accent, onPress: startGuideManually },
   ];
 
   // Build 2-column grid rows
@@ -177,7 +243,8 @@ export const ProfileScreen = () => {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       {/* Avatar */}
       <View style={styles.avatarSection}>
         {/* Tapping the avatar itself opens the photo picker */}
@@ -207,9 +274,18 @@ export const ProfileScreen = () => {
 
         <Text style={styles.userName}>{user?.name}{user?.nickname ? ` (${user.nickname})` : ''}</Text>
         <Text style={styles.userEmail}>{user?.email}</Text>
-        <View style={styles.riskBadge}>
-          <Text style={styles.riskText}>Risk Level: {user?.riskLevel || 'Not Assessed'}</Text>
-        </View>
+        {earnedBadges.length > 0 ? (
+          <TouchableOpacity
+            style={styles.latestBadgePill}
+            onPress={() => navigation.navigate('Achievements')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.latestBadgeEmoji}>{getIcon(earnedBadges[0].iconName)}</Text>
+            <Text style={styles.latestBadgeText} numberOfLines={1}>
+              {earnedBadges[0].badgeName.split(/\s*[–—-]\s*/)[0].trim()}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
 
         {/* Done — center aligned, just below risk badge, only visible in edit mode */}
         {isEditing && (
@@ -223,18 +299,54 @@ export const ProfileScreen = () => {
       {!savedTab && (
         <View style={styles.settingsSection}>
           <Text style={styles.settingsLabel}>SETTINGS</Text>
-          {settings.map((item, i) => (
-            <Card key={i} style={styles.settingRow} onPress={item.onPress}>
-              <View style={styles.settingIconBox}>
-                <Feather name={item.icon} size={18} color={item.color} />
-              </View>
-              <Text style={styles.settingLabel}>{item.label}</Text>
-              <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
-            </Card>
-          ))}
+          {settings.map((item, i) => {
+            const card = (
+              <Card key={i} style={styles.settingRow} onPress={item.onPress}>
+                <View style={styles.settingIconBox}>
+                  <Feather name={item.icon} size={18} color={item.color} />
+                </View>
+                <Text style={styles.settingLabel}>{item.label}</Text>
+                <Ionicons name="chevron-forward" size={18} color={COLORS.muted} />
+              </Card>
+            );
+            // Wrap guide-targeted rows with measuring refs.
+            if (item.label === 'Achievements') {
+              return (
+                <View key={i} ref={achievementsRowRef} onLayout={measureAchievementsRow} collapsable={false}>
+                  {card}
+                </View>
+              );
+            }
+            if (item.label === 'Feedback') {
+              return (
+                <View key={i} ref={feedbackRowRef} onLayout={measureFeedbackRow} collapsable={false}>
+                  {card}
+                </View>
+              );
+            }
+            return card;
+          })}
           <TouchableOpacity onPress={handleLogout} style={styles.logoutRow}>
             <View style={styles.logoutIcon}><Feather name="log-out" size={18} color="#EF4444" /></View>
             <Text style={styles.logoutText}>Sign Out</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={handleDeleteAccount}
+            style={styles.deleteRow}
+            disabled={isDeleting}
+            activeOpacity={0.7}
+          >
+            {isDeleting ? (
+              <ActivityIndicator size="small" color="#EF4444" style={{ marginRight: 14 }} />
+            ) : (
+              <View style={styles.deleteIcon}>
+                <Feather name="trash-2" size={18} color="#9CA3AF" />
+              </View>
+            )}
+            <Text style={styles.deleteText}>
+              {isDeleting ? 'Deleting account…' : 'Delete Account'}
+            </Text>
           </TouchableOpacity>
         </View>
       )}
@@ -285,6 +397,7 @@ export const ProfileScreen = () => {
         </View>
       </Modal>
     </ScrollView>
+    </SafeAreaView>
   );
 };
 
@@ -325,8 +438,18 @@ const styles = StyleSheet.create({
 
   userName: { fontSize: 22, fontWeight: 'bold', color: COLORS.text, marginTop: 8 },
   userEmail: { fontSize: 13, color: COLORS.muted },
-  riskBadge: { backgroundColor: '#EFF6FF', borderRadius: 24, paddingHorizontal: 16, paddingVertical: 6 },
-  riskText: { fontSize: 11, fontWeight: '700', color: COLORS.accent, textTransform: 'uppercase', letterSpacing: 0.5 },
+  latestBadgePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF9C3',
+    borderRadius: 24,
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    maxWidth: 220,
+  },
+  latestBadgeEmoji: { fontSize: 14 },
+  latestBadgeText: { fontSize: 12, fontWeight: '700', color: '#92400E', flexShrink: 1 },
 
   settingsSection: { gap: 10 },
   settingsLabel: { fontSize: 11, fontWeight: '700', color: COLORS.muted, letterSpacing: 1, paddingHorizontal: 4 },
@@ -341,6 +464,9 @@ const styles = StyleSheet.create({
   logoutRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 24, marginTop: 4 },
   logoutIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#FEF2F2', alignItems: 'center', justifyContent: 'center' },
   logoutText: { fontSize: 15, fontWeight: '700', color: '#EF4444' },
+  deleteRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 24, borderWidth: 1, borderColor: '#D1D5DB', backgroundColor: '#F3F4F6', marginTop: 2 },
+  deleteIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center' },
+  deleteText: { fontSize: 15, fontWeight: '700', color: '#6B7280' },
 
   savedSection: { gap: 12 },
   savedBackRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },

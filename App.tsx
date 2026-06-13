@@ -1,38 +1,32 @@
 import './global.css';
-import React, { useEffect } from 'react';
+import React from 'react';
+import { LogBox } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider } from './src/context/AppContext';
+import { GuideProvider } from './src/context/GuideContext';
+import { AppGuideOverlay } from './src/components/AppGuideOverlay';
 import { Navigation } from './src/navigation';
-import { auth, db } from './src/services/firebaseConfig';
-import { collection, getDocs } from 'firebase/firestore';
+import { COLORS } from './src/services/dataService';
 
-// Temporary Firebase connection test — remove after confirming it works
-function FirebaseTest() {
-  useEffect(() => {
-    const test = async () => {
-      try {
-        console.log("✅ Auth ready");
-        const snap = await getDocs(collection(db, 'users'));
-        console.log("✅ Firestore connected. Docs:", snap.size);
-      } catch (e) {
-        console.error("❌ Firebase error:", e);
-      }
-    };
-    test();
-  }, []);
-
-  return null; // renders nothing
-}
+// Suppress key-prop warning originating from third-party library internals
+// (react-native-svg / react-navigation tab bar). All user-code lists have proper keys.
+LogBox.ignoreLogs(['Each child in a list should have a unique']);
 
 export default function App() {
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <StatusBar style="dark" />
-      <AppProvider>
-        <FirebaseTest />
-        <Navigation />
-      </AppProvider>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: COLORS.background }}>
+      <SafeAreaProvider style={{ backgroundColor: COLORS.background }}>
+        <StatusBar style="dark" backgroundColor={COLORS.background} />
+        <AppProvider>
+          <GuideProvider>
+            <Navigation />
+            {/* Rendered as a sibling to Navigation so it sits above all screens + tab bar */}
+            <AppGuideOverlay />
+          </GuideProvider>
+        </AppProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

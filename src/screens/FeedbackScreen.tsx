@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Alert, TouchableOpacity } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -10,7 +11,7 @@ import { useApp } from '../context/AppContext';
 
 export const FeedbackScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { submitFeedback } = useApp();
+  const { submitFeedback, gamificationTriggers } = useApp();
   const [peerFeedback, setPeerFeedback] = useState('');
   const [appFeedback, setAppFeedback] = useState('');
   const [rating, setRating] = useState(0);
@@ -38,6 +39,7 @@ export const FeedbackScreen = () => {
   setSubmitting(true);
   try {
     await submitFeedback(rating, peerFeedback, appFeedback);
+    void gamificationTriggers.onFeedbackSubmitted();
     Alert.alert('Thank you!', 'Your feedback has been submitted.', [
       {
         text: 'OK',
@@ -61,8 +63,9 @@ export const FeedbackScreen = () => {
 };
 
   return (
+    <SafeAreaView style={styles.container} edges={['top']}>
     <ScrollView
-      style={styles.container}
+      style={{ flex: 1 }}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
@@ -125,6 +128,7 @@ export const FeedbackScreen = () => {
         </Button>
       </View>
     </ScrollView>
+    </SafeAreaView>
   );
 };
 
