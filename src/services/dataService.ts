@@ -1,5 +1,6 @@
 import { Group, GroupCategory, Dass21Result, Dass21SubscaleResult, JournalEntry, Feedback, Message, Resource, MlMentalHealthProfile, KnnInput, WeeklyEmotionSummary, KnnRecommendationState, MentalHealthRecommendationProfile, RecommendationResult, MlStabilityCounter, Advisor, PrivateThreadMessage } from '../types';
 import { db, auth, storage } from './firebaseConfig';
+import { deleteUser } from 'firebase/auth';
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   collection, addDoc, getDocs, deleteDoc,
@@ -1603,6 +1604,25 @@ export const fetchResourcesByCategory = async (
   );
 
   return enrichResourcesWithAdvisorImages([...primary, ...baseline]);
+};
+
+// Returns a real-time subscription to the single most recently posted or
+// updated resource from any advisor (authorId present), sorted by createdAt desc.
+export const listenToLatestAdvisorResource = (
+  callback: (resource: Resource | null) => void,
+): (() => void) => {
+  let cancelled = false;
+  const q = query(collection(db, 'resources'), orderBy('createdAt', 'desc'), limit(20));
+  const unsub = onSnapshot(q, snap => {
+    const found = snap.docs
+      .map(mapResourceDoc)
+      .find(r => r.isActive !== false && !!r.authorId);
+    if (!found) { callback(null); return; }
+    enrichResourcesWithAdvisorImages([found]).then(enriched => {
+      if (!cancelled) callback(enriched[0] ?? null);
+    });
+  });
+  return () => { cancelled = true; unsub(); };
 };
 
 // ─── Resource Social Features ────────────────────────────────────────────────
@@ -3480,3 +3500,225 @@ export function subscribeUnreadCount(
     unsubMsgs();
   };
 }
+
+// ─── In-App Notifications ─────────────────────────────────────────────────────
+
+export interface AppNotification {
+  id: string;
+  type: 'peer_message' | 'advisor_message' | 'advisor_request' | 'listener_accepted' | 'call_scheduled' | 'badge_awarded';
+  title: string;
+  body: string;
+  read: boolean;
+  createdAt: any;
+  groupId?: string;
+  groupName?: string;
+  chatId?: string;
+  badgeId?: string;
+}
+
+/** Fire-and-forget write — idempotent via setDoc merge on deterministic notifId. */
+export const createNotification = (
+  userId: string,
+  notifId: string,
+  data: Omit<AppNotification, 'id' | 'createdAt'>,
+): void => {
+  setDoc(
+    doc(db, 'users', userId, 'notifications', notifId),
+    { ...data, createdAt: serverTimestamp() },
+    { merge: true },
+  ).catch(console.error);
+};
+
+export const subscribeToNotifications = (
+  userId: string,
+  callback: (notifications: AppNotification[]) => void,
+): (() => void) => {
+  const q = query(
+    collection(db, 'users', userId, 'notifications'),
+    orderBy('createdAt', 'desc'),
+    limit(30),
+  );
+  return onSnapshot(
+    q,
+    snapshot => {
+      callback(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as AppNotification)));
+    },
+    err => {
+      console.warn('[Firestore] subscribeToNotifications error:', err.code);
+      callback([]);
+    },
+  );
+};
+
+export const markNotificationRead = (userId: string, notifId: string): void => {
+  updateDoc(doc(db, 'users', userId, 'notifications', notifId), { read: true }).catch(console.error);
+};
+
+export const markAllNotificationsRead = (userId: string, notifIds: string[]): void => {
+  notifIds.forEach(id =>
+    updateDoc(doc(db, 'users', userId, 'notifications', id), { read: true }).catch(console.error),
+  );
+};
+
+/**
+ * Subscribes to peer group messages newer than startTimestamp and writes a
+ * notification for each message not sent by the current user.
+ * Uses the message doc ID as the notification ID — idempotent via setDoc merge.
+ * isGroupOpen() lets the caller skip when the user is actively viewing that chat.
+ */
+export const subscribeGroupMessageNotifications = (
+  groupId: string,
+  groupName: string,
+  userId: string,
+  startTimestamp: Timestamp,
+  isGroupOpen: () => boolean,
+): (() => void) => {
+  const q = query(
+    collection(db, 'peer_groups', groupId, 'chatMessages'),
+    where('timestamp', '>', startTimestamp),
+    orderBy('timestamp', 'asc'),
+  );
+
+  return onSnapshot(
+    q,
+    async snapshot => {
+      const added = snapshot.docChanges().filter(c => c.type === 'added');
+      for (const change of added) {
+        const data = change.doc.data();
+        if ((data.senderId as string) === userId) continue;
+        if (isGroupOpen()) continue;
+        try {
+          const [plain] = await decryptBatch([data.text as EncryptedMessage | string]);
+          createNotification(userId, `peer_msg_${change.doc.id}`, {
+            type: 'peer_message',
+            title: groupName,
+            body: plain.slice(0, 60),
+            read: false,
+            groupId,
+            groupName,
+          });
+        } catch {
+          createNotification(userId, `peer_msg_${change.doc.id}`, {
+            type: 'peer_message',
+            title: groupName,
+            body: 'New message in group',
+            read: false,
+            groupId,
+            groupName,
+          });
+        }
+      }
+    },
+    err => {
+      console.warn('[Notif] subscribeGroupMessageNotifications error:', err.code);
+    },
+  );
+};
+
+/**
+ * Subscribes to advisor/listener connection messages newer than startTimestamp
+ * and writes a notification for each message where senderRole === 'advisor'.
+ */
+// ─── Account Deletion ─────────────────────────────────────────────────────────
+
+/**
+ * Permanently deletes all Firestore data for the user across every known
+ * collection / subcollection, then deletes the Firebase Auth account.
+ * Throws on auth deletion failure (requires-recent-login) — caller should
+ * handle that case and still sign the user out so the app resets cleanly.
+ */
+export const deleteUserAccount = async (userId: string): Promise<void> => {
+  // ── 1. User subcollections ───────────────────────────────────────────────
+  const subcollections = [
+    'journal_entries',
+    'feedback',
+    'mentalHealthProfile',
+    'questionnaireResponses',
+    'ml_analysis',
+    'group_memberships',
+    'gamification',
+    'badges',
+    'notifications',
+    'aiChat',
+  ];
+
+  await Promise.all(
+    subcollections.map(async sub => {
+      const snap = await getDocs(collection(db, 'users', userId, sub));
+      await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+    }),
+  );
+
+  // ── 2. Main user document ────────────────────────────────────────────────
+  await deleteDoc(doc(db, 'users', userId));
+
+  // ── 3. groupMembers documents (doc ID = {groupId}_{userId}) ─────────────
+  const groupMembersSnap = await getDocs(
+    query(collection(db, 'groupMembers'), where('userId', '==', userId)),
+  );
+  await Promise.all(groupMembersSnap.docs.map(d => deleteDoc(d.ref)));
+
+  // ── 4. advisorConnections (and their messages subcollection) ─────────────
+  const connSnap = await getDocs(
+    query(collection(db, 'advisorConnections'), where('userId', '==', userId)),
+  );
+  await Promise.all(
+    connSnap.docs.map(async connDoc => {
+      const msgsSnap = await getDocs(
+        collection(db, 'advisorConnections', connDoc.id, 'messages'),
+      );
+      await Promise.all(msgsSnap.docs.map(m => deleteDoc(m.ref)));
+      await deleteDoc(connDoc.ref);
+    }),
+  );
+
+  // ── 5. Firebase Auth user ────────────────────────────────────────────────
+  const firebaseUser = auth.currentUser;
+  if (firebaseUser) {
+    await deleteUser(firebaseUser);
+  }
+};
+
+export const subscribeAdvisorMessageNotifications = (
+  connectionId: string,
+  userId: string,
+  startTimestamp: Timestamp,
+): (() => void) => {
+  const q = query(
+    collection(db, 'advisorConnections', connectionId, 'messages'),
+    where('createdAt', '>', startTimestamp),
+    orderBy('createdAt', 'asc'),
+  );
+
+  return onSnapshot(
+    q,
+    async snapshot => {
+      const added = snapshot.docChanges().filter(c => c.type === 'added');
+      for (const change of added) {
+        const data = change.doc.data();
+        if ((data.senderRole as string) !== 'advisor') continue;
+        try {
+          const [plain] = await decryptBatch([data.messageText as EncryptedMessage | string]);
+          createNotification(userId, `adv_msg_${change.doc.id}`, {
+            type: 'advisor_message',
+            title: 'Message from your advisor',
+            body: plain.slice(0, 60),
+            read: false,
+            chatId: connectionId,
+          });
+        } catch {
+          createNotification(userId, `adv_msg_${change.doc.id}`, {
+            type: 'advisor_message',
+            title: 'Message from your advisor',
+            body: 'You have a new message from your advisor',
+            read: false,
+            chatId: connectionId,
+          });
+        }
+      }
+    },
+    err => {
+      console.warn('[Notif] subscribeAdvisorMessageNotifications error:', err.code);
+    },
+  );
+};

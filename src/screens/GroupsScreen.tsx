@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
+import { useGuide } from '../context/GuideContext';
 import { Card } from '../components/UI';
 import { COLORS, subscribeUnreadCount } from '../services/dataService';
 import { RootStackParamList } from '../navigation';
@@ -19,7 +20,15 @@ import { Group } from '../types';
 
 export const GroupsScreen = () => {
   const { peerGroups, joinedGroupIds, setSelectedGroup, visitedGroupIds, markGroupAsVisited, isRestricted } = useApp();
+  const { registerTarget } = useGuide();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  const groupsContentRef = useRef<View>(null);
+  const measureGroupsContent = () => {
+    groupsContentRef.current?.measureInWindow((x, y, w, h) => {
+      if (w > 0 && h > 0) registerTarget('groups_content', { x, y, width: w, height: h });
+    });
+  };
 
   const myGroups = peerGroups.filter(g => joinedGroupIds.includes(g.id));
   const unvisitedGroupsCount = myGroups.filter(g => !visitedGroupIds.includes(g.id)).length;
@@ -98,14 +107,20 @@ export const GroupsScreen = () => {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.header}>
-        <Text style={styles.title}>My Groups</Text>
-        {unvisitedGroupsCount > 0 && (
-          <View style={styles.countBadge}>
-            <Text style={styles.countText}>{unvisitedGroupsCount}</Text>
-          </View>
-        )}
-      </View>
+      <View
+        ref={groupsContentRef}
+        onLayout={measureGroupsContent}
+        collapsable={false}
+        style={{ gap: 20 }}
+      >
+        <View style={styles.header}>
+          <Text style={styles.title}>My Groups</Text>
+          {unvisitedGroupsCount > 0 && (
+            <View style={styles.countBadge}>
+              <Text style={styles.countText}>{unvisitedGroupsCount}</Text>
+            </View>
+          )}
+        </View>
 
       {isRestricted ? (
         <View style={styles.restrictionCard}>
@@ -139,6 +154,7 @@ export const GroupsScreen = () => {
           {myGroups.map(renderGroupCard)}
         </View>
       )}
+      </View>
     </ScrollView>
     </SafeAreaView>
   );

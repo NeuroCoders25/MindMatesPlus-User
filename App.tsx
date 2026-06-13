@@ -5,6 +5,8 @@ import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider } from './src/context/AppContext';
+import { GuideProvider } from './src/context/GuideContext';
+import { AppGuideOverlay } from './src/components/AppGuideOverlay';
 import { Navigation } from './src/navigation';
 import { COLORS } from './src/services/dataService';
 
@@ -18,7 +20,11 @@ export default function App() {
       <SafeAreaProvider style={{ backgroundColor: COLORS.background }}>
         <StatusBar style="dark" backgroundColor={COLORS.background} />
         <AppProvider>
-          <Navigation />
+          <GuideProvider>
+            <Navigation />
+            {/* Rendered as a sibling to Navigation so it sits above all screens + tab bar */}
+            <AppGuideOverlay />
+          </GuideProvider>
         </AppProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

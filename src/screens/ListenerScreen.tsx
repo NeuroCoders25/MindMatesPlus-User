@@ -1,22 +1,35 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { ChatScreen } from './ChatScreen';
 import { ExpertListView } from '../components/ExpertListView';
+import { useGuide } from '../context/GuideContext';
 import { COLORS } from '../services/dataService';
 
 type Tab = 'mindy' | 'expert';
 
 export const ListenerScreen: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('mindy');
+  const { registerTarget } = useGuide();
+  const listenerContentRef = useRef<View>(null);
+  const measureListenerContent = () => {
+    listenerContentRef.current?.measureInWindow((x, y, w, h) => {
+      if (w > 0 && h > 0) registerTarget('listener_content', { x, y, width: w, height: h });
+    });
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Listener</Text>
-        <Text style={styles.headerSubtitle}>Someone to talk to, whenever you need</Text>
-      </View>
+      <View
+        ref={listenerContentRef}
+        onLayout={measureListenerContent}
+        collapsable={false}
+      >
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Listener</Text>
+          <Text style={styles.headerSubtitle}>Someone to talk to, whenever you need</Text>
+        </View>
 
       <View style={styles.segmentWrap}>
         <TouchableOpacity
@@ -48,6 +61,7 @@ export const ListenerScreen: React.FC = () => {
             Expert
           </Text>
         </TouchableOpacity>
+      </View>
       </View>
 
       <View style={styles.content}>

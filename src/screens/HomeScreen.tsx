@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
 import { Card } from '../components/UI';
 import { ResourceFeed, TabType } from '../components/ResourceFeed';
+import { ResourcePostCard } from '../components/ResourcePostCard';
 import {
   COLORS,
   ML_CATEGORY_MAP,
@@ -23,8 +24,13 @@ import {
   getGroupsByMlPrediction,
   calculateWellnessScore,
   continueAfterAdvisorApproval,
+  listenToLatestAdvisorResource,
+  markNotificationRead,
+  markAllNotificationsRead,
+  createNotification,
+  AppNotification,
 } from '../services/dataService';
-import { subscribeAllGroupCalls } from '../services/groupCallService';
+import { subscribeAllGroupCalls, formatCallTime } from '../services/groupCallService';
 import { LiveCallBanner } from '../components/LiveCallBanner';
 import { UpcomingCallsCard } from '../components/UpcomingCallsCard';
 import { WeeklyReflectionCard } from '../components/WeeklyReflectionCard';
@@ -34,13 +40,15 @@ import { GroupCall } from '../types/groupCall';
 import { SvgXml } from 'react-native-svg';
 import multiavatar from '@multiavatar/multiavatar';
 import { getIcon } from '../components/BadgeAwardToast';
+import { useGuide } from '../context/GuideContext';
+import { NotificationsPanel } from '../components/NotificationsPanel';
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export const HomeScreen = () => {
   const {
     user, peerGroups, groupsLoading, joinedGroupIds, joinGroup, setSelectedGroup, isRestricted,
-    gamificationProfile, earnedBadges, gamificationTriggers,
+    gamificationProfile, earnedBadges, gamificationTriggers, notifications,
   } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [joiningId, setJoiningId] = useState<string | null>(null);
@@ -57,6 +65,9 @@ export const HomeScreen = () => {
   const [recommendationProfile, setRecommendationProfile] = useState<MentalHealthRecommendationProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
 
+  // Latest advisor resource poster
+  const [latestAdvisorResource, setLatestAdvisorResource] = useState<import('../types').Resource | null>(null);
+
   // Resource Tab State
   const [activeResourceTab, setActiveResourceTab] = useState<TabType>('image');
 
@@ -66,13 +77,67 @@ export const HomeScreen = () => {
   // Group call state — keyed by groupId
   const [callsByGroup, setCallsByGroup] = useState<Record<string, GroupCall[]>>({});
 
+  // Notification panel state
+  const [showNotifications, setShowNotifications] = useState(false);
 
-  // Subscribe to all group calls across every group the user has joined.
-  // Re-runs when joinedGroupIds changes (join / leave events).
+  // About popup state
+  const [showAbout, setShowAbout] = useState(false);
+  const seenCallIdsRef = useRef<Set<string>>(new Set());
+  const callNotifInitRef = useRef(false);
+
+  // ── App Guide ──────────────────────────────────────────────────────────────
+  const { registerTarget, checkAndMaybeStartGuide } = useGuide();
+  const recommendedGroupsRef = useRef<View>(null);
+
+  const measureAndRegister = (ref: React.RefObject<View>, key: string) => {
+    ref.current?.measureInWindow((x, y, width, height) => {
+      if (width > 0 && height > 0) registerTarget(key, { x, y, width, height });
+    });
+  };
+
+
+  // Subscribe to all group calls. Detects newly-scheduled calls and writes
+  // a notification for each one (seeded silently on first snapshot).
   useEffect(() => {
-    const unsubscribe = subscribeAllGroupCalls(joinedGroupIds, setCallsByGroup);
-    return unsubscribe;
-  }, [joinedGroupIds]);
+    if (!user?.id) return;
+    const userId = user.id;
+    callNotifInitRef.current = false;
+    seenCallIdsRef.current = new Set();
+
+    const unsubscribe = subscribeAllGroupCalls(joinedGroupIds, newCallsByGroup => {
+      setCallsByGroup(newCallsByGroup);
+
+      const scheduled = Object.entries(newCallsByGroup).flatMap(([gId, calls]) =>
+        calls.filter(c => c.status === 'scheduled').map(c => ({ ...c, _groupId: gId })),
+      );
+
+      if (!callNotifInitRef.current) {
+        scheduled.forEach(c => seenCallIdsRef.current.add(c.id));
+        callNotifInitRef.current = true;
+        return;
+      }
+
+      scheduled.forEach(call => {
+        if (seenCallIdsRef.current.has(call.id)) return;
+        seenCallIdsRef.current.add(call.id);
+        const group = peerGroups.find(g => g.id === call._groupId);
+        const gName = group?.name ?? 'Group Chat';
+        createNotification(userId, `call_${call.id}`, {
+          type: 'call_scheduled',
+          title: 'Group Call Scheduled',
+          body: `${call.title}${call.scheduledAt ? ' — ' + formatCallTime(call.scheduledAt) : ''}`,
+          read: false,
+          groupId: call._groupId,
+          groupName: gName,
+        });
+      });
+    });
+    return () => {
+      unsubscribe();
+      seenCallIdsRef.current = new Set();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinedGroupIds, user?.id]);
 
   // Daily check-in trigger — fires at most once per day, compared client-side
   // against the last known check-in date so we don't spam the backend.
@@ -105,6 +170,10 @@ export const HomeScreen = () => {
   }, [user?.id]);
 
 
+  useEffect(() => {
+    return listenToLatestAdvisorResource(setLatestAdvisorResource);
+  }, []);
+
   // Show approval modal once when advisor approves the user
   useEffect(() => {
     const p = recommendationProfile;
@@ -115,6 +184,12 @@ export const HomeScreen = () => {
       setShowApprovalModal(true);
     }
   }, [recommendationProfile]);
+
+  // Trigger guide check once profile data is ready and user is not restricted
+  useEffect(() => {
+    if (!user?.id || isRestricted || profileLoading) return;
+    void checkAndMaybeStartGuide(user.id, isRestricted);
+  }, [user?.id, isRestricted, profileLoading]);
 
   const handleContinueAfterApproval = async () => {
     setShowApprovalModal(false);
@@ -191,6 +266,37 @@ export const HomeScreen = () => {
     navigation.navigate('GroupChat', { groupId: group.id, groupName: group.name });
   };
 
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  const handleNotificationTap = useCallback((notif: AppNotification) => {
+    if (!user?.id) return;
+    markNotificationRead(user.id, notif.id);
+    setShowNotifications(false);
+    switch (notif.type) {
+      case 'peer_message':
+      case 'call_scheduled':
+        if (notif.groupId && notif.groupName) {
+          const group = peerGroups.find(g => g.id === notif.groupId);
+          if (group) setSelectedGroup(group);
+          navigation.navigate('GroupChat', {
+            groupId: notif.groupId,
+            groupName: notif.groupName,
+          });
+        }
+        break;
+      case 'advisor_message':
+      case 'listener_accepted':
+        (navigation as any).navigate('Listener');
+        break;
+      case 'advisor_request':
+        navigation.navigate('Advisor');
+        break;
+      case 'badge_awarded':
+        navigation.navigate('Achievements');
+        break;
+    }
+  }, [user?.id, peerGroups, navigation, setSelectedGroup]);
+
   const handleGroupPress = (group: Group) => {
     if (joinedGroupIds.includes(group.id)) {
       handleOpen(group);
@@ -213,11 +319,13 @@ export const HomeScreen = () => {
     >
       {/* Header */}
       <View style={styles.header}>
-        <Image
-          source={require('../assets/logo.png')}
-          style={styles.logo}
-          resizeMode="contain"
-        />
+        <TouchableOpacity onPress={() => setShowAbout(true)} activeOpacity={0.8}>
+          <Image
+            source={require('../assets/logo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
         <View style={styles.headerRight}>
           <View style={styles.headerGreetingBlock}>
             <Text style={styles.greeting}>Hello, {user?.name} {user?.nickname ? `(${user.nickname}) ` : ''}👋</Text>
@@ -225,10 +333,15 @@ export const HomeScreen = () => {
           </View>
           <TouchableOpacity
             style={styles.notificationBell}
-            onPress={() => {}}
+            onPress={() => setShowNotifications(v => !v)}
             activeOpacity={0.8}
           >
             <Ionicons name="notifications-outline" size={24} color="#1a1a2e" />
+            {unreadCount > 0 && (
+              <View style={styles.bellBadge}>
+                <Text style={styles.bellBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
+              </View>
+            )}
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.headerProfilePic}
@@ -342,7 +455,12 @@ export const HomeScreen = () => {
       })()}
 
       {/* Recommended Groups */}
-      <View style={styles.section}>
+      <View
+        ref={recommendedGroupsRef}
+        onLayout={() => measureAndRegister(recommendedGroupsRef, 'recommended_groups')}
+        style={styles.section}
+        collapsable={false}
+      >
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Recommended Groups</Text>
@@ -466,6 +584,16 @@ export const HomeScreen = () => {
         )}
       </View>
 
+      {/* Latest Advisor Resource Poster */}
+      {latestAdvisorResource && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Latest from Advisor</Text>
+          </View>
+          <ResourcePostCard resource={latestAdvisorResource} />
+        </View>
+      )}
+
       {/* Resource Feed — right after groups */}
       {user && (
         <View style={styles.section}>
@@ -537,6 +665,77 @@ export const HomeScreen = () => {
         </View>
       </View>
     )}
+    {/* About popup */}
+    {showAbout && (
+      <View style={[styles.aboutOverlay, StyleSheet.absoluteFillObject]}>
+        <View style={styles.aboutCard}>
+          <Image
+            source={require('../assets/logo.png')}
+            style={styles.aboutLogo}
+            resizeMode="contain"
+          />
+          <View style={styles.aboutVersionPill}>
+            <Text style={styles.aboutVersionText}>Version 1.0</Text>
+          </View>
+
+          <Text style={styles.aboutTagline}>
+            Your mental wellness companion
+          </Text>
+
+          <View style={styles.aboutDivider} />
+
+          <View style={styles.aboutFeatures}>
+            {[
+              { icon: 'people-outline',        label: 'Peer Support Groups' },
+              { icon: 'journal-outline',        label: 'Guided Journaling' },
+              { icon: 'medal-outline',          label: 'Gamified Wellness' },
+              { icon: 'headset-outline',        label: 'Expert Listeners' },
+              { icon: 'bar-chart-outline',      label: 'DASS-21 Wellbeing Check' },
+              { icon: 'shield-checkmark-outline', label: 'AI-Assisted Moderation' },
+            ].map(f => (
+              <View key={f.label} style={styles.aboutFeatureRow}>
+                <Ionicons name={f.icon as any} size={15} color={COLORS.accent} />
+                <Text style={styles.aboutFeatureText}>{f.label}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.aboutDivider} />
+
+          <Text style={styles.aboutDisclaimer}>
+            MindMates+ is a peer support platform and is not a substitute for professional mental health treatment.
+          </Text>
+          <Text style={styles.aboutCopyright}>© 2025 MindMates+. All rights reserved.</Text>
+
+          <TouchableOpacity
+            style={styles.aboutCloseBtn}
+            onPress={() => setShowAbout(false)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.aboutCloseBtnText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    )}
+
+    {/* Notifications panel — absolute overlay, anchors below the bell */}
+    {showNotifications && (
+      <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+        <NotificationsPanel
+          notifications={notifications}
+          onClose={() => setShowNotifications(false)}
+          onMarkAllRead={() => {
+            if (user?.id) {
+              markAllNotificationsRead(
+                user.id,
+                notifications.filter(n => !n.read).map(n => n.id),
+              );
+            }
+          }}
+          onTap={handleNotificationTap}
+        />
+      </View>
+    )}
     </SafeAreaView>
   );
 };
@@ -567,6 +766,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginLeft: 6,
     marginRight: 2,
+  },
+  bellBadge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#22C55E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 3,
+    borderWidth: 1.5,
+    borderColor: '#f0f0f5',
+  },
+  bellBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   headerProfilePic: {
     width: 36,
@@ -1090,5 +1308,88 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     textAlign: 'center',
     fontStyle: 'italic',
+  },
+
+  // ── About popup ──────────────────────────────────────────────────────────
+  aboutOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  aboutCard: {
+    width: '100%',
+    backgroundColor: COLORS.white,
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  aboutLogo: { width: 140, height: 52 },
+  aboutVersionPill: {
+    backgroundColor: COLORS.border,
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  aboutVersionText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.accent,
+    letterSpacing: 0.5,
+  },
+  aboutTagline: {
+    fontSize: 13,
+    color: COLORS.muted,
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  aboutDivider: {
+    width: '100%',
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginVertical: 4,
+  },
+  aboutFeatures: { width: '100%', gap: 8 },
+  aboutFeatureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  aboutFeatureText: {
+    fontSize: 13,
+    color: COLORS.text,
+    fontWeight: '500',
+  },
+  aboutDisclaimer: {
+    fontSize: 11,
+    color: COLORS.muted,
+    textAlign: 'center',
+    lineHeight: 16,
+    fontStyle: 'italic',
+  },
+  aboutCopyright: {
+    fontSize: 11,
+    color: COLORS.muted,
+    textAlign: 'center',
+  },
+  aboutCloseBtn: {
+    width: '100%',
+    backgroundColor: COLORS.primary,
+    borderRadius: 14,
+    paddingVertical: 13,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  aboutCloseBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.white,
   },
 });

@@ -90,9 +90,21 @@ const TAB_ICONS: Record<string, [IoniconsName, IoniconsName]> = {
 // ─── Main Tabs ────────────────────────────────────────────────────────────────
 
 const MainTabs = () => {
-  const { showCrisisAlert, setShowCrisisAlert } = useApp();
+  const { showCrisisAlert, setShowCrisisAlert, notifications } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const initialTab = 'Home';
+
+  const groupsUnread = notifications.filter(
+    n => !n.read && (n.type === 'peer_message' || n.type === 'call_scheduled'),
+  ).length;
+  const listenerUnread = notifications.filter(
+    n => !n.read && (n.type === 'advisor_message' || n.type === 'listener_accepted' || n.type === 'advisor_request'),
+  ).length;
+  const profileUnread = notifications.filter(
+    n => !n.read && n.type === 'badge_awarded',
+  ).length;
+
+  const badgeLabel = (count: number) => (count === 0 ? undefined : count > 9 ? '9+' : String(count));
 
   return (
     <>
@@ -118,6 +130,15 @@ const MainTabs = () => {
               backgroundColor: 'rgba(255,255,255,0.97)',
               borderTopColor: COLORS.border,
             },
+            tabBarBadgeStyle: {
+              backgroundColor: '#22C55E',
+              color: '#FFFFFF',
+              fontSize: 9,
+              minWidth: 16,
+              height: 16,
+              lineHeight: 16,
+              borderRadius: 8,
+            },
             tabBarLabelStyle: {
               fontSize: 10,
               fontWeight: '700',
@@ -128,7 +149,11 @@ const MainTabs = () => {
         }}
       >
         <MainTab.Screen name="Home" component={HomeScreen} />
-        <MainTab.Screen name="Groups" component={GroupsScreen} />
+        <MainTab.Screen
+          name="Groups"
+          component={GroupsScreen}
+          options={{ tabBarBadge: badgeLabel(groupsUnread) }}
+        />
         <MainTab.Screen
           name="Listener"
           component={ListenerScreen}
@@ -137,10 +162,15 @@ const MainTabs = () => {
             tabBarIcon: ({ color, size }) => (
               <MaterialCommunityIcons name="face-agent" size={size} color={color} />
             ),
+            tabBarBadge: badgeLabel(listenerUnread),
           }}
         />
         <MainTab.Screen name="Journal" component={JournalScreen} />
-        <MainTab.Screen name="Profile" component={ProfileScreen} />
+        <MainTab.Screen
+          name="Profile"
+          component={ProfileScreen}
+          options={{ tabBarBadge: badgeLabel(profileUnread) }}
+        />
       </MainTab.Navigator>
 
       {/* Crisis Alert Modal */}
