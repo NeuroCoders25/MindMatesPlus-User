@@ -9,7 +9,7 @@ import {
 } from 'firebase/firestore';
 import { predictText, MlPredictResponse, recommendGroups, KnnRecommendRequest } from './mlApiService'
 import { encryptText, decryptBatch, EncryptedMessage } from './cryptoService'
-import { triggerCriticalAlertEmail } from './criticalAlertService';
+import { triggerCriticalAlertEmail, triggerCriticalCancellationEmail } from './criticalAlertService';
 import { triggerListenerRequestEmail } from './listenerAlertService';
 import { startTrial } from './paymentService';
 import { awardJournalPoints, unlockDass21Badge } from './gamificationService';
@@ -799,7 +799,7 @@ export const fetchAdvisors = async (): Promise<Advisor[]> => {
 
 // ─── Advisor Connection Real-time Functions ───────────────────────────────────
 
-export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed' | 'closed';
+export type AdvisorConnectionStatusValue = 'pending' | 'accepted' | 'approved' | 'reviewed' | 'closed' | 'cancelled';
 
 // Statuses that mean a connection is actively blocking a new request.
 const ACTIVE_CONNECTION_STATUSES: ReadonlySet<string> = new Set(['pending', 'accepted']);
@@ -807,6 +807,7 @@ const ACTIVE_CONNECTION_STATUSES: ReadonlySet<string> = new Set(['pending', 'acc
 // Streams all advisor connections for a user as a map of advisorId → status.
 // When a user has multiple docs for the same advisor (e.g. old approved + new pending),
 // active statuses (pending/accepted) take precedence over terminal ones.
+// Cancelled docs are skipped entirely so they never lock the UI.
 // Fires immediately with current data, then on every Firestore change.
 export const listenToUserAdvisorConnections = (
   userId: string,
@@ -822,6 +823,8 @@ export const listenToUserAdvisorConnections = (
         const data = d.data();
         if (data.advisorId && data.status) {
           const incoming = data.status as AdvisorConnectionStatusValue;
+          // Cancelled connections must never lock the advisor list
+          if (incoming === 'cancelled') return;
           const existing = connections[data.advisorId];
           // Active status always wins; among same priority, last write wins.
           if (!existing || ACTIVE_CONNECTION_STATUSES.has(incoming)) {
@@ -838,14 +841,19 @@ export const listenToUserAdvisorConnections = (
   );
 };
 
-// Streams all advisor connections for a user with full details (including advisor name).
-// Used by the global approval notification in AppContext.
+// Streams listener_support advisor connections for a user with full details (including advisor name).
+// Scoped to listener_support only — critical_case acceptances are handled separately
+// in AdvisorDetailsScreen and must not trigger Listener-tab notifications.
 export const listenToAdvisorConnectionsWithNames = (
   userId: string,
   callback: (connections: Array<{ advisorId: string; advisorName: string; status: AdvisorConnectionStatusValue }>) => void,
   onError?: (code: string) => void,
 ): (() => void) => {
-  const q = query(collection(db, 'advisorConnections'), where('userId', '==', userId));
+  const q = query(
+    collection(db, 'advisorConnections'),
+    where('userId', '==', userId),
+    where('caseType', '==', 'listener_support'),
+  );
   return onSnapshot(
     q,
     snapshot => {
@@ -1019,6 +1027,63 @@ export const connectToAdvisor = async (
   void triggerCriticalAlertEmail(docRef.id);
 
   return docRef.id;
+};
+
+// Cancels a pending critical-case advisor request.
+// Guards against cancelling an already-accepted request (advisor already responded).
+// Returns { success: true } on cancel, { success: false, alreadyAccepted: true } if the
+// advisor has already accepted, or { success: false } for any other failure.
+export const cancelCriticalRequest = async (
+  userId: string,
+  advisorId: string,
+): Promise<{ success: boolean; alreadyAccepted?: boolean }> => {
+  try {
+    // Find the pending connection doc for this user+advisor
+    const pendingQ = query(
+      collection(db, 'advisorConnections'),
+      where('userId', '==', userId),
+      where('advisorId', '==', advisorId),
+      where('status', '==', 'pending'),
+      where('caseType', '==', 'critical_case'),
+    );
+    const pendingSnap = await getDocs(pendingQ);
+
+    if (pendingSnap.empty) {
+      // Check if the advisor has already accepted
+      const acceptedQ = query(
+        collection(db, 'advisorConnections'),
+        where('userId', '==', userId),
+        where('advisorId', '==', advisorId),
+        where('status', '==', 'accepted'),
+      );
+      const acceptedSnap = await getDocs(acceptedQ);
+      if (!acceptedSnap.empty) return { success: false, alreadyAccepted: true };
+      return { success: false };
+    }
+
+    const connDoc = pendingSnap.docs[0];
+    await updateDoc(doc(db, 'advisorConnections', connDoc.id), {
+      status: 'cancelled',
+      cancelledAt: serverTimestamp(),
+      cancelledBy: 'user',
+    });
+
+    // Clear the profile connection so the user is no longer under_review
+    await setDoc(
+      doc(db, 'users', userId, 'mentalHealthProfile', 'currentProfile'),
+      { advisorConnectionStatus: 'cancelled', userStatus: 'active', connectedAdvisorId: null },
+      { merge: true },
+    );
+
+    // Best-effort: notify advisor via email
+    void triggerCriticalCancellationEmail(connDoc.id);
+
+    console.log('[cancelCriticalRequest] Cancelled connection:', connDoc.id);
+    return { success: true };
+  } catch (err) {
+    console.error('[cancelCriticalRequest] Failed:', err);
+    return { success: false };
+  }
 };
 
 // ─── Listener Expert Connection ───────────────────────────────────────────────

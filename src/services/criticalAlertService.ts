@@ -36,3 +36,33 @@ export async function triggerCriticalAlertEmail(
     return false
   }
 }
+
+/**
+ * Best-effort: asks the backend to send a cancellation email to the advisor
+ * so they know the user has withdrawn their request.
+ *
+ * Never throws — a network failure must never block the cancellation flow.
+ */
+export async function triggerCriticalCancellationEmail(
+  connectionId: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${BASE_URL}/critical-alerts/cancel-email/${connectionId}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+    if (!res.ok) {
+      console.warn('[criticalAlert] Cancel-email endpoint returned', res.status, 'for connection', connectionId)
+      return false
+    }
+    const data: unknown = await res.json()
+    console.log('[criticalAlert] Cancellation email triggered for connection', connectionId, '— response:', data)
+    return true
+  } catch (e) {
+    console.warn('[criticalAlert] triggerCriticalCancellationEmail failed (non-blocking):', e)
+    return false
+  }
+}

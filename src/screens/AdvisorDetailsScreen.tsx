@@ -18,6 +18,7 @@ import { RootStackParamList } from '../navigation';
 import {
   COLORS,
   requestExpertListener,
+  cancelCriticalRequest,
   ListenerConnection,
   getCaseTypeFromCategory,
   listenToAdvisorConnection,
@@ -82,6 +83,7 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
   // Critical flow state
   const [criticalConn, setCriticalConn] = useState<AdvisorConnection | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [cancellingCritical, setCancellingCritical] = useState(false);
 
   const flow = route.params?.flow ?? 'listener';
   const isCriticalFlow = flow === 'critical';
@@ -272,6 +274,43 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
     );
   };
 
+  const handleCancelCriticalRequest = () => {
+    Alert.alert(
+      'Cancel Request',
+      `Are you sure you want to cancel your request to ${advisor.name}? You can send a new request at any time.`,
+      [
+        { text: 'Keep Request', style: 'cancel' },
+        {
+          text: 'Cancel Request',
+          style: 'destructive',
+          onPress: async () => {
+            if (!user || cancellingCritical) return;
+            setCancellingCritical(true);
+            try {
+              const result = await cancelCriticalRequest(user.id, advisor.id);
+              if (!result.success) {
+                if (result.alreadyAccepted) {
+                  Alert.alert(
+                    'Cannot Cancel',
+                    'The advisor has already accepted your request — cancellation is no longer available.',
+                  );
+                } else {
+                  Alert.alert('Error', 'Could not cancel the request. Please try again.');
+                }
+              }
+              // On success the real-time listener (listenToAdvisorConnection) will
+              // automatically clear criticalConn, showing the Connect button again.
+            } catch {
+              Alert.alert('Error', 'Something went wrong. Please try again.');
+            } finally {
+              setCancellingCritical(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const avail = getAvailability(advisor.availability);
 
   return (
@@ -380,11 +419,26 @@ export const AdvisorDetailsScreen: React.FC<Props> = ({ route, navigation }) => 
               </View>
             </TouchableOpacity>
           ) : criticalConn?.status === 'pending' ? (
-            <View style={[styles.chatButton, styles.pendingButton]}>
-              <View style={styles.buttonContent}>
-                <Ionicons name="time-outline" size={20} color="#D97706" />
-                <Text style={[styles.buttonText, { color: '#D97706' }]}>Requested</Text>
+            <View style={styles.pendingFooter}>
+              <View style={styles.pendingInfo}>
+                <Ionicons name="time-outline" size={16} color="#D97706" />
+                <Text style={styles.pendingInfoText}>Request sent — awaiting advisor response</Text>
               </View>
+              <TouchableOpacity
+                onPress={handleCancelCriticalRequest}
+                activeOpacity={0.85}
+                style={styles.cancelButton}
+                disabled={cancellingCritical}
+              >
+                {cancellingCritical ? (
+                  <ActivityIndicator color="#DC2626" />
+                ) : (
+                  <View style={styles.buttonContent}>
+                    <Ionicons name="close-circle-outline" size={20} color="#DC2626" />
+                    <Text style={styles.cancelButtonText}>Cancel Request</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
             </View>
           ) : (
             <TouchableOpacity
@@ -850,6 +904,26 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFBEB',
     borderWidth: 1,
     borderColor: '#FCD34D',
+  },
+  pendingFooter: {
+    gap: 12,
+  },
+  pendingInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+  },
+  pendingInfoText: {
+    fontSize: 13,
+    color: '#92400E',
+    fontWeight: '500',
+    flex: 1,
   },
   lockBar: {
     width: '100%',

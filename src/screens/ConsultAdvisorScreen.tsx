@@ -64,6 +64,10 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
     return unsub;
   }, [user]);
 
+  const activeAdvisorId = Object.entries(connections).find(
+    ([, s]) => s === 'pending' || s === 'accepted' || s === 'reviewed',
+  )?.[0] ?? null;
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -81,6 +85,15 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
         Please select a professional advisor to help you navigate through this difficult time.
       </Text>
 
+      {activeAdvisorId && (
+        <View style={styles.lockBanner}>
+          <Ionicons name="lock-closed-outline" size={14} color="#92400E" />
+          <Text style={styles.lockBannerText}>
+            You have an active request. Cancel it to select a different advisor.
+          </Text>
+        </View>
+      )}
+
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContainer}>
         {loading ? (
           <ActivityIndicator size="large" color={COLORS.primary} style={styles.loader} />
@@ -91,12 +104,14 @@ export const ConsultAdvisorScreen: React.FC<Props> = ({ navigation }) => {
             const status = connections[advisor.id];
             const isPreviouslyApproved = status === 'approved';
             const avail = getAvailability(advisor.availability);
+            const isDisabled = !!activeAdvisorId && advisor.id !== activeAdvisorId;
 
             return (
               <TouchableOpacity
                 key={advisor.id}
-                style={styles.card}
-                activeOpacity={0.7}
+                style={[styles.card, isDisabled && styles.cardDisabled]}
+                activeOpacity={isDisabled ? 1 : 0.7}
+                disabled={isDisabled}
                 onPress={() => navigation.navigate('CriticalAdvisorDetails', { advisor, flow: 'critical' })}
               >
                 {advisor.imageUrl
@@ -294,5 +309,28 @@ const styles = StyleSheet.create({
     height: 32,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  cardDisabled: {
+    opacity: 0.4,
+  },
+  lockBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF3C7',
+    borderRadius: 10,
+    marginHorizontal: 24,
+    marginBottom: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  lockBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#92400E',
+    fontWeight: '500',
+    lineHeight: 18,
   },
 });
