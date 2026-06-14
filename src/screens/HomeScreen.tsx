@@ -204,7 +204,7 @@ export const HomeScreen = () => {
   const isAdvisorRequired = recommendationProfile?.userStatus === 'under_review';
 
   // Build recommended groups using a priority chain.
-  const recommendedGroups = (() => {
+  const recommendedGroups = useMemo(() => {
     if (isAdvisorRequired) return [];
 
     if (recommendationProfile) {
@@ -233,21 +233,23 @@ export const HomeScreen = () => {
 
     // Priority 6: Empty array
     return [];
-  })();
+  }, [isAdvisorRequired, recommendationProfile, peerGroups, mlInsight]);
 
   // Source label and category subtitle (uses the stable peer group category)
-  const sourceLabel: string | null = (() => {
+  const sourceLabel = useMemo((): string | null => {
     if (recommendationProfile) return 'Based on your wellbeing trend';
     if (mlInsight) return 'Based on your recent activity';
     return null;
-  })();
+  }, [recommendationProfile, mlInsight]);
 
-  const categoryLabel: string | null = recommendationProfile
-    ? (recommendationProfile.peerGroupRecommendationCategory ??
-        recommendationProfile.baselineRecommendationCategory)
-    : mlInsight
-    ? ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? null
-    : null;
+  const categoryLabel = useMemo((): string | null =>
+    recommendationProfile
+      ? (recommendationProfile.peerGroupRecommendationCategory ??
+          recommendationProfile.baselineRecommendationCategory)
+      : mlInsight
+      ? ML_CATEGORY_MAP[mlInsight.dominantCategory] ?? null
+      : null
+  , [recommendationProfile, mlInsight]);
 
   const handleJoin = async (group: Group) => {
     setJoiningId(group.id);

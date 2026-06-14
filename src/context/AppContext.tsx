@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { View, ActivityIndicator, Modal, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import {
@@ -617,13 +617,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Stats and badge docs update via Firestore listeners automatically.
   }, []);
 
-  const gamificationTriggers = {
+  const clearListenerAcceptedNotice = useCallback(() => setListenerAcceptedNotice(null), []);
+  const clearPendingBadge = useCallback(() => setPendingBadge(null), []);
+
+  const gamificationTriggers = useMemo(() => ({
     onJournalSaved: async (entryCount: number) => {
-      if (!user) return;
+      if (!user?.id) return;
       processBadgeResult(await triggerJournalSaved(user.id, entryCount), user.id);
     },
     onCheckIn: async () => {
-      if (!user) return;
+      if (!user?.id) return;
       const r = await triggerCheckIn(user.id);
       processBadgeResult(r, user.id);
       // Optimistic update so the streak chip reacts immediately.
@@ -632,23 +635,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     },
     onDass21Complete: async () => {
-      if (!user) return;
+      if (!user?.id) return;
       processBadgeResult(await triggerDass21Complete(user.id), user.id);
     },
     onGroupJoined: async () => {
-      if (!user) return;
+      if (!user?.id) return;
       processBadgeResult(await triggerGroupJoined(user.id), user.id);
     },
     onGoalCreated: async () => {
-      if (!user) return;
+      if (!user?.id) return;
       processBadgeResult(await triggerGoalCreated(user.id), user.id);
     },
     onGoalsCompleted: async (totalCompleted: number) => {
-      if (!user) return;
+      if (!user?.id) return;
       processBadgeResult(await triggerGoalsCompleted(user.id, totalCompleted), user.id);
     },
     onFeedbackSubmitted: async () => {
-      if (!user) return;
+      if (!user?.id) return;
       processBadgeResult(await triggerFeedbackSubmitted(user.id), user.id);
     },
     onSupportiveReply: async (params: {
@@ -660,7 +663,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const r = await triggerSupportiveReplyCheck({ uid: user.id, ...params });
       processBadgeResult(r, user.id);
     },
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [user?.id, processBadgeResult]);
 
   const prepareSupportChatFromDass = (result: Dass21Result) => {
     const now = Date.now();
@@ -739,10 +743,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         visitedGroupIds, markGroupAsVisited,
         listenerConnections,
         listenerAcceptedNotice,
-        clearListenerAcceptedNotice: () => setListenerAcceptedNotice(null),
+        clearListenerAcceptedNotice,
         dataAccessBlocked,
         pendingBadge,
-        clearPendingBadge: () => setPendingBadge(null),
+        clearPendingBadge,
         gamificationProfile,
         earnedBadges,
         notifications,

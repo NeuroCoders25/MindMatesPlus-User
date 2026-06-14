@@ -711,6 +711,9 @@ export const ChatScreen = ({ embedded = false }: { embedded?: boolean }) => {
         style={styles.messageList}
         contentContainerStyle={styles.messageContent}
         showsVerticalScrollIndicator={false}
+        windowSize={8}
+        initialNumToRender={20}
+        removeClippedSubviews={true}
         onContentSizeChange={() => {
           if (isAI) {
             listRef.current?.scrollToEnd({ animated: false });

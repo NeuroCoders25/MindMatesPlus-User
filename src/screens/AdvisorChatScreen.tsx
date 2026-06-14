@@ -377,6 +377,9 @@ export const AdvisorChatScreen: React.FC<Props> = ({ route, navigation }) => {
           renderItem={renderMessage}
           contentContainerStyle={styles.messageList}
           showsVerticalScrollIndicator={false}
+          windowSize={8}
+          initialNumToRender={20}
+          removeClippedSubviews={true}
           // Countdown pill is pinned at the top of the message list (not a banner).
           ListHeaderComponent={renderCountdownPill()}
           onContentSizeChange={() => {
