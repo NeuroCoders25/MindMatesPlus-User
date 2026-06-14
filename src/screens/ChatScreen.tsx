@@ -1378,17 +1378,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  authorizedBadge: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-  },
-  authorizedText: {
-    fontSize: 9,
-    color: '#16A34A',
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
   moderatorTextCol: { flex: 1 },
   moderatorLabel: {
     fontSize: 10,

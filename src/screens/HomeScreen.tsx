@@ -540,11 +540,10 @@ export const HomeScreen = () => {
             {recommendedGroups.map(group => {
               const isJoined = joinedGroupIds.includes(group.id);
               const isLoading = joiningId === group.id;
-              const isPrimary = true;
               return (
                 <Card
                   key={group.id}
-                  style={[styles.groupCard, !isPrimary && styles.groupCardSecondary]}
+                  style={styles.groupCard}
                   onPress={() => handleGroupPress(group)}
                 >
                   <Image
@@ -553,9 +552,6 @@ export const HomeScreen = () => {
                     resizeMode="cover"
                   />
                   <Text style={styles.groupName}>{group.name}</Text>
-                  {!isPrimary && (
-                    <Text style={styles.groupSecondaryTag}>Also recommended</Text>
-                  )}
                   <Text style={styles.groupDesc} numberOfLines={2}>
                     {group.description}
                   </Text>
@@ -1053,18 +1049,11 @@ const styles = StyleSheet.create({
     color: 'white',
   },
   groupCard: { width: 220, padding: 16 },
-  groupCardSecondary: { opacity: 0.85 },
   groupImage: { width: '100%', height: 120, borderRadius: 16, marginBottom: 12 },
   groupName: {
     fontSize: 14,
     fontWeight: 'bold',
     color: COLORS.text,
-    marginBottom: 4,
-  },
-  groupSecondaryTag: {
-    fontSize: 10,
-    color: COLORS.muted,
-    fontStyle: 'italic',
     marginBottom: 4,
   },
   groupDesc: { fontSize: 11, color: COLORS.muted, lineHeight: 16, marginBottom: 10 },

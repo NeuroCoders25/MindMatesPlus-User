@@ -31,13 +31,6 @@ import { useApp } from '../context/AppContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AdvisorDetails' | 'CriticalAdvisorDetails'>;
 
-const FALLBACK_AVATARS: Record<string, any> = {
-  'Clinical Psychologist': require('../assets/group_image1.jpg'),
-  'Mental Health Advisor': require('../assets/group_image3.png'),
-  'Depression Specialist': require('../assets/group_image4.jpeg'),
-  default: require('../assets/group_image5.png'),
-};
-
 const AVAILABILITY: Record<string, { label: string; color: string }> = {
   online:  { label: 'Online',  color: '#10B981' },
   busy:    { label: 'Busy',    color: '#F59E0B' },

@@ -305,19 +305,40 @@ All three IIFEs converted to `useMemo` calls. The full priority chain branching 
 
 ---
 
-## Phase 3 — Dead Code Candidates (awaiting your approval)
+## Phase 3 — Dead Code Removals
 
-Nothing has been deleted. Items D and E from the original candidate list were verified as **actively used** and removed from this list.
+### ✅ P3-A: `isPrimary` variable, dead branches, and orphaned styles removed from HomeScreen
+**File:** [src/screens/HomeScreen.tsx](src/screens/HomeScreen.tsx)  
+Removed `const isPrimary = true;`, simplified `style={[styles.groupCard, !isPrimary && styles.groupCardSecondary]}` to `style={styles.groupCard}`, removed the dead `{!isPrimary && <Text ...>}` JSX branch, and removed the now-orphaned style entries `groupCardSecondary` and `groupSecondaryTag` from `StyleSheet.create`.  
+Typecheck after: **same 6 pre-existing errors, zero new errors.**
 
-**Please confirm which of the following items are safe to remove. Respond with the letter(s) you approve (e.g. "approve A and B") and I will remove them one at a time, running typecheck after each.**
+### ✅ P3-B: `authorizedBadge` and `authorizedText` style entries removed from ChatScreen
+**File:** [src/screens/ChatScreen.tsx](src/screens/ChatScreen.tsx)  
+Removed two unused `StyleSheet.create` entries (`authorizedBadge`, `authorizedText`) that were defined but never referenced in any JSX in the file.  
+Typecheck after: **same 6 pre-existing errors, zero new errors.**
 
-| # | Item | File:Lines | Evidence | Cross-repo risk | My recommendation |
-|---|---|---|---|---|---|
-| **A** | `isPrimary = true` const + both dead branches below it + `groupCardSecondary` + `groupSecondaryTag` styles | [HomeScreen.tsx:543-558](src/screens/HomeScreen.tsx#L543-L558), styles ~L1054-1056, L1065-1068 | Always `true`; `!isPrimary` condition and its JSX block can never execute; confirmed by grep | None — purely local UI logic | **Safe to remove** |
-| **B** | `authorizedBadge` + `authorizedText` style entries | [ChatScreen.tsx:1381-1391](src/screens/ChatScreen.tsx#L1381-L1391) | Defined in `StyleSheet.create` but referenced nowhere in the file's JSX; confirmed by grep | None — local styles only | **Safe to remove** |
-| **C** | `FALLBACK_AVATARS` constant | [AdvisorDetailsScreen.tsx:34-39](src/screens/AdvisorDetailsScreen.tsx#L34-L39) | Defined once, never referenced again; advisor component uses `advisor.imageUrl` prop directly | None — client-side constant only | **Safe to remove** |
-| **D** | Duplicate approval modal in HomeScreen + its local `showApprovalModal` state | [HomeScreen.tsx:75, 178-186, 636-667](src/screens/HomeScreen.tsx#L75-L667) | `AppContext` already handles the approval event and shows its own modal. Both can fire simultaneously for the same advisor approval. The Firestore field `approvalMessageSeen` (written by backend, read by advisor portal) must stay; only the duplicate UI can be removed | `approvalMessageSeen` field: **cross-repo** (advisor portal reads it) — the field is safe since AppContext still calls `continueAfterAdvisorApproval`; the HomeScreen duplicate call becomes redundant | **needs-review / product decision** — only approve this if you're confident the AppContext modal fully covers the approval UX |
+### ✅ P3-C: `FALLBACK_AVATARS` constant removed from AdvisorDetailsScreen
+**File:** [src/screens/AdvisorDetailsScreen.tsx](src/screens/AdvisorDetailsScreen.tsx)  
+Removed the `FALLBACK_AVATARS: Record<string, any>` constant that was defined once at the module level but never referenced — the component uses `advisor.imageUrl` from props for avatars.  
+Typecheck after: **same 6 pre-existing errors, zero new errors.**
+
+### ⛔ P3-D: Duplicate approval modal in HomeScreen — RETAINED (intentional)
+**File:** [src/screens/HomeScreen.tsx:75, 178-186, 636-667](src/screens/HomeScreen.tsx#L75)  
+Analysis showed the HomeScreen modal fires on 2 conditions (`advisorConnectionStatus === 'approved'` AND `approvalMessageSeen !== true`), while the AppContext modal requires 4 conditions (those two PLUS `userStatus === 'normal'` AND `recommendationSource === 'advisor_approval'`). Silently dropping the HomeScreen modal would break the approval UX for users who satisfy only the 2-condition path. **Not removed — requires a product decision on which modal to keep.**
 
 ---
 
-*End of audit. Awaiting Phase 3 approval before making any deletions.*
+## Phase 3 Summary
+
+| # | Item | Status |
+|---|---|---|
+| A | `isPrimary` + dead branches + `groupCardSecondary`/`groupSecondaryTag` styles | ✅ Removed |
+| B | `authorizedBadge` + `authorizedText` style entries in ChatScreen | ✅ Removed |
+| C | `FALLBACK_AVATARS` constant in AdvisorDetailsScreen | ✅ Removed |
+| D | Duplicate HomeScreen approval modal | ⛔ Retained — product decision needed |
+
+All Phase 3 changes introduced **zero new type errors**. The 6 errors that existed before the audit remain unchanged and are pre-existing issues unrelated to this work.
+
+---
+
+*Audit complete. All three phases finished.*
